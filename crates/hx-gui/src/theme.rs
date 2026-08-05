@@ -464,68 +464,167 @@ pub fn switch(on: &mut bool) -> impl egui::Widget + '_ {
     }
 }
 
-/// Where the signal divides into branches, or comes back together.
+/// Where the signal forks into a parallel branch, or comes back together.
 ///
 /// Drawn as the wiring itself rather than as a box in the line, which is what
-/// it is: the signal leaves the main path, runs through a second lane, and
-/// rejoins. HX Edit and Logic's Pedalboard both draw it this way, and boxing it
-/// up puts a thing in the chain that is not a thing. It stays clickable, since
-/// a split still has a mode and a join still has levels.
+/// it is. The main line runs straight through — a branch is an addition below
+/// the line, not a detour of it — and a curve drops away to each branch lane.
+/// HX Edit draws it the same way, and it is what makes the moment the path
+/// divides legible at a glance. It stays clickable, since a split still has a
+/// mode and a join still has levels.
 ///
-/// `opening` draws the trunk on the left and the branches on the right; the
-/// merge is the same figure mirrored.
-pub fn junction(ui: &mut Ui, lanes: usize, opening: bool, selected: bool) -> Response {
-    let size = Vec2::new(JUNCTION_WIDTH, LANE_HEIGHT * lanes as f32);
+/// `opening` curves out to the branches; the merge is the same figure
+/// mirrored. `below` is how many branch lanes hang under the main line.
+pub fn junction(ui: &mut Ui, below: usize, opening: bool, selected: bool) -> Response {
+    let size = Vec2::new(JUNCTION_WIDTH, BLOCK_HEIGHT);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     if !ui.is_rect_visible(rect) {
         return response;
     }
 
-    let painter = ui.painter();
-    let colour = if selected { ACCENT } else { WIRE };
-    let stroke = Stroke::new(if selected { 2.0_f32 } else { 1.5_f32 }, colour);
-
-    // The trunk meets the branches at the midpoint; each lane gets a stub at
-    // its own centre line.
-    let split_x = rect.center().x;
-    let (trunk_x, branch_x) = if opening {
-        (rect.left(), rect.right())
+    let colour = if selected {
+        ACCENT
+    } else if response.hovered() {
+        TEXT
     } else {
-        (rect.right(), rect.left())
+        WIRE
     };
-    // Where each lane's blocks actually sit: a lane is a block followed by the
-    // gap under it, so its centre is not the centre of its slice. Using the
-    // slice midpoint left the branch lines a few pixels off the wires they
-    // were meant to meet, which showed as a step before the output.
-    let lane_centre = |n: usize| rect.top() + LANE_HEIGHT * n as f32 + BLOCK_HEIGHT / 2.0;
+    let stroke = Stroke::new(if selected { 2.0_f32 } else { 1.5_f32 }, colour);
+    let painter = ui.painter();
+    let cy = rect.center().y;
+    painter.hline(rect.x_range(), cy, stroke);
 
-    // The trunk meets the lanes halfway between the outermost two, which is
-    // also where the endpoint tiles are centred.
-    let trunk_y = (lane_centre(0) + lane_centre(lanes.saturating_sub(1))) / 2.0;
-    painter.line_segment(
-        [egui::pos2(trunk_x, trunk_y), egui::pos2(split_x, trunk_y)],
-        stroke,
-    );
-    painter.line_segment(
-        [
-            egui::pos2(split_x, lane_centre(0)),
-            egui::pos2(split_x, lane_centre(lanes.saturating_sub(1))),
-        ],
-        stroke,
-    );
-    for n in 0..lanes {
-        painter.line_segment(
+    // One curve per branch, horizontal at both ends so the wiring reads as
+    // wiring: it leaves the line level and arrives at the lane level. Painted
+    // past the widget's own rect — the lanes below are still this figure's
+    // to meet.
+    for n in 1..=below {
+        let ty = cy + LANE_HEIGHT * n as f32;
+        let (from, to) = if opening {
+            (egui::pos2(rect.left(), cy), egui::pos2(rect.right(), ty))
+        } else {
+            (egui::pos2(rect.left(), ty), egui::pos2(rect.right(), cy))
+        };
+        painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
             [
-                egui::pos2(split_x, lane_centre(n)),
-                egui::pos2(branch_x, lane_centre(n)),
+                from,
+                egui::pos2(from.x + JUNCTION_WIDTH, from.y),
+                egui::pos2(to.x - JUNCTION_WIDTH, to.y),
+                to,
             ],
+            false,
+            Color32::TRANSPARENT,
             stroke,
-        );
+        ));
     }
-    // A dot on the junction, so it reads as something you can click.
-    painter.circle_filled(egui::pos2(split_x, trunk_y), 4.0, colour);
+    // A dot on the fork, so it reads as something you can click.
+    painter.circle_filled(rect.center(), 4.0, colour);
 
     response
+}
+
+/// How tall the offer of a parallel branch is; see [`ghost_branch`].
+pub const GHOST_HEIGHT: f32 = 40.0;
+
+/// The offer of a parallel branch, dashed because it does not exist yet:
+/// where the line would fork, the lane the blocks would sit on, and where it
+/// would merge back — with a `+` where the first block goes.
+///
+/// This replaced a label reading "parallel branch" floating in the signal
+/// path, which looked like a thing in the chain rather than an action.
+/// `from_y` is the main line's height, where the fork will leave it.
+pub fn ghost_branch(ui: &mut Ui, width: f32, from_y: f32) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, GHOST_HEIGHT), Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+
+    let colour = if response.hovered() {
+        ACCENT
+    } else {
+        WIRE.gamma_multiply(0.9)
+    };
+    let stroke = Stroke::new(1.5_f32, colour);
+    let painter = ui.painter();
+    let y = rect.bottom() - 12.0;
+    let reach = 30.0_f32.min(width * 0.25);
+
+    let dashed_curve = |from: egui::Pos2, to: egui::Pos2| {
+        let points = egui::epaint::CubicBezierShape::from_points_stroke(
+            [
+                from,
+                egui::pos2(from.x + reach, from.y),
+                egui::pos2(to.x - reach, to.y),
+                to,
+            ],
+            false,
+            Color32::TRANSPARENT,
+            Stroke::NONE,
+        )
+        .flatten(Some(0.5));
+        egui::Shape::dashed_line(&points, stroke, 4.0, 4.0)
+    };
+    // Fork out of the main line, and merge back into it.
+    painter.extend(dashed_curve(
+        egui::pos2(rect.left(), from_y),
+        egui::pos2(rect.left() + reach, y),
+    ));
+    painter.extend(dashed_curve(
+        egui::pos2(rect.right() - reach, y),
+        egui::pos2(rect.right(), from_y),
+    ));
+
+    // The lane itself, leaving room for the `+` at its middle.
+    let centre = egui::pos2(rect.center().x, y);
+    painter.extend(egui::Shape::dashed_line(
+        &[
+            egui::pos2(rect.left() + reach, y),
+            egui::pos2(centre.x - 14.0, y),
+        ],
+        stroke,
+        4.0,
+        4.0,
+    ));
+    painter.extend(egui::Shape::dashed_line(
+        &[
+            egui::pos2(centre.x + 14.0, y),
+            egui::pos2(rect.right() - reach, y),
+        ],
+        stroke,
+        4.0,
+        4.0,
+    ));
+
+    // The `+`, always visible: this is the affordance, not a hover surprise.
+    if response.hovered() {
+        painter.circle_filled(centre, 8.0, ACCENT);
+    } else {
+        painter.circle_stroke(centre, 8.0, Stroke::new(1.5_f32, colour));
+    }
+    let mark = if response.hovered() {
+        Color32::BLACK
+    } else {
+        colour
+    };
+    painter.line_segment(
+        [centre - Vec2::new(4.0, 0.0), centre + Vec2::new(4.0, 0.0)],
+        Stroke::new(2.0_f32, mark),
+    );
+    painter.line_segment(
+        [centre - Vec2::new(0.0, 4.0), centre + Vec2::new(0.0, 4.0)],
+        Stroke::new(2.0_f32, mark),
+    );
+
+    response
+}
+
+/// Mark a drop that would trade places with the block under the pointer.
+pub fn swap_marker(ui: &Ui, rect: egui::Rect) {
+    ui.painter().rect_stroke(
+        rect.expand(2.0),
+        Rounding::same(6.0),
+        Stroke::new(3.0_f32, ACCENT),
+    );
 }
 
 /// A gap in the chain you can add something to.

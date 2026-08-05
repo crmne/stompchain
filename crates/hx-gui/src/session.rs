@@ -123,6 +123,10 @@ pub enum Evt {
         snapshots: Vec<String>,
         chain: Vec<Block>,
         layout: hx_proto::preset::Layout,
+        /// Whether the edit buffer differs from the stored preset. The worker
+        /// owns this: a reload follows most edits, and a reload that reset the
+        /// flag made Save go grey with changes still unsaved.
+        dirty: bool,
     },
     /// The edit buffer has been committed to the preset.
     Saved,
@@ -174,6 +178,7 @@ pub fn spawn() -> (Sender<Cmd>, Receiver<Evt>) {
             history: Vec::new(),
             future: Vec::new(),
             snapshot_taken: false,
+            dirty: false,
         }
         .run()
     });
@@ -198,6 +203,10 @@ struct Worker {
     /// or a save, so undo steps back to the last known-good state — which is
     /// what "undo" means to someone who has just been turning knobs.
     snapshot_taken: bool,
+    /// Whether the edit buffer differs from the stored preset. Kept here
+    /// rather than in the UI because only the worker knows which reloads are
+    /// fresh presets and which are edits taking effect.
+    dirty: bool,
 }
 
 impl Worker {
@@ -230,6 +239,11 @@ impl Worker {
             Cmd::SelectPreset(index) => {
                 let setlist = self.setlist;
                 if self.run_on_device(|d| d.select_preset(setlist, index)) {
+                    // The history belongs to the preset it was recorded on.
+                    // Kept across a switch, undo would write the previous
+                    // preset's document over the new one.
+                    self.forget_history();
+                    self.dirty = false;
                     self.reload();
                 }
             }
@@ -255,14 +269,20 @@ impl Worker {
                 } else {
                     Value::F32(value)
                 };
-                self.run_on_device(|d| d.set_param(block, index, wire));
+                if self.run_on_device(|d| d.set_param(block, index, wire)) {
+                    self.dirty = true;
+                }
             }
             Cmd::SetEnabled { block, enabled } => {
                 self.snapshot();
-                self.run_on_device(|d| d.set_enabled(block, enabled));
+                if self.run_on_device(|d| d.set_enabled(block, enabled)) {
+                    self.dirty = true;
+                }
             }
             Cmd::SetRouting { block, to } => {
+                self.snapshot();
                 if self.run_on_device(|d| d.set_routing(block, to)) {
+                    self.dirty = true;
                     self.reload();
                 }
             }
@@ -287,10 +307,11 @@ impl Worker {
             Cmd::InsertBlock { at, model } => {
                 use hx_proto::preset::Kind;
 
-                // Two device operations, and no more: free the slot by
-                // rewriting the document, then set the model. Reloading in
-                // between lands a third round trip while the device is still
-                // committing the write, which is enough to jam it.
+                // Two device operations, and no more: adjust the document if
+                // the slot needs freeing or a branch needs attaching, then set
+                // the model. Reloading in between lands a third round trip
+                // while the device is still committing the write, which is
+                // enough to jam it.
                 let Some(device) = self.device.as_mut() else {
                     return;
                 };
@@ -331,6 +352,27 @@ impl Worker {
                     }
                 };
 
+                // The first block on an empty branch should parallel the whole
+                // line: fork just after the input, merge just before the
+                // output. The device initialises the attach points itself when
+                // the model lands — to zero, which parallels nothing — so ours
+                // have to be written *after* the model, not before. Verified
+                // against the hardware; later inserts leave them alone.
+                let layout = preset.layout();
+                let claim = layout
+                    .paths
+                    .iter()
+                    .find(|p| {
+                        p.split
+                            .zip(p.join)
+                            .is_some_and(|(s, j)| (s + 1..j).contains(&target))
+                    })
+                    .filter(|p| {
+                        (p.split.unwrap() + 1..p.join.unwrap())
+                            .all(|s| preset.slots.get(s).is_none_or(|s| s.model.is_none()))
+                    })
+                    .and_then(|p| Some((p.split?, p.join?, p.input? + 1, p.output?)));
+
                 if preset.slots.get(target).is_some_and(|s| s.model.is_some()) {
                     if !preset.make_room(target, bounds) {
                         return self.send(Evt::Failed(
@@ -343,6 +385,16 @@ impl Worker {
                 }
 
                 if self.run_on_device(|d| d.set_model(target as i64, model)) {
+                    if let Some((split, join, fork_at, merge_at)) = claim {
+                        self.run_on_device(|d| {
+                            let mut p = d.read_preset()?;
+                            if p.set_attach(split, fork_at) && p.set_attach(join, merge_at) {
+                                d.write_preset(&p)?;
+                            }
+                            Ok(())
+                        });
+                    }
+                    self.dirty = true;
                     self.history.push(original);
                     if self.history.len() > 32 {
                         self.history.remove(0);
@@ -360,6 +412,7 @@ impl Worker {
                     self.run_on_device(|d| d.unassign_bypass_footswitch(block, switch))
                 };
                 if ok {
+                    self.dirty = true;
                     let verb = if on { "assigned to" } else { "taken off" };
                     self.send(Evt::Activity(format!("bypass {verb} footswitch {switch}")));
                 }
@@ -371,6 +424,7 @@ impl Worker {
             } => {
                 self.snapshot();
                 if self.run_on_device(|d| d.assign_parameter(block, param, source)) {
+                    self.dirty = true;
                     self.send(Evt::Activity(format!("assigned to {}", source.label())));
                 }
             }
@@ -386,6 +440,7 @@ impl Worker {
                     return self.send(Evt::Failed("no preset loaded".into()));
                 };
                 if self.run_on_device(|d| d.save_preset(setlist, index, &name)) {
+                    self.dirty = false;
                     self.send(Evt::Activity(format!("saved {name}")));
                     self.send(Evt::Saved);
                     // The saved state is the new baseline to undo back to.
@@ -400,8 +455,15 @@ impl Worker {
             }
             Cmd::PastePreset(blob) => self.paste(&blob),
             Cmd::ClearBlock(block) => {
+                // Removing a pedal deserves its own undo step, not a shared
+                // one with whatever knob was last turned.
+                let recorded = self.record_history();
                 if self.run_on_device(|d| d.clear_block(block)) {
+                    self.dirty = true;
                     self.reload();
+                } else if recorded {
+                    self.history.pop();
+                    self.report_history();
                 }
             }
             Cmd::SelectSnapshot(index) => {
@@ -415,29 +477,31 @@ impl Worker {
                 }
             }
             Cmd::MoveBlock { from, to } => {
-                let moved = self.try_on_device(|d| {
-                    let mut preset = d.read_preset()?;
-                    if preset.swap_slots(from, to) {
-                        d.write_preset(&preset)?;
-                    }
-                    Ok(())
+                self.edit_document(|p| {
+                    p.move_slot(from, to)
+                        .then_some(())
+                        .ok_or("that block cannot move there")
                 });
-                if moved.is_some() {
-                    self.reload();
-                }
             }
             Cmd::SetTempo(bpm) => {
+                self.snapshot();
                 if self.run_on_device(|d| d.set_tempo(bpm)) {
+                    self.dirty = true;
                     self.reload();
                 }
             }
             Cmd::RenameSnapshot { index, name } => {
+                self.snapshot();
                 if self.run_on_device(|d| d.rename_snapshot(index, &name)) {
+                    self.dirty = true;
                     self.reload();
                 }
             }
             Cmd::AssignCc { block, cc } => {
-                self.run_on_device(|d| d.assign_bypass_cc(block, cc));
+                self.snapshot();
+                if self.run_on_device(|d| d.assign_bypass_cc(block, cc)) {
+                    self.dirty = true;
+                }
             }
             Cmd::ListSetlists => {
                 if let Some(names) = self.try_on_device(|d| d.setlists()) {
@@ -473,6 +537,7 @@ impl Worker {
             Cmd::SetModel { block, model } => {
                 self.snapshot();
                 if self.run_on_device(|d| d.set_model(block, model)) {
+                    self.dirty = true;
                     self.reload();
                 }
             }
@@ -496,6 +561,10 @@ impl Worker {
             Ok(session) => {
                 let profile = session.profile;
                 self.device = Some(session);
+                // A fresh session starts with a clean slate: whatever history
+                // was recorded belongs to whatever was connected before.
+                self.forget_history();
+                self.dirty = false;
                 self.send(Evt::Connected {
                     device: profile.name.to_owned(),
                     presets: profile.presets,
@@ -527,15 +596,32 @@ impl Worker {
         if self.snapshot_taken {
             return;
         }
+        if self.record_history() {
+            self.snapshot_taken = true;
+        }
+    }
+
+    /// Push the preset as it stands onto the undo stack, unconditionally.
+    /// Returns whether there was a preset to record.
+    fn record_history(&mut self) -> bool {
         let Some(document) = self.device.as_mut().and_then(|d| d.read_preset().ok()) else {
-            return;
+            return false;
         };
-        self.snapshot_taken = true;
         self.history.push(document.encode());
         if self.history.len() > 32 {
             self.history.remove(0);
         }
+        // A fresh edit is a new branch; anything undone is unreachable now.
         self.future.clear();
+        self.report_history();
+        true
+    }
+
+    /// Drop the whole history, for when what it records no longer exists.
+    fn forget_history(&mut self) {
+        self.history.clear();
+        self.future.clear();
+        self.snapshot_taken = false;
         self.report_history();
     }
 
@@ -566,6 +652,10 @@ impl Worker {
             to.push(current.encode());
         }
         if self.run_on_device(|d| d.write_preset(&preset)) {
+            // The buffer now differs from the stored preset — almost always,
+            // and "save available after undo" errs on the side of not losing
+            // the state someone deliberately stepped to.
+            self.dirty = true;
             self.send(Evt::Activity(if back { "undone" } else { "redone" }.into()));
             self.report_history();
             self.reload();
@@ -593,6 +683,7 @@ impl Worker {
             return self.send(Evt::Failed(why.into()));
         }
         if self.run_on_device(|d| d.write_preset(&preset)) {
+            self.dirty = true;
             // Bounded: this is an undo history, not an archive.
             self.history.push(original);
             if self.history.len() > 32 {
@@ -636,8 +727,15 @@ impl Worker {
             self.send(Evt::Failed("that is not a preset file".into()));
             return;
         };
+        // A paste replaces the whole document; it is exactly the kind of edit
+        // someone reaches for undo after.
+        let recorded = self.record_history();
         if self.run_on_device(|d| d.write_preset(&preset)) {
+            self.dirty = true;
             self.reload();
+        } else if recorded {
+            self.history.pop();
+            self.report_history();
         }
     }
 
@@ -693,6 +791,7 @@ impl Worker {
             snapshots,
             chain,
             layout,
+            dirty: self.dirty,
         });
     }
 

@@ -77,6 +77,10 @@ pub struct App {
     selected: usize,
     /// Category chosen in the browser, or none to follow the current block.
     browsing: Option<u32>,
+    /// Scroll the preset list to the selection on the next frame — set when a
+    /// different preset loads, so following along from the pedal's own
+    /// front panel keeps the list in view without fighting manual scrolling.
+    reveal_preset: bool,
 
     irs: Vec<(i64, String)>,
     setlists: Vec<String>,
@@ -89,7 +93,6 @@ pub struct App {
     tempo_draft: Option<String>,
     /// Snapshot being renamed, with its draft name.
     snapshot_draft: Option<(usize, String)>,
-    /// MIDI CC to bind to the selected block's bypass.
     /// Which MIDI CC the "assign bypass" control offers.
     assign_cc: i64,
     /// Editable copy of the preset name, so typing does not fight the device.
@@ -156,6 +159,7 @@ impl App {
             drop_on: None,
             selected: 0,
             browsing: None,
+            reveal_preset: false,
             irs: Vec::new(),
             setlists: Vec::new(),
             setlist: 0,
@@ -211,9 +215,13 @@ impl App {
                     snapshots,
                     chain,
                     layout,
+                    dirty,
                 }) => {
                     self.layout = layout;
-                    self.dirty = false;
+                    // The worker's word, not a blanket reset: most reloads are
+                    // edits taking effect, and those leave changes to save.
+                    self.dirty = dirty;
+                    self.reveal_preset = index != self.preset_index;
                     self.loading = false;
                     self.preset_index = index;
                     self.preset_name = name;
@@ -328,14 +336,24 @@ impl App {
             .unwrap_or_else(|| format!("model {model}"))
     }
 
-    /// What to write on a chain tile. Inputs and outputs have no model to name.
+    /// What to call a slot. Inputs and outputs have no model to name; splits
+    /// and joins do — "Split Y", "Mixer" — and the real name says much more
+    /// than the slot kind.
     fn slot_label(&self, block: &session::Block) -> String {
         use hx_proto::preset::Kind;
+        let named = |fallback: &str| {
+            let name = self.model_name(block.model);
+            if name.is_empty() {
+                fallback.to_owned()
+            } else {
+                name
+            }
+        };
         match block.kind {
             Kind::Input => "Input".into(),
             Kind::Output => "Output".into(),
-            Kind::Split => "Split".into(),
-            Kind::Join => "Join".into(),
+            Kind::Split => named("Split"),
+            Kind::Join => named("Join"),
             _ => self.model_name(block.model),
         }
     }
@@ -374,6 +392,7 @@ impl eframe::App for App {
         // a timer rather than only on input.
         ctx.request_repaint_after(Duration::from_millis(150));
 
+        self.shortcuts(ctx);
         self.dropped_files(ctx);
         self.top_bar(ctx);
         self.status_bar(ctx);
@@ -479,19 +498,54 @@ impl App {
             });
     }
 
+    /// The editing keys every editor answers to. Skipped while something has
+    /// keyboard focus: Ctrl+Z inside a text field is the field's own undo.
+    fn shortcuts(&mut self, ctx: &egui::Context) {
+        if ctx.memory(|m| m.focused().is_some()) {
+            return;
+        }
+        use egui::{Key, KeyboardShortcut, Modifiers};
+        const REDO: KeyboardShortcut =
+            KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::Z);
+        const UNDO: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Z);
+        const SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
+
+        let pressed = |shortcut: &KeyboardShortcut| ctx.input_mut(|i| i.consume_shortcut(shortcut));
+        let live = matches!(self.connection, Connection::Online);
+        // The shifted variant first, or plain Ctrl+Z would swallow it.
+        if pressed(&REDO) {
+            if live && self.redo_depth > 0 {
+                self.send(Cmd::Redo);
+            }
+        } else if pressed(&UNDO) && live && self.undo_depth > 0 {
+            self.send(Cmd::Undo);
+        }
+        if pressed(&SAVE) && self.dirty {
+            self.send(Cmd::SavePreset);
+        }
+    }
+
     /// Undo and redo, where you can see them.
     fn history_buttons(&mut self, ui: &mut egui::Ui) {
         let live = matches!(self.connection, Connection::Online);
+        let hint =
+            |ui: &egui::Ui, m, k| ui.ctx().format_shortcut(&egui::KeyboardShortcut::new(m, k));
+        let redo_hint = hint(
+            ui,
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            egui::Key::Z,
+        );
+        let undo_hint = hint(ui, egui::Modifiers::COMMAND, egui::Key::Z);
         if ui
             .add_enabled(live && self.redo_depth > 0, egui::Button::new("Redo"))
-            .on_hover_text("put back what undo took away")
+            .on_hover_text(format!("put back what undo took away ({redo_hint})"))
             .clicked()
         {
             self.send(Cmd::Redo);
         }
         if ui
             .add_enabled(live && self.undo_depth > 0, egui::Button::new("Undo"))
-            .on_hover_text("step back through changes to the chain")
+            .on_hover_text(format!("step back through changes ({undo_hint})"))
             .clicked()
         {
             self.send(Cmd::Undo);
@@ -511,9 +565,13 @@ impl App {
         if self.dirty {
             theme::status_dot(ui, theme::ACCENT).on_hover_text("unsaved changes");
         }
+        let hint = ui.ctx().format_shortcut(&egui::KeyboardShortcut::new(
+            egui::Modifiers::COMMAND,
+            egui::Key::S,
+        ));
         let hit = ui
             .add_enabled(self.dirty, egui::Button::new("Save"))
-            .on_hover_text("write these changes into the preset")
+            .on_hover_text(format!("write these changes into the preset ({hint})"))
             .on_disabled_hover_text("no changes to save");
         if hit.clicked() {
             self.send(Cmd::SavePreset);
@@ -591,7 +649,7 @@ impl App {
         }
     }
 
-    /// The loaded preset, click-to-rename.    /// The loaded preset, click-to-rename.
+    /// The loaded preset, click-to-rename.
     fn preset_title(&mut self, ui: &mut egui::Ui) {
         if self.preset_index < 0 {
             return;
@@ -803,8 +861,15 @@ impl App {
                             } else {
                                 RichText::new(label)
                             };
-                            if ui.selectable_label(selected, text).clicked() {
+                            let row = ui.selectable_label(selected, text);
+                            if row.clicked() {
                                 load = Some(index);
+                            }
+                            // A preset picked on the pedal itself should be in
+                            // view here too, without fighting manual scrolling.
+                            if selected && self.reveal_preset {
+                                row.scroll_to_me(Some(egui::Align::Center));
+                                self.reveal_preset = false;
                             }
                         }
                         if let Some(index) = load {
@@ -851,7 +916,8 @@ impl App {
                 ui.heading("Impulse responses");
                 ui.label(
                     RichText::new(
-                        "The device's IR library, shared by every preset. Add an IR block                          to a chain from the shelf, then point it at one of these slots.",
+                        "The device's IR library, shared by every preset. Add an IR block \
+                         to a chain, then point it at one of these slots.",
                     )
                     .small()
                     .color(theme::DIM),
@@ -891,7 +957,8 @@ impl App {
                 ui.heading("Preferences");
                 ui.label(
                     RichText::new(
-                        "The device's own global settings — the same ones HX Edit's                          preferences write. They belong to the device, not the preset.",
+                        "The device's own global settings — the same ones HX Edit's \
+                         preferences write. They belong to the device, not the preset.",
                     )
                     .small()
                     .color(theme::DIM),
@@ -993,20 +1060,30 @@ impl App {
     /// first. Read as a list it puts the split and join on the end of the
     /// chain, which is where they used to be drawn.
     ///
-    /// They are not blocks in the line either. A split is where the wiring
-    /// divides and a join is where it comes back, so they are drawn as the
-    /// lines branching and merging around the lanes — still clickable, since a
-    /// split has a mode and a join has levels, but not sitting in the signal
-    /// path pretending to be pedals.
+    /// The main line never changes height: input, output and everything the
+    /// undivided signal passes through sit on one row, and a parallel branch
+    /// hangs *below* the stretch it parallels, the way HX Edit draws it.
+    /// Splits and joins are not blocks in the line either — they are drawn as
+    /// the wiring forking and merging, still clickable for their own
+    /// parameters.
     ///
     /// The number of lanes is not fixed at two: Helix and Helix LT carry two
     /// independent signal paths, so a preset that splits both has four.
     fn signal_chain(&mut self, ctx: &egui::Context) {
-        let rows: usize = self.layout.paths.iter().map(|p| p.lanes.len().max(1)).sum();
-        let height = 34.0 + rows.max(1) as f32 * theme::LANE_HEIGHT;
+        let mut height = 40.0;
+        for path in &self.layout.paths {
+            height += theme::BLOCK_HEIGHT;
+            height += path.lanes.len().saturating_sub(1) as f32 * theme::LANE_HEIGHT;
+            if self.can_offer_branch(path) {
+                height += 4.0 + theme::GHOST_HEIGHT;
+            }
+            if self.layout.paths.len() > 1 {
+                height += 20.0;
+            }
+        }
 
         egui::TopBottomPanel::top("chain")
-            .exact_height(height.min(ctx.screen_rect().height() * 0.55))
+            .exact_height(height.clamp(126.0, ctx.screen_rect().height() * 0.55))
             .show(ctx, |ui| {
                 ui.add_space(6.0);
                 if self.chain.is_empty() {
@@ -1036,13 +1113,12 @@ impl App {
                             for (n, path) in paths.iter().enumerate() {
                                 if paths.len() > 1 {
                                     ui.label(
-                                        RichText::new(format!("Path {}", n + 1))
+                                        RichText::new(format!("PATH {}", n + 1))
                                             .small()
                                             .color(theme::DIM),
                                     );
                                 }
                                 pick = self.path_row(ui, path).or(pick);
-                                self.branch_invitation(ui, path);
                             }
                         });
                     });
@@ -1058,106 +1134,169 @@ impl App {
             });
     }
 
-    /// One signal path: input, whatever the signal passes through, output.
+    /// One signal path: the main line straight across, branches hanging below.
     ///
     /// A split divides a *stretch* of the path, not all of it — the split
     /// records the slot it attaches before, and the blocks on either side of
-    /// that stretch carry the undivided signal. Drawing every block as though
-    /// it were on a branch was wrong, and obviously so next to HX Edit.
+    /// that stretch carry the undivided signal. The first lane of the divided
+    /// stretch *is* the main line, so it stays in the row; the other branches
+    /// are drawn beneath it between the fork and the merge.
     fn path_row(&mut self, ui: &mut egui::Ui, path: &hx_proto::preset::Path) -> Option<usize> {
         let mut pick = None;
-        let lanes = path.lanes.len();
-        let tall = if lanes > 1 {
-            theme::LANE_HEIGHT * lanes as f32
-        } else {
-            theme::BLOCK_HEIGHT
-        };
+        let below = path.lanes.len().saturating_sub(1);
+        // Every lane spans the same stretch, so they are padded to the widest
+        // and the merge lands where all of them end.
+        let stretch = path
+            .lanes
+            .iter()
+            .map(|l| self.lane_width(l))
+            .fold(0.0, f32::max);
 
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            ui.add_space(6.0);
+        // Captured while the main row is drawn, to place what hangs below it:
+        // the branch rows start under the fork, and the ghost of an offered
+        // branch runs from the input's edge to the output's.
+        let mut fork_end = None;
+        let mut input_rect = None;
+        let mut output_left = None;
 
-            if let Some(input) = path.input {
-                pick = self.endpoint(ui, input, tall).or(pick);
-            }
-            // Everything ahead of the split, on the centre line. A gap before
-            // each block, so a chain can be built from either end.
-            for slot in &path.head {
-                self.insert_point_tall(ui, *slot, tall);
-                pick = self.block_at(ui, *slot, tall).or(pick);
-            }
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.add_space(6.0);
 
-            if lanes > 1 {
-                let longest = path.lanes.iter().map(|l| l.blocks.len()).max().unwrap_or(0);
-                if let Some(split) = path.split {
-                    pick = self.junction(ui, split, lanes, true).or(pick);
+                if let Some(input) = path.input {
+                    let (hit, rect) = self.endpoint(ui, input);
+                    pick = hit.or(pick);
+                    input_rect = Some(rect);
                 }
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    for lane in &path.lanes {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 0.0;
-                            pick = self.lane_row(ui, &lane.blocks, longest).or(pick);
-                        });
-                        ui.add_space(theme::LANE_HEIGHT - theme::BLOCK_HEIGHT);
+                // A gap before each block, so a chain can be built anywhere.
+                for slot in &path.head {
+                    self.insert_point(ui, *slot);
+                    pick = self.block_at(ui, *slot).or(pick);
+                }
+
+                if !path.lanes.is_empty() {
+                    if let Some(split) = path.split {
+                        let (hit, rect) = self.junction(ui, split, below, true);
+                        pick = hit.or(pick);
+                        fork_end = Some(rect.right());
                     }
-                });
-                if let Some(join) = path.join {
-                    pick = self.junction(ui, join, lanes, false).or(pick);
+                    pick = self.lane_row(ui, &path.lanes[0], stretch).or(pick);
+                    if let Some(join) = path.join {
+                        let (hit, _) = self.junction(ui, join, below, false);
+                        pick = hit.or(pick);
+                    }
                 }
+
+                // And everything the recombined signal passes through.
+                for slot in &path.tail {
+                    self.insert_point(ui, *slot);
+                    pick = self.block_at(ui, *slot).or(pick);
+                }
+                if let Some(output) = path.output {
+                    self.insert_point(ui, output);
+                    let (hit, rect) = self.endpoint(ui, output);
+                    pick = hit.or(pick);
+                    output_left = Some(rect.left());
+                }
+            });
+
+            // The branches, aligned column for column under the stretch they
+            // parallel.
+            for lane in path.lanes.iter().skip(1) {
+                ui.add_space(theme::LANE_HEIGHT - theme::BLOCK_HEIGHT);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    if let Some(x) = fork_end {
+                        let indent = x - ui.cursor().min.x;
+                        ui.add_space(indent.max(0.0));
+                    }
+                    pick = self.lane_row(ui, lane, stretch).or(pick);
+                });
             }
 
-            // And everything the recombined signal passes through.
-            for slot in &path.tail {
-                self.insert_point_tall(ui, *slot, tall);
-                pick = self.block_at(ui, *slot, tall).or(pick);
-            }
-            if let Some(output) = path.output {
-                self.insert_point_tall(ui, output, tall);
-                pick = self.endpoint(ui, output, tall).or(pick);
+            // The offer of a parallel branch, where it would actually run.
+            if self.can_offer_branch(path) {
+                if let (Some(input), Some(right)) = (input_rect, output_left) {
+                    self.ghost_branch(ui, path, input, right);
+                }
             }
         });
         pick
     }
 
-    /// A faint second row offering the parallel branch.
-    ///
-    /// Shown when the path can carry one and nothing is on it yet. A branch
-    /// block goes on the branch, so the way to add one should be a gap on the
-    /// branch — not an entry in a menu attached to the main row.
-    fn branch_invitation(&mut self, ui: &mut egui::Ui, path: &hx_proto::preset::Path) {
-        if !path.lanes.is_empty() || path.split.is_none() {
-            return;
-        }
-        let Some(at) = self.free_on_branch() else {
+    /// Whether to offer a parallel branch: the path has somewhere to put one,
+    /// something to parallel, and nothing on the branch yet.
+    fn can_offer_branch(&self, path: &hx_proto::preset::Path) -> bool {
+        path.lanes.is_empty() && !path.head.is_empty() && self.free_on_branch(path).is_some()
+    }
+
+    /// The dashed preview of the branch a click would create: it forks after
+    /// the input, runs under the whole line, and merges before the output —
+    /// which is exactly where the real one will go.
+    fn ghost_branch(
+        &mut self,
+        ui: &mut egui::Ui,
+        path: &hx_proto::preset::Path,
+        input: egui::Rect,
+        right: f32,
+    ) {
+        let Some(at) = self.free_on_branch(path) else {
             return;
         };
+        ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            ui.add_space(6.0 + theme::BLOCK_WIDTH);
-            ui.label(
-                RichText::new("parallel branch")
-                    .small()
-                    .color(theme::DIM.gamma_multiply(0.8)),
-            );
-            ui.add_space(6.0);
-            self.insert_point(ui, at);
+            let indent = input.right() - ui.cursor().min.x;
+            ui.add_space(indent.max(0.0));
+            let hit = theme::ghost_branch(ui, (right - input.right()).max(90.0), input.center().y)
+                .on_hover_text("add a block on a parallel branch");
+            if hit.clicked() {
+                self.inserting_at = Some(at);
+                self.insert_pos = Some(hit.rect.center_bottom() + egui::vec2(-260.0, 8.0));
+                self.insert_opened = Some(std::time::Instant::now());
+                self.browsing = None;
+                self.search.clear();
+            }
         });
     }
 
     /// Follow a drag along the chain, and mark where it would land.
     ///
-    /// Dragging is how people reorder a chain, and the alternative here was
-    /// selecting a block and pressing "Move later" repeatedly.
+    /// Dragging is how people reorder a chain. Within a lane the drop slides
+    /// the block in — marked by a caret at the edge it lands on — while
+    /// dropping onto the other branch trades places with what is there,
+    /// marked by outlining the whole block.
     fn track_drag(&mut self, ui: &mut egui::Ui, hit: &egui::Response, slot: usize) {
         if hit.drag_started() {
             self.dragging = Some(slot);
         }
-        let dragging_something = self.dragging.is_some_and(|from| from != slot);
-        if dragging_something && hit.contains_pointer() {
+        let Some(from) = self.dragging.filter(|from| *from != slot) else {
+            return;
+        };
+        if hit.contains_pointer() {
             self.drop_on = Some(slot);
-            theme::drop_marker(ui, hit.rect, self.dragging.is_some_and(|from| from > slot));
+            if self.same_lane(from, slot) {
+                theme::drop_marker(ui, hit.rect, from > slot);
+            } else {
+                theme::swap_marker(ui, hit.rect);
+            }
         }
+    }
+
+    /// Whether two positions sit in the same lane — the main line between the
+    /// input and the output, or the same branch of the same split.
+    fn same_lane(&self, a: usize, b: usize) -> bool {
+        self.layout.paths.iter().any(|p| {
+            let main = p.input.map_or(0, |i| i + 1)..p.output.unwrap_or(usize::MAX);
+            if main.contains(&a) && main.contains(&b) {
+                return true;
+            }
+            let Some(split) = p.split else { return false };
+            let branch = split + 1..p.join.unwrap_or(usize::MAX);
+            branch.contains(&a) && branch.contains(&b)
+        })
     }
 
     /// Finish a drag: move the block if it was dropped on another.
@@ -1176,22 +1315,13 @@ impl App {
 
     /// A gap you can add a block to, at `before`.
     ///
-    /// Clicking it arms the shelf: the next model chosen there is inserted
-    /// here rather than replacing the selected block. Adding a pedal used to
-    /// mean finding an empty slot and changing its model, which required
-    /// knowing the slot topology — this puts the action where the pedal goes.
+    /// One click opens the picker at the gap, and the model chosen there goes
+    /// in here. Adding a pedal used to mean finding an empty slot and changing
+    /// its model, which required knowing the slot topology — this puts the
+    /// action where the pedal goes.
     fn insert_point(&mut self, ui: &mut egui::Ui, before: usize) {
-        self.insert_point_tall(ui, before, theme::BLOCK_HEIGHT);
-    }
-
-    /// As `insert_point`, on a row that spans more than one lane.
-    ///
-    /// One click opens the picker at the gap. There was a menu here offering
-    /// "Block…" and "Block on the parallel branch…"; the first was what you
-    /// always wanted and the second is better served by a gap on the branch
-    /// itself, which is where a branch block goes.
-    fn insert_point_tall(&mut self, ui: &mut egui::Ui, before: usize, tall: f32) {
-        let response = theme::insert_point(ui, tall).on_hover_text("add a block here");
+        let response =
+            theme::insert_point(ui, theme::BLOCK_HEIGHT).on_hover_text("add a block here");
         if response.clicked() {
             self.inserting_at = Some(before);
             // Anchored under the gap, so the choosing happens where the
@@ -1203,120 +1333,123 @@ impl App {
         }
     }
 
-    /// The first free slot on the lower branch, if the path can carry one.
-    fn free_on_branch(&self) -> Option<usize> {
-        let path = self.layout.paths.first()?;
+    /// The first free slot on a path's branch, if it can carry one.
+    fn free_on_branch(&self, path: &hx_proto::preset::Path) -> Option<usize> {
         let split = path.split?;
         let join = path.join.unwrap_or(usize::MAX);
         // A slot between the split and the join that nothing occupies.
         (split + 1..join).find(|p| !self.chain.iter().any(|b| b.position == *p as i64))
     }
 
-    /// One block on the centre line, vertically centred against `tall`.
-    fn block_at(&mut self, ui: &mut egui::Ui, slot: usize, tall: f32) -> Option<usize> {
+    /// One block in the line.
+    fn block_at(&mut self, ui: &mut egui::Ui, slot: usize) -> Option<usize> {
         let i = self.index_of(slot)?;
         let block = self.chain[i].clone();
         let art = self.artwork(&block);
         let colour = self.block_colour(&block);
-        let mut pick = None;
-        ui.allocate_ui(egui::vec2(theme::BLOCK_WIDTH, tall), |ui| {
-            ui.vertical(|ui| {
-                ui.add_space((tall - theme::BLOCK_HEIGHT) / 2.0);
-                let hit = theme::block_button_tinted(
-                    ui,
-                    &self.slot_label(&block),
-                    art.as_ref(),
-                    i == self.selected,
-                    block.enabled,
-                    colour,
-                );
-                if hit.clicked() {
-                    pick = Some(i);
-                }
-                self.track_drag(ui, &hit, slot);
-            });
-        });
+        let hit = theme::block_button_tinted(
+            ui,
+            &self.slot_label(&block),
+            art.as_ref(),
+            i == self.selected,
+            block.enabled,
+            colour,
+        );
+        let pick = hit.clicked().then_some(i);
+        self.track_drag(ui, &hit, slot);
         pick
     }
 
-    /// One lane's blocks, padded out to `longest` so lanes stay in step.
-    fn lane_row(&mut self, ui: &mut egui::Ui, blocks: &[usize], longest: usize) -> Option<usize> {
+    /// One lane of the divided stretch: a gap before every block, one after
+    /// the last while the lane has room, and plain wire out to the merge so
+    /// every lane ends where the branches meet.
+    fn lane_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        lane: &hx_proto::preset::Lane,
+        stretch: f32,
+    ) -> Option<usize> {
         let mut pick = None;
-        for (n, slot) in blocks.iter().enumerate() {
-            let Some(i) = self.index_of(*slot) else {
-                continue;
+        let mut used = 0.0;
+        if lane.blocks.is_empty() && !lane.span.is_empty() {
+            // An empty stretch is a plain wire, but it still takes a block.
+            self.insert_point(ui, lane.span.start);
+            used += theme::WIRE_WIDTH;
+        }
+        for slot in &lane.blocks {
+            self.insert_point(ui, *slot);
+            pick = self.block_at(ui, *slot).or(pick);
+            used += theme::COLUMN;
+        }
+        if let Some(last) = lane.blocks.last() {
+            if lane.blocks.len() < lane.span.len() {
+                self.insert_point(ui, *last + 1);
+                used += theme::WIRE_WIDTH;
+            }
+        }
+        if stretch > used {
+            theme::wire_run(ui, stretch - used, theme::BLOCK_HEIGHT);
+        }
+        pick
+    }
+
+    /// How much room a lane's blocks and gaps ask for; see [`Self::lane_row`].
+    fn lane_width(&self, lane: &hx_proto::preset::Lane) -> f32 {
+        if lane.blocks.is_empty() {
+            return if lane.span.is_empty() {
+                0.0
+            } else {
+                theme::WIRE_WIDTH
             };
-            let block = self.chain[i].clone();
-            let art = self.artwork(&block);
-            let colour = self.block_colour(&block);
-            let hit = theme::block_button_tinted(
-                ui,
-                &self.slot_label(&block),
-                art.as_ref(),
-                i == self.selected,
-                block.enabled,
-                colour,
-            );
-            if hit.clicked() {
-                pick = Some(i);
-            }
-            self.track_drag(ui, &hit, *slot);
-            if n + 1 < blocks.len() {
-                self.insert_point(ui, *slot + 1);
-            }
         }
-        // A short lane runs on as plain wire to where the merge happens.
-        let short = longest.saturating_sub(blocks.len()) as f32;
-        if short > 0.0 {
-            theme::wire_run(ui, short * theme::COLUMN, theme::BLOCK_HEIGHT);
+        let mut width = lane.blocks.len() as f32 * theme::COLUMN;
+        if lane.blocks.len() < lane.span.len() {
+            width += theme::WIRE_WIDTH;
         }
-        pick
+        width
     }
 
-    /// An input or output, standing alongside the lanes rather than in one.
-    fn endpoint(&mut self, ui: &mut egui::Ui, slot: usize, tall: f32) -> Option<usize> {
-        let i = self.index_of(slot)?;
+    /// An input or output tile. Not draggable: the endpoints are fixtures of
+    /// the topology, not blocks to reorder.
+    fn endpoint(&mut self, ui: &mut egui::Ui, slot: usize) -> (Option<usize>, egui::Rect) {
+        let Some(i) = self.index_of(slot) else {
+            return (None, ui.cursor());
+        };
         let block = self.chain[i].clone();
         let art = self.artwork(&block);
         let colour = self.block_colour(&block);
-        let mut pick = None;
-        ui.allocate_ui(egui::vec2(theme::BLOCK_WIDTH, tall), |ui| {
-            // Centred by hand. `centered_and_justified` stretches the widget to
-            // fill instead, which made the endpoints twice the height of every
-            // other tile.
-            ui.vertical(|ui| {
-                ui.add_space((tall - theme::BLOCK_HEIGHT) / 2.0);
-                let hit = theme::block_button_tinted(
-                    ui,
-                    &self.slot_label(&block),
-                    art.as_ref(),
-                    i == self.selected,
-                    block.enabled,
-                    colour,
-                );
-                if hit.clicked() {
-                    pick = Some(i);
-                }
-                self.track_drag(ui, &hit, slot);
-            });
-        });
-        pick
+        let hit = theme::block_button_tinted(
+            ui,
+            &self.slot_label(&block),
+            art.as_ref(),
+            i == self.selected,
+            block.enabled,
+            colour,
+        );
+        (hit.clicked().then_some(i), hit.rect)
     }
 
-    /// The branch or merge itself, drawn as wiring and clickable for its own
+    /// The fork or merge itself, drawn as wiring and clickable for its own
     /// parameters — a split's mode, a join's levels and pans.
     fn junction(
         &self,
         ui: &mut egui::Ui,
         slot: usize,
-        lanes: usize,
+        below: usize,
         opening: bool,
-    ) -> Option<usize> {
-        let i = self.index_of(slot)?;
-        let selected = i == self.selected;
-        let hit = theme::junction(ui, lanes, opening, selected)
-            .on_hover_text(self.slot_label(&self.chain[i]));
-        hit.clicked().then_some(i)
+    ) -> (Option<usize>, egui::Rect) {
+        let Some(i) = self.index_of(slot) else {
+            return (None, ui.cursor());
+        };
+        let block = &self.chain[i];
+        let what = if opening {
+            "the signal forks here — click for how it divides"
+        } else {
+            "the branches come back together — click for levels"
+        };
+        let hit = theme::junction(ui, below, opening, i == self.selected)
+            .on_hover_text(format!("{}\n{what}", self.slot_label(block)));
+        (hit.clicked().then_some(i), hit.rect)
     }
 
     fn index_of(&self, slot: usize) -> Option<usize> {
@@ -1417,25 +1550,6 @@ impl App {
                     enabled: on,
                 });
                 self.chain[self.selected].enabled = on;
-            }
-            if ui
-                .add_enabled(self.selected > 0, egui::Button::new("Move earlier"))
-                .clicked()
-            {
-                self.edit(Cmd::MoveBlock {
-                    from: block.position as usize,
-                    to: self.chain[self.selected - 1].position as usize,
-                });
-            }
-            let last = self.chain.len().saturating_sub(1);
-            if ui
-                .add_enabled(self.selected < last, egui::Button::new("Move later"))
-                .clicked()
-            {
-                self.edit(Cmd::MoveBlock {
-                    from: block.position as usize,
-                    to: self.chain[self.selected + 1].position as usize,
-                });
             }
             if ui.button("Copy").on_hover_text("copy this block").clicked() {
                 self.copied_block = Some(block.position as usize);
@@ -1552,8 +1666,15 @@ impl App {
     }
 
     /// The colour HX Edit gives this block's category.
+    ///
+    /// Effects only. An endpoint reports model 0, which is a real amp in the
+    /// symbol table, so resolving it painted the input and output in the amp
+    /// category's red.
     fn block_colour(&self, block: &session::Block) -> egui::Color32 {
         let fallback = theme::DIM;
+        if block.kind != hx_proto::preset::Kind::Block || block.model == 0 {
+            return fallback;
+        }
         let Some(catalog) = self.catalog.as_ref() else {
             return fallback;
         };
@@ -1758,10 +1879,10 @@ impl App {
         chosen.filter(|to| *to != current)
     }
 
-    /// Draw one model's controls.    /// Draw one model's controls. Used for both halves of an Amp+Cab block, so
-    /// the model number is passed in rather than read off the block.
     /// The selected block drawn as a pedal: its artwork, then its controls as
     /// knobs beneath, the way Logic's Pedalboard and the hardware itself do.
+    /// Used for both halves of an Amp+Cab block, so the model is passed in
+    /// rather than read off the block.
     fn pedal(
         &mut self,
         ui: &mut egui::Ui,
@@ -2055,6 +2176,7 @@ mod tests {
                 tempo: Some(120.0),
                 snapshots: vec!["SNAPSHOT 1".into()],
                 layout: hx_proto::preset::Layout::default(),
+                dirty: false,
                 chain: vec![session::Block {
                     position: 1,
                     routing: None,
@@ -2101,6 +2223,35 @@ mod tests {
 
         assert!(app.log.len() <= 300, "log grew to {}", app.log.len());
         assert_eq!(app.log.last().unwrap(), "event 399");
+    }
+
+    /// A reload that follows an edit must keep Save available: the worker says
+    /// whether the buffer is dirty, and the app takes its word rather than
+    /// assuming a load means a fresh preset.
+    #[test]
+    fn a_reload_after_an_edit_keeps_the_unsaved_changes_flag() {
+        let (mut app, events, _cmds) = app();
+        let loaded = |dirty| Evt::Loaded {
+            index: 7,
+            name: "CT-Sad".into(),
+            firmware: "3.80".into(),
+            tempo: None,
+            snapshots: vec![],
+            layout: hx_proto::preset::Layout::default(),
+            chain: vec![],
+            dirty,
+        };
+
+        events.send(loaded(true)).unwrap();
+        app.drain_events();
+        assert!(
+            app.dirty,
+            "an edit-triggered reload still has changes to save"
+        );
+
+        events.send(loaded(false)).unwrap();
+        app.drain_events();
+        assert!(!app.dirty, "a fresh load has nothing to save");
     }
 
     #[test]

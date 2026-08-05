@@ -274,9 +274,14 @@ impl Preset {
 
     /// Exchange two slots, moving a block along the chain.
     ///
-    /// Returns false if either position does not exist, rather than producing
-    /// a document the device would reject.
+    /// Returns false if either position does not exist — or is not a position
+    /// blocks live in. The input, output, split and join are fixtures of the
+    /// topology: swapping a pedal into one produces a document the device
+    /// cannot make sense of.
     pub fn swap_slots(&mut self, a: usize, b: usize) -> bool {
+        if !self.holds_blocks(a) || !self.holds_blocks(b) {
+            return false;
+        }
         let Some(Value::Array(slots)) = self.tone.at_mut(&[key::PATH, key::SLOTS]) else {
             return false;
         };
@@ -285,6 +290,76 @@ impl Preset {
         }
         slots.swap(a, b);
         self.slots.swap(a, b);
+        true
+    }
+
+    /// Whether a position is one blocks live in, as opposed to a fixture of
+    /// the topology.
+    fn holds_blocks(&self, position: usize) -> bool {
+        matches!(
+            self.slots.get(position).map(|s| s.kind),
+            Some(Kind::Block) | Some(Kind::Empty)
+        )
+    }
+
+    /// Move a block to another position the way a hand would: within a lane
+    /// the blocks in between shift along to make room, and across lanes the
+    /// two slots trade places.
+    ///
+    /// The distinction matters because a lane is contiguous in the slot array
+    /// while the other branch of a split is not: shifting across the boundary
+    /// would rotate the output and the split themselves into the line.
+    pub fn move_slot(&mut self, from: usize, to: usize) -> bool {
+        if from == to || !self.holds_blocks(from) || !self.holds_blocks(to) {
+            return false;
+        }
+        let same_lane = match (self.lane_bounds(from), self.lane_bounds(to)) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        };
+        if !same_lane {
+            return self.swap_slots(from, to);
+        }
+        let Some(Value::Array(items)) = self.tone.at_mut(&[key::PATH, key::SLOTS]) else {
+            return false;
+        };
+        if from >= items.len() || to >= items.len() {
+            return false;
+        }
+        if from < to {
+            items[from..=to].rotate_left(1);
+            self.slots[from..=to].rotate_left(1);
+        } else {
+            items[to..=from].rotate_right(1);
+            self.slots[to..=from].rotate_right(1);
+        }
+        true
+    }
+
+    /// Re-attach a split or join: the fork or merge moves to sit just before
+    /// `before` in the main line.
+    ///
+    /// Written at the width the field arrived at, for the same reason as
+    /// [`set_routing`](Self::set_routing): the preset carries a table of byte
+    /// offsets into itself, and a narrower integer shifts everything after it.
+    pub fn set_attach(&mut self, position: usize, before: usize) -> bool {
+        let body_key = match self.slots.get(position).map(|s| s.kind) {
+            Some(Kind::Split) => key::SPLIT_BODY,
+            Some(Kind::Join) => key::JOIN_BODY,
+            _ => return false,
+        };
+        let Some(field) = self
+            .slot_body_mut(position)
+            .and_then(|b| b.get_mut(body_key))
+            .and_then(|b| b.get_mut(key::ATTACH))
+        else {
+            return false;
+        };
+        *field = match field {
+            Value::Wide(_, w) => Value::Wide(before as u64, *w),
+            Value::WideInt(_, w) => Value::WideInt(before as i64, *w),
+            _ => Value::Int(before as i64),
+        };
         true
     }
 
@@ -898,6 +973,60 @@ mod tests {
         assert!(!preset.swap_slots(0, 99));
     }
 
+    /// The endpoints and junctions are fixtures of the topology. Swapping a
+    /// pedal into one — which the GUI's drag could once ask for — produced a
+    /// document with an amp where the input should be.
+    #[test]
+    fn a_block_cannot_trade_places_with_a_fixture() {
+        let mut preset = shaped(&[IN, BLOCK, OUT, SPLIT, BLOCK, JOIN]);
+        assert!(!preset.swap_slots(1, 0), "not with the input");
+        assert!(!preset.swap_slots(1, 2), "not with the output");
+        assert!(!preset.swap_slots(1, 3), "not with the split");
+        assert!(!preset.move_slot(1, 5), "not with the join");
+        assert_eq!(preset.slots[0].kind, Kind::Input, "nothing moved");
+    }
+
+    /// Within a lane a move shifts the blocks in between along, the way HX
+    /// Edit reorders — a swap would trade two pedals when the hand asked to
+    /// slide one.
+    #[test]
+    fn moving_within_a_lane_shifts_the_blocks_between() {
+        let mut preset = shaped(&[IN, BLOCK, EMPTY, BLOCK, OUT]);
+        assert!(preset.move_slot(1, 3));
+        assert_eq!(preset.slots[1].kind, Kind::Empty, "the hole shifted back");
+        assert_eq!(preset.slots[2].kind, Kind::Block);
+        assert_eq!(preset.slots[3].kind, Kind::Block);
+        // The document agrees with the in-memory view after a round trip.
+        let again = Preset::parse(&preset.encode()).unwrap();
+        assert_eq!(again.slots, preset.slots);
+    }
+
+    /// Across lanes the slot array is not contiguous — the other branch lives
+    /// past the output and the split — so a move is a trade of positions.
+    #[test]
+    fn moving_across_lanes_trades_positions() {
+        let mut preset = shaped_at(&[IN, BLOCK, OUT, SPLIT, EMPTY, JOIN], 1, 2);
+        assert!(preset.move_slot(1, 4));
+        assert_eq!(preset.slots[1].kind, Kind::Empty);
+        assert_eq!(preset.slots[4].kind, Kind::Block);
+        assert_eq!(preset.slots[2].kind, Kind::Output, "the output stayed put");
+    }
+
+    /// Re-attaching the split moves the fork, and the layout reads it back.
+    #[test]
+    fn a_split_can_be_reattached() {
+        let mut preset = shaped_at(&[IN, BLOCK, BLOCK, BLOCK, OUT, SPLIT, BLOCK, JOIN], 2, 4);
+        assert!(preset.set_attach(5, 1), "the split accepts a new attach");
+        assert!(preset.set_attach(7, 3), "so does the join");
+        assert!(!preset.set_attach(1, 2), "a block does not");
+
+        let layout = Preset::parse(&preset.encode()).unwrap().layout();
+        let path = &layout.paths[0];
+        assert_eq!(path.head, Vec::<usize>::new());
+        assert_eq!(path.lanes[0].blocks, vec![1, 2], "the fork moved to slot 1");
+        assert_eq!(path.tail, vec![3], "the merge moved to slot 3");
+    }
+
     #[test]
     fn tempo_can_be_changed_and_survives_a_round_trip() {
         let mut preset = Preset::parse(&sample()).unwrap();
@@ -992,6 +1121,7 @@ mod tests {
     const SPLIT: i64 = 2;
     const JOIN: i64 = 3;
     const BLOCK: i64 = 6;
+    const EMPTY: i64 = 8;
 
     /// A split divides a *stretch* of the path, not the whole of it: blocks
     /// before it and after the join carry the undivided signal. Getting this
