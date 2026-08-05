@@ -137,11 +137,18 @@ Two things that look like fixes and are not:
   16-bit counter plus the `0x1000` base would overflow, but masking changed
   nothing and sessions still failed with as little as 21 KB received.
 
-**Still open:** sustained preset-document writes stop being accepted somewhere
-between the eighth and the fifteenth, varying with what else the session has
-done. It is not the received-byte total and not the sequence number; both were
-instrumented and neither predicts it. Ordinary editing does not reach it, and
-`crates/hx-usb/tests/device.rs` asserts the range that does work. **[open]**
+**Resolved: deferred operations must be paced on notification 20.
+[confirmed]** The sustained-write failure was the last piece of this story. A
+deferred operation (select preset, write preset, IR upload) answers status 1 —
+accepted — and announces actual completion later as notification 20 carrying
+the same transaction id. HX Edit will not start the next such operation until
+that notification arrives: fourteen consecutive captured undo writes all follow
+the pattern, each taking ~300 ms reply-to-notification. A client that treats
+the status-1 reply as completion races its next write against the device's
+still-running commit; the device tolerates roughly a dozen racing commits and
+then stops accepting writes. With the wait in place, twenty back-to-back
+document writes complete and the device stays healthy —
+`crates/hx-usb/tests/device.rs` holds the regression test.
 
 Three further things make it more likely, all learned the hard way:
 
@@ -169,8 +176,17 @@ instead of its own handshake reply. Draining until reads genuinely come up empty
 distinguishes the two — a real backlog clears (about 100 frames here), a wedged
 device does not.
 
-What would prevent all of this is a proper session teardown, which we have not
-identified — HX Edit sends nothing recognisable as one on quit. **[open]**
+**The teardown exists, and is a HELLO. [confirmed]** A clean quit, captured
+with the interposer, shows HX Edit acknowledging anything outstanding, sending
+a bare type-0x02 frame on each of the three channels, collecting the device's
+answering 0x02s, and releasing the interface. The 0x02 message is a session
+*boundary*, not just an opening handshake — it appears at both ends of the
+conversation, and the closing form is just the 8-byte channel header with the
+current sequence and acknowledgement. An earlier version of this section
+claimed HX Edit sent nothing recognisable on quit; that conclusion came from
+`captures/04-quit.log`, which on re-reading records HX Edit failing against an
+already-wedged device — repeating stale ACKs answering every HELLO — not a
+quit. This client now performs the same teardown when a session drops.
 
 ## Layer 1 — USB framing [confirmed]
 
@@ -258,7 +274,9 @@ Two real exchanges from our capture:
 | 78 | highlight slot | — |
 
 Opcodes 0, 13, 23, 76, 99, 112 and 254 are observed during session setup but
-their meaning is **[open]**. Opcodes 6, 25, 59, 61, 68 and 78 come from the
+their meaning needs hardware that exposes them — the Command Center opcodes
+are inert on an HX Stomp, so a Helix Floor or LT is the prerequisite, and they
+stay **[open]** until one is on the bench. Opcodes 6, 25, 59, 61, 68 and 78 come from the
 `kempline/helix_usb` project rather than our own captures. **[inferred]**
 
 Common argument keys: `107` setlist, `108` preset index, `109` name, `118` object
@@ -360,7 +378,13 @@ the device accepts it and then reads the preset as empty.
 The cause here was that our MessagePack encoder normalised widths: a
 value the device wrote as `0xcc 05` comes back out as `0x05`. Nothing in the
 protocol objects, but the preset carries a **section offset table** (the second
-of its three top-level values) holding byte offsets into the document. Change
+of its three top-level values) holding byte offsets into the document — twelve
+little-endian u32s: the offset of the tone map, the offsets of top-level keys
+0, 1, 3, 4, 2, 5, 6, 7 and 10 in that fixed slot order (each pointing at the
+key byte), then the total length twice. Decoded by matching candidate offsets
+against the byte positions of the tone's sections in two captured presets, and
+pinned by a test that recomputes the fixture's table byte for byte
+(`Preset::computed_sections`). Change
 any field's width and every offset after it is wrong, which is exactly the shape
 of "device accepts it, preset reads back empty".
 
@@ -519,10 +543,19 @@ appeared as parameters:
 | `20.9` | effect slots | the model's engine class — see below **[confirmed]** |
 
 `Input From` and `Output To` are the first control HX Edit shows on Input and
-Main L/R. They can be read, but the device **does not apply a change to them
-from a preset-document write** — it accepts the document, keeps everything else,
-and leaves the routing as it was. No opcode for them has been found, so the
-editor shows them read-only. **[open]**
+Main L/R. The device **does not apply a change to them from a preset-document
+write** — it accepts the document, keeps everything else, and leaves the
+routing as it was. They are changed with their own opcode, captured from HX
+Edit's routing clicks:
+
+**Opcode 42 `{98: slot, 51: destination}` routes an endpoint. [confirmed]**
+Answered synchronously with status 0, echoed as notification 27 carrying the
+same arguments, and reflected in the document's key `20.5`/`20.6` on the next
+read. One caveat: the destination values are per device model. On an HX Stomp,
+HX Edit's three input choices send 1 (Main L/R), 4 (Return L/R) — values that
+do not line up with the generic `input_type` menu in `HelixControls.json`
+(where 4 is Variax), so the names shown for routing values on a Stomp are
+approximate until its own enumeration is mapped. **[partly open]**
 
 Key `20.9` was pinned down by setting one model per category into the same slot
 and reading it back:

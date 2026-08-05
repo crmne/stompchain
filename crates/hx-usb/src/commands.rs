@@ -237,10 +237,29 @@ impl Session {
     /// Untested against hardware: our captures only ever show the device's own
     /// documents being written back, never a modified one.
     pub fn write_preset(&mut self, preset: &Preset) -> Result<()> {
-        self.command(
+        // Deferred: the device accepts the document and then commits it. The
+        // next operation must wait for the completion notification, or the
+        // commits pile up and the device eventually stops taking writes.
+        self.command_deferred(
             ChannelId::DATA,
             rpc::op::WRITE_PRESET,
             hx_proto::msgmap! { rpc::key::DOCUMENT => Value::Bin(preset.encode(), 2) },
+        )
+    }
+
+    /// Point an input or output somewhere else — opcode 42, `{98: slot, 51:
+    /// destination}`. The destination indexes the same menu the preset stores
+    /// under the slot's routing key; changing it through a document write is
+    /// ignored, and this opcode, captured from HX Edit's own routing clicks,
+    /// is the way that works.
+    pub fn set_routing(&mut self, block: i64, to: i64) -> Result<()> {
+        self.command(
+            ChannelId::DATA,
+            rpc::op::SET_ROUTING,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::ROUTING => Value::Int(to),
+            },
         )
     }
 

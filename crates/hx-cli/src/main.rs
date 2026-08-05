@@ -68,6 +68,11 @@ enum Cmd {
     Tempo { bpm: f32 },
     /// Rename a snapshot (1-based).
     SnapshotName { number: usize, name: String },
+    /// Route an input or output, by slot position and destination name.
+    ///
+    /// `stompchain route 0 "Return L/R"` — see `stompchain chain` for slots,
+    /// and pass a partial name; it is matched against the device's own menu.
+    Route { block: i64, to: String },
     /// Print the signal path as the device is wired: one row per lane.
     Topology,
     /// List setlists.
@@ -212,6 +217,7 @@ fn on_device(cmd: Cmd) -> Result<()> {
             println!("tempo {bpm:.1} BPM");
             Ok(())
         }
+        Cmd::Route { block, to } => route(s, block, &to),
         Cmd::SnapshotName { number, name } => {
             s.rename_snapshot(number - 1, &name)?;
             println!("snapshot {number} renamed to {name}");
@@ -519,6 +525,44 @@ fn watch(session: &mut hx_usb::Session) -> Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(700));
         session.keepalive()?;
     }
+}
+
+/// Route an endpoint, resolving the destination through the catalog's menu.
+fn route(session: &mut hx_usb::Session, block: i64, to: &str) -> Result<()> {
+    let preset = session.read_preset()?;
+    let slot = preset
+        .slots
+        .get(block as usize)
+        .with_context(|| format!("no slot {block}"))?;
+    let param_id = match slot.kind {
+        hx_proto::preset::Kind::Input => "@input",
+        hx_proto::preset::Kind::Output => "@output",
+        other => bail!("slot {block} is {other:?}; only inputs and outputs are routed"),
+    };
+
+    let catalog =
+        hx_catalog::Catalog::load().context("routing destinations come from HX Edit's catalog")?;
+    let model_id = match slot.kind {
+        hx_proto::preset::Kind::Input => "HelixStomp_AppDSPFlowInput",
+        _ => "HelixStomp_AppDSPFlowOutputMain",
+    };
+    let model = catalog.model(model_id).context("endpoint model")?;
+    let param = model
+        .params
+        .iter()
+        .find(|p| p.id == param_id)
+        .context("routing parameter")?;
+    let choices = catalog.choices(param).context("routing menu")?;
+
+    let needle = to.to_lowercase();
+    let index = choices
+        .iter()
+        .position(|c| c.to_lowercase().contains(&needle))
+        .with_context(|| format!("{to:?} is not one of: {}", choices.join(", ")))?;
+
+    session.set_routing(block, index as i64)?;
+    println!("slot {block} routed to {}", choices[index]);
+    Ok(())
 }
 
 /// Resolve a parameter by name or index, then send the new value.

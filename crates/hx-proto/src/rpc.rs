@@ -59,6 +59,8 @@ pub mod key {
     pub const SNAPSHOT: i64 = 92;
 
     /// MIDI CC number on a controller assignment.
+    /// Routing destination on opcode 42.
+    pub const ROUTING: i64 = 51;
     pub const CC: i64 = 71;
     /// What is being controlled. 5 is a block's bypass.
     pub const ASSIGN_TARGET: i64 = 95;
@@ -96,6 +98,8 @@ pub mod op {
     pub const SET_PARAM: i64 = 30;
     /// `{98: block, 59: enabled}`
     pub const SET_ENABLED: i64 = 41;
+    /// Route an endpoint: `{98: slot, 51: destination}`.
+    pub const SET_ROUTING: i64 = 42;
     /// `{107: setlist, 108: preset index, 109: name}`
     pub const RENAME_PRESET: i64 = 6;
     /// Setlist names. Control channel.

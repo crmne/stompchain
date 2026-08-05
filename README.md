@@ -41,12 +41,11 @@ Two things often assumed missing are not HX Edit features on an HX Stomp: the
 tuner lives on the hardware, and Command Center is inert on a three-switch
 device.
 
-Known limits: the routing selectors on Input and Output (`Input From` /
-`Output To`) are shown but read-only — the device ignores changes to them from
-a document write and no opcode for them has been found. Sustained back-to-back
-preset-document writes degrade past about a dozen; ordinary editing never gets
-near that. Both are documented in [PROTOCOL.md](PROTOCOL.md), each with a
-hardware test that will flag the day either changes.
+Routing the Input and Output (`Input From` / `Output To`) works from both the
+GUI and `stompchain route`, using the opcode captured from HX Edit's own
+routing clicks — a preset-document write is silently ignored for that one
+field, which cost this project its longest-standing open question. The story,
+and the rest of the protocol's answers, are in [PROTOCOL.md](PROTOCOL.md).
 
 ## Installing
 

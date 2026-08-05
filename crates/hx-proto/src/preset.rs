@@ -14,8 +14,9 @@ use crate::msgpack::{Decoder, Encoder, Value};
 
 /// A parsed preset.
 pub struct Preset {
-    /// Section offset table. Not yet understood, kept so a preset can be
-    /// written back unchanged.
+    /// Section offset table: a directory of the tone's top-level sections,
+    /// decoded in [`computed_sections`](Self::computed_sections). Carried
+    /// through verbatim on encode, because byte-exact is byte-exact.
     pub sections: Vec<u8>,
     /// Header width the section table arrived with, so it goes back unchanged.
     sections_width: u8,
@@ -459,6 +460,60 @@ impl Preset {
         }
     }
 
+    /// Recompute the section-offset table from this preset's own encoding.
+    ///
+    /// The table is a directory of the tone's top-level sections: the offset
+    /// of the tone map itself, then the offsets of keys 0, 1, 3, 4, 2, 5, 6,
+    /// 7 and 10 in that fixed slot order — each pointing at the key byte —
+    /// then the blob's total length twice: twelve little-endian u32s.
+    /// Confirmed against two captured presets, and by the test that rebuilds
+    /// the fixture's table byte for byte.
+    ///
+    /// [`encode`](Self::encode) still carries the stored table through
+    /// unchanged — this exists to *verify* an encoding, and to make building a
+    /// document from scratch possible at all.
+    pub fn computed_sections(&self) -> Option<Vec<u8>> {
+        const SLOT_ORDER: [i64; 9] = [0, 1, 3, 4, 2, 5, 6, 7, 10];
+
+        // The prefix the tone will sit behind: magic, then the table itself,
+        // whose length is fixed at 9 + 1 + tail entries.
+        let magic = Encoder::encode(&Value::Str(Self::MAGIC.to_owned()));
+        let table_len = (1 + SLOT_ORDER.len() + 2) * 4;
+        let table_hdr =
+            Encoder::encode(&Value::Bin(vec![0; table_len], self.sections_width)).len() - table_len;
+        let tone_at = magic.len() + table_hdr + table_len;
+
+        let tone = Encoder::encode(&self.tone);
+        let total = tone_at + tone.len();
+
+        // Walk the tone's top-level map recording where each key begins.
+        let mut key_at = std::collections::HashMap::new();
+        let count = match tone.first()? {
+            b @ 0x80..=0x8f => (b & 0x0f) as usize,
+            _ => return None,
+        };
+        let mut at = 1usize;
+        for _ in 0..count {
+            let here = at;
+            let mut d = Decoder::new(&tone[at..]);
+            let key = d.value().ok()?.as_i64()?;
+            let after_key = tone.len() - at - d.remaining() + at;
+            let mut dv = Decoder::new(&tone[after_key..]);
+            dv.value().ok()?;
+            at = tone.len() - dv.remaining();
+            key_at.insert(key, tone_at + here);
+        }
+
+        let mut out = Vec::with_capacity(table_len);
+        out.extend_from_slice(&(tone_at as u32).to_le_bytes());
+        for key in SLOT_ORDER {
+            out.extend_from_slice(&(*key_at.get(&key)? as u32).to_le_bytes());
+        }
+        out.extend_from_slice(&(total as u32).to_le_bytes());
+        out.extend_from_slice(&(total as u32).to_le_bytes());
+        Some(out)
+    }
+
     /// Slots holding an actual effect, with their position in the chain.
     pub fn blocks(&self) -> impl Iterator<Item = (usize, &Slot)> {
         self.slots
@@ -822,6 +877,18 @@ mod tests {
         // offsets it carries stay valid.
         let before = Preset::parse(FIXTURE).unwrap().encode().len();
         assert_eq!(preset.encode().len(), before);
+    }
+
+    /// The section table is not opaque: it can be rebuilt from the document
+    /// itself and must come out byte-identical to what the device sent.
+    #[test]
+    fn the_section_table_can_be_recomputed() {
+        let preset = Preset::parse(FIXTURE).unwrap();
+        assert_eq!(
+            preset.computed_sections().expect("computable"),
+            preset.sections,
+            "the recomputed section table does not match the device's own"
+        );
     }
 
     #[test]

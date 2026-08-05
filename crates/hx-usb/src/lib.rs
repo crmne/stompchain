@@ -478,6 +478,54 @@ impl Session {
         Ok(())
     }
 
+    /// Send a deferred request and wait for the device to finish it.
+    ///
+    /// Select-preset, write-preset and IR upload answer status 1 — accepted —
+    /// and complete afterwards, announcing the completion as notification 20
+    /// carrying the same transaction. HX Edit will not start the next such
+    /// operation until that notification arrives; fourteen consecutive undo
+    /// writes captured from it all follow the pattern. Not waiting is what our
+    /// sustained document writes did, and the device tolerates roughly a dozen
+    /// racing commits before its transfer state machine jams for good.
+    fn command_deferred(&mut self, id: ChannelId, opcode: i64, args: Value) -> Result<()> {
+        let (txn, status, _) = self.request_raw(id, opcode, args)?;
+        if status != 1 {
+            return Ok(()); // completed synchronously
+        }
+        let deadline = Instant::now() + Self::COMPLETION_BUDGET;
+        while Instant::now() < deadline {
+            let before = self.rx_bytes(id);
+            let _ = self.read_once(Self::REPLY_READ);
+            let got = self.rx_bytes(id) > before;
+            let done = self
+                .channels
+                .get_mut(&ChannelId::EVENTS.device)
+                .map(|ch| ch.reader.take_messages())
+                .unwrap_or_default()
+                .into_iter()
+                .any(|sm| match Message::from_value(sm.body) {
+                    Message::Notification { event: 20, args } => {
+                        args.get(rpc::key::TXN).and_then(Value::as_i64) == Some(txn)
+                    }
+                    _ => false,
+                });
+            if done {
+                return Ok(());
+            }
+            if got {
+                self.ack_channel(id)?;
+            }
+            self.ack_idle_channels(id)?;
+        }
+        Err(Error::Protocol(format!(
+            "the device accepted transaction {txn} but never announced completion"
+        )))
+    }
+
+    /// How long a deferred operation may take to announce completion. A single
+    /// captured undo commit takes ~300 ms; flash writes take seconds.
+    const COMPLETION_BUDGET: Duration = Duration::from_secs(15);
+
     /// Send a request whose reply carries nothing worth returning.
     ///
     /// Most device operations are like this, and spelling out `?;` then
@@ -500,15 +548,25 @@ impl Session {
     ///
     /// Exists for protocol experiments; ordinary callers use `request`, which
     /// deliberately does not judge statuses (see the comment inside).
-    pub fn request_full(&mut self, id: ChannelId, opcode: i64, args: Value) -> Result<(i64, Value)> {
-        self.request_inner(id, opcode, args)
+    pub fn request_full(
+        &mut self,
+        id: ChannelId,
+        opcode: i64,
+        args: Value,
+    ) -> Result<(i64, Value)> {
+        self.request_raw(id, opcode, args).map(|(_, s, v)| (s, v))
     }
 
     pub fn request(&mut self, id: ChannelId, opcode: i64, args: Value) -> Result<Value> {
-        self.request_inner(id, opcode, args).map(|(_, v)| v)
+        self.request_raw(id, opcode, args).map(|(_, _, v)| v)
     }
 
-    fn request_inner(&mut self, id: ChannelId, opcode: i64, args: Value) -> Result<(i64, Value)> {
+    fn request_raw(
+        &mut self,
+        id: ChannelId,
+        opcode: i64,
+        args: Value,
+    ) -> Result<(i64, i64, Value)> {
         let txn = {
             let ch = self
                 .channels
@@ -571,7 +629,7 @@ impl Session {
                                 .unwrap_or(0);
                             return Err(Error::Device(code));
                         }
-                        return Ok((status, result));
+                        return Ok((txn, status, result));
                     }
                 }
             }
@@ -693,7 +751,7 @@ impl Session {
 
     /// Load a preset by setlist and zero-based index within it.
     pub fn select_preset(&mut self, setlist: i64, index: i64) -> Result<()> {
-        self.command(
+        self.command_deferred(
             ChannelId::DATA,
             rpc::op::SELECT_PRESET,
             hx_proto::msgmap! {
@@ -731,21 +789,30 @@ pub fn checksum(bytes: &[u8]) -> u64 {
 }
 
 impl Drop for Session {
-    /// Leave the device in a state a later session can pick up.
+    /// Close the session the way HX Edit does.
     ///
-    /// There is no session-close message we have identified, but a session that
-    /// simply vanishes mid-conversation is what leaves the device refusing new
-    /// connections until its power is pulled. Draining what it has already sent
-    /// at least means we are not abandoning a half-read stream, and costs a
-    /// fraction of a second.
+    /// A captured clean quit shows the actual teardown: acknowledge whatever
+    /// is outstanding, send a bare type-0x02 (HELLO) frame on each channel,
+    /// collect the device's answering HELLOs, release the interface. The 0x02
+    /// message is a session boundary marker, not just an opening handshake —
+    /// it appears at both ends of the conversation. A session that vanishes
+    /// without this is what leaves the device refusing new connections until
+    /// its power is pulled.
     fn drop(&mut self) {
         if self.poisoned.is_some() {
             return;
         }
+        // Take and acknowledge anything still in flight.
         let give_up = Instant::now() + Duration::from_millis(600);
         while Instant::now() < give_up {
-            if self.read_once(Duration::from_millis(100)).is_err() {
-                break;
+            match self.read_once(Duration::from_millis(100)) {
+                Ok(Some(_)) => continue,
+                _ => break,
+            }
+        }
+        for id in ChannelId::ALL {
+            if self.channels.contains_key(&id.device) {
+                let _ = self.close_service(id);
             }
         }
     }

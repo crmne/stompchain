@@ -55,6 +55,12 @@ pub enum Cmd {
     },
     SelectSnapshot(i64),
     ClearBlock(i64),
+    /// Point an input or output somewhere else — opcode 42, the operation
+    /// HX Edit's own routing clicks send.
+    SetRouting {
+        block: i64,
+        to: i64,
+    },
     /// Read the loaded preset and hand back its bytes, for the clipboard or a
     /// file. The document is copied verbatim rather than rebuilt from what the
     /// UI shows, because a preset carries more than the UI models.
@@ -188,6 +194,11 @@ impl Worker {
             }
             Cmd::SetEnabled { block, enabled } => {
                 self.run_on_device(|d| d.set_enabled(block, enabled));
+            }
+            Cmd::SetRouting { block, to } => {
+                if self.run_on_device(|d| d.set_routing(block, to)) {
+                    self.reload();
+                }
             }
             Cmd::CopyPreset => {
                 if let Some(blob) = self.preset_bytes() {

@@ -1140,12 +1140,9 @@ impl App {
 
     /// Where an Input or Main L/R block is routed.
     ///
-    /// Shown, not editable. HX Edit offers this as a menu, but the device does
-    /// not take a change to it from a preset-document write — it accepts the
-    /// document and keeps the old routing — and no opcode for it has been
-    /// found. A control that quietly does nothing is worse than none, so this
-    /// reads the setting out and says why it cannot be changed. There is a
-    /// hardware test that will fail the day this becomes possible.
+    /// Editable via opcode 42, which was captured from HX Edit's own routing
+    /// clicks — a document write is accepted but ignored for this field, which
+    /// is why this control was read-only for a while.
     fn routing_menu(&self, ui: &mut egui::Ui, model: &hx_catalog::Model, position: i64) {
         let Some(current) = self
             .chain
@@ -1167,19 +1164,42 @@ impl App {
         else {
             return;
         };
-        let shown = catalog
-            .choices(param)
-            .and_then(|c| c.get(current.max(0) as usize).cloned())
+        let Some(choices) = catalog.choices(param) else {
+            return;
+        };
+
+        let mut chosen = None;
+        let showing = choices
+            .get(current.max(0) as usize)
+            .cloned()
             .unwrap_or_else(|| current.to_string());
 
         ui.horizontal(|ui| {
             ui.label(RichText::new(&param.name).small().color(theme::DIM));
-            ui.label(RichText::new(shown).color(theme::ACCENT))
-                .on_hover_text(
-                    "Set this on the device itself — it does not accept the change over USB",
-                );
+            egui::ComboBox::from_id_salt(("routing", position))
+                .selected_text(RichText::new(showing).color(theme::ACCENT))
+                .width(230.0)
+                .show_ui(ui, |ui| {
+                    for (index, label) in choices.iter().enumerate() {
+                        if ui
+                            .selectable_label(index as i64 == current, label)
+                            .clicked()
+                        {
+                            chosen = Some(index as i64);
+                        }
+                    }
+                });
         });
         ui.add_space(4.0);
+
+        if let Some(to) = chosen {
+            if to != current {
+                self.send(Cmd::SetRouting {
+                    block: position,
+                    to,
+                });
+            }
+        }
     }
 
     /// Draw one model's controls. Used for both halves of an Amp+Cab block, so

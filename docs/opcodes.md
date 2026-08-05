@@ -104,10 +104,11 @@ the channel hello.
 | 24 | `0x1080` | connect; Global Settings gear | `{118: object id}` | `{118: id, 119: value}` | [confirmed] |
 | 30 | `0x1080` | any parameter edit | `{98, 29, 26, 28, 119}` — see §4 | echo of the args | [confirmed] |
 | 40 | `0x1080` | pick a model in the browser; Redo | `{98: block, 100: {23: bool, 25: model, 26: model}}` | `{13: 1, 24: <slot object>}` | [confirmed] |
+| 42 | `0x1080` | click a routing choice on an Input or Output block | `{98: slot, 51: destination}` | nil | [confirmed] |
 | 41 | `0x1080` | click a block's bypass switch | `{98: block, 59: enabled bool}` | nil | [confirmed] |
 | 76 | `0x1080` | connect | `{}` | `{63: bool, 55: [11 floats]}` — Global EQ | [confirmed] |
 | 78 | `0x1080` | click a block in the signal chain | `{98: block, 26: 0}` | nil | [confirmed] |
-| 99 | `0x1080` | connect | `{}` | `{63: bool}` — shape [confirmed], meaning [open] | [open] |
+| 99 | `0x1080` | connect | `{}` | `{63: bool}` — false in every USB-reachable state tried: fresh sessions, committed edits, preset reloads, during flash writes. Remaining candidates are front-panel states (edited-preset indicator, tuner, looper). | [narrowed] |
 | 112 | `0x1001` | connect | nil | nil | [open] |
 | 254 | `0x1001` | connect | `{}` | nil | [open] |
 
@@ -287,7 +288,7 @@ perfectly stable across all three captures. **[confirmed]**
 | 4 | 1 | 1 | 6 | `{107, 108}` | preset load — the *last* event of the load | [inferred] |
 | 8 | 1 | 1 | 5 | `{107, 108}` | preset load — the *first* event of the load | [inferred] |
 | 20 | — | — | — | `{102, 103, 104}` | deferred completion of an earlier `103: 1` reply | [confirmed] |
-| 21 | — | — | — | nil | once, immediately after notification 20 for the Undo | [open] |
+| 21 | — | — | — | nil | after every document-write completion — follows notification 20 in all fourteen captured undos | [confirmed pattern, meaning inferred: post-commit tick] |
 | 22 | 0 | 9 | 25 | `{118: id, 119: value}` | a device object changed | [confirmed] |
 | 22 | 0 | 10 | 27 | nil | see below | [open] |
 | 30 | 0 | 6 | 20 | `{98, 29, 26, 28, 119}` | a parameter changed | [confirmed] |
@@ -498,7 +499,8 @@ exactly one parallel path.
 
 **The numeric model id in keys 25 and 26 is the zero-based index into
 `Helix.sym`. [confirmed]** This closes the "numeric model id ↔ symbolic name"
-gap `PROTOCOL.md` lists as the main remaining unknown.
+gap that has since been closed — see `PROTOCOL.md` on the section table and
+`Preset::computed_sections`.
 
 Validated on ten independent models — both the symbolic name and the *parameter
 count* match what the preset serialises:

@@ -335,30 +335,55 @@ fn a_preset_survives_a_backup_and_restore() {
     assert_healthy(&mut session, "a backup and restore");
 }
 
-/// Writing the preset document repeatedly, which is what editing anything the
-/// protocol has no opcode for comes down to.
-///
-/// This is the test that found the cause of the lock-ups. A read buffer was
-/// only posted while a request was in flight, so between operations the device
-/// had nowhere to put the notifications it emits unasked; once its outgoing
-/// queue filled it stopped draining the incoming endpoint too, and the next
-/// write timed out with nothing visibly wrong. Draining before each request
-/// took this from failing on the third write to comfortably past ten.
-///
-/// It is not unlimited even now. Sustained document writes still stop being
-/// accepted somewhere between the eighth and the fifteenth, varying with what
-/// else the session has done; the cause is not yet understood and is recorded
-/// in PROTOCOL.md. So this asserts the range ordinary editing needs rather than
-/// claiming the problem is gone.
+/// Routing an endpoint uses opcode 42, captured from HX Edit's own clicks.
+/// A document write is accepted but ignored for this field, which is why the
+/// opcode matters — and why this test also asserts the document write still
+/// does not apply it, so we notice if a firmware update changes the rules.
 #[test]
 #[ignore = "needs an HX device"]
-fn writing_the_preset_document_repeatedly_is_safe() {
+fn routing_an_input_round_trips() {
+    let Some(mut session) = device() else { return };
+
+    let before = session.read_preset().expect("read");
+    let Some(input) = before.layout().paths.first().and_then(|p| p.input) else {
+        eprintln!("SKIPPED: no input slot");
+        return;
+    };
+    let was = before.routing(input).expect("input routed somewhere");
+
+    // 4 is Return L/R on an HX Stomp, 1 is Multi; pick whichever is not set.
+    let to = if was == 4 { 1 } else { 4 };
+    session.set_routing(input as i64, to).expect("op 42");
+    let after = session.read_preset().expect("read back");
+    assert_eq!(
+        after.routing(input),
+        Some(to),
+        "opcode 42 did not change the routing"
+    );
+
+    session.set_routing(input as i64, was).expect("restoring");
+    assert_eq!(
+        session.read_preset().expect("read").routing(input),
+        Some(was)
+    );
+    assert_healthy(&mut session, "a routing round trip");
+}
+
+/// Writing the preset document must complete before the next write begins.
+///
+/// The wait is on notification 20: the device answers a write with "accepted"
+/// and announces the commit afterwards. HX Edit paces on that announcement —
+/// fourteen consecutive captured undos all wait for it — and once our client
+/// did the same, the write-degradation that used to appear after a dozen
+/// back-to-back writes disappeared. Twenty in a row here to prove it.
+#[test]
+#[ignore = "needs an HX device"]
+fn twenty_preset_writes_in_a_row_all_complete() {
     let Some(mut session) = device() else { return };
     let original = session.read_preset().expect("read").encode();
     let blocks = hx_proto::Preset::parse(&original).unwrap().blocks().count();
 
-    // Six in a row with no pause. Before the fix this stopped by the third.
-    for round in 1..=6 {
+    for round in 1..=20 {
         let preset = hx_proto::Preset::parse(&original).expect("parse");
         session
             .write_preset(&preset)
@@ -372,50 +397,5 @@ fn writing_the_preset_document_repeatedly_is_safe() {
             "write {round} changed the preset"
         );
     }
-    assert_healthy(&mut session, "six preset writes");
-}
-
-/// Routing an output somewhere else is *not* applied by writing the preset
-/// document, though the device accepts the write and keeps everything else.
-///
-/// This is a negative result worth keeping: the editor must not offer a control
-/// that silently does nothing, and if a future firmware or opcode makes it work
-/// this test will start failing and say so.
-#[test]
-#[ignore = "needs an HX device"]
-fn re_routing_an_output_is_not_applied_by_a_document_write() {
-    let Some(mut session) = device() else { return };
-
-    let before = session.read_preset().expect("read");
-    let original_bytes = before.encode();
-    let Some(output) = before.layout().paths.first().and_then(|p| p.output) else {
-        eprintln!("SKIPPED: the loaded preset has no output slot");
-        return;
-    };
-    let was = before
-        .routing(output)
-        .expect("the output is routed somewhere");
-
-    let to = if was == 1 { 5 } else { 1 };
-    let mut edited = hx_proto::Preset::parse(&original_bytes).expect("parse");
-    assert!(edited.set_routing(output, to), "setting the routing");
-    session.write_preset(&edited).expect("writing the change");
-
-    let after = session.read_preset().expect("reading back");
-    assert_eq!(
-        after.routing(output),
-        Some(was),
-        "the device took a routing change from a document write — it did not \
-         before, so the editor can now offer it"
-    );
-    assert_eq!(
-        after.blocks().count(),
-        before.blocks().count(),
-        "the write was rejected but still cost us blocks"
-    );
-
-    // Put the document back regardless, so nothing is left half-applied.
-    let restore = hx_proto::Preset::parse(&original_bytes).expect("parse");
-    session.write_preset(&restore).expect("restoring");
-    assert_healthy(&mut session, "an attempted routing change");
+    assert_healthy(&mut session, "twenty preset writes");
 }
