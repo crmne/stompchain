@@ -7,7 +7,11 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "stompchain", version, about = "Talk to Line 6 HX hardware over USB")]
+#[command(
+    name = "stompchain",
+    version,
+    about = "Talk to Line 6 HX hardware over USB"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
