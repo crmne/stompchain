@@ -228,7 +228,7 @@ pub fn slot_label(index: i64) -> String {
     format!(
         "{:02}{}",
         index / 3 + 1,
-        [b'A', b'B', b'C'][(index % 3) as usize] as char
+        b"ABC"[(index % 3) as usize] as char
     )
 }
 
