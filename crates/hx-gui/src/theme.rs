@@ -477,7 +477,9 @@ pub fn switch(on: &mut bool) -> impl egui::Widget + '_ {
 /// mirrored. `below` is how many branch lanes hang under the main line.
 pub fn junction(ui: &mut Ui, below: usize, opening: bool, selected: bool) -> Response {
     let size = Vec2::new(JUNCTION_WIDTH, BLOCK_HEIGHT);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    // Draggable as well as clickable: the attach point is a position on the
+    // line, and positions are things you drag.
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
     if !ui.is_rect_visible(rect) {
         return response;
     }
@@ -616,6 +618,18 @@ pub fn ghost_branch(ui: &mut Ui, width: f32, from_y: f32) -> Response {
     );
 
     response
+}
+
+/// One place a dragged fork or merge can land: a dot on the wire, grown and
+/// lit when it is the one the pointer would choose.
+pub fn attach_marker(ui: &Ui, at: egui::Pos2, hot: bool) {
+    let painter = ui.painter();
+    if hot {
+        painter.circle_filled(at, 5.0, ACCENT);
+    } else {
+        painter.circle_filled(at, 3.0, WIRE);
+        painter.circle_stroke(at, 3.0, Stroke::new(1.0_f32, DIM));
+    }
 }
 
 /// Mark a drop that would trade places with the block under the pointer.

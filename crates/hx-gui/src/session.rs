@@ -85,6 +85,12 @@ pub enum Cmd {
         from: usize,
         to: usize,
     },
+    /// Re-attach a split or join: the fork or merge moves to sit just before
+    /// `before` in the main line.
+    MoveJunction {
+        junction: usize,
+        before: usize,
+    },
     /// Put the preset back as it was before the last document edit.
     Undo,
     /// Add a block at a position, sliding whatever is there along.
@@ -481,6 +487,13 @@ impl Worker {
                     p.move_slot(from, to)
                         .then_some(())
                         .ok_or("that block cannot move there")
+                });
+            }
+            Cmd::MoveJunction { junction, before } => {
+                self.edit_document(|p| {
+                    p.set_attach(junction, before)
+                        .then_some(())
+                        .ok_or("only a fork or merge can be moved")
                 });
             }
             Cmd::SetTempo(bpm) => {

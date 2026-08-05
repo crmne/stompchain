@@ -22,7 +22,8 @@ the hardware:
 
 - **The signal chain, drawn as it is wired** — splits branch the line and joins
   merge it, one lane per branch, with the endpoints showing where they are
-  routed. Devices with two DSP paths get up to four lanes.
+  routed. Drag the fork or merge along the line to move where the path
+  divides. Devices with two DSP paths get up to four lanes.
 - **Editing** — swap any block's model from a searchable thumbnail browser, turn
   knobs with values formatted exactly as HX Edit formats them, bypass blocks,
   reorder the chain, clear slots.

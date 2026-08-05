@@ -68,6 +68,15 @@ pub struct App {
     /// The slot being dragged along the chain, and the slot it would land on.
     dragging: Option<usize>,
     drop_on: Option<usize>,
+    /// A fork or merge being dragged along the main line: its slot, and
+    /// whether it is the split.
+    dragging_junction: Option<(usize, bool)>,
+    /// Where each gap in the main line sits this frame, by the slot it
+    /// inserts before — the positions a dragged fork or merge can land on.
+    gap_rects: Vec<(usize, egui::Rect)>,
+    /// Whether gaps being drawn right now belong to the main line. Branch
+    /// rows draw the same gaps, but a fork cannot attach there.
+    record_gaps: bool,
     /// Whether the edit buffer has changes the preset does not.
     ///
     /// The device edits a scratch copy: a changed parameter is audible at once
@@ -157,6 +166,9 @@ impl App {
             taps: Vec::new(),
             dragging: None,
             drop_on: None,
+            dragging_junction: None,
+            gap_rects: Vec::new(),
+            record_gaps: false,
             selected: 0,
             browsing: None,
             reveal_preset: false,
@@ -1161,6 +1173,8 @@ impl App {
 
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+            self.gap_rects.clear();
+            self.record_gaps = true;
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 ui.add_space(6.0);
@@ -1201,6 +1215,7 @@ impl App {
                     output_left = Some(rect.left());
                 }
             });
+            self.record_gaps = false;
 
             // The branches, aligned column for column under the stretch they
             // parallel.
@@ -1216,6 +1231,8 @@ impl App {
                 });
             }
 
+            self.junction_drag(ui, path);
+
             // The offer of a parallel branch, where it would actually run.
             if self.can_offer_branch(path) {
                 if let (Some(input), Some(right)) = (input_rect, output_left) {
@@ -1224,6 +1241,65 @@ impl App {
             }
         });
         pick
+    }
+
+    /// Follow a fork or merge being dragged along the main line.
+    ///
+    /// Every gap it can land in shows a dot while the drag lasts, the one
+    /// nearest the pointer takes the accent, and releasing commits the move.
+    /// A fork can go anywhere between the input and the merge; a merge,
+    /// anywhere between the fork and the output. Escape lets go.
+    fn junction_drag(&mut self, ui: &mut egui::Ui, path: &hx_proto::preset::Path) {
+        let Some((slot, opening)) = self.dragging_junction else {
+            return;
+        };
+        let dragged = if opening { path.split } else { path.join };
+        if dragged != Some(slot) {
+            return;
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.dragging_junction = None;
+            return;
+        }
+        let Some((lowest, highest, current)) = attach_range(path, opening) else {
+            return;
+        };
+
+        let candidates: Vec<(usize, egui::Rect)> = self
+            .gap_rects
+            .iter()
+            .filter(|(before, _)| (lowest..=highest).contains(before))
+            .copied()
+            .collect();
+        let pointer = ui.input(|i| i.pointer.interact_pos());
+        let nearest = pointer.and_then(|p| {
+            candidates
+                .iter()
+                .min_by(|a, b| {
+                    let da = (a.1.center().x - p.x).abs();
+                    let db = (b.1.center().x - p.x).abs();
+                    da.total_cmp(&db)
+                })
+                .copied()
+        });
+
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        for (before, rect) in &candidates {
+            let hot = nearest.is_some_and(|(n, _)| n == *before);
+            theme::attach_marker(ui, rect.center(), hot);
+        }
+
+        if ui.input(|i| i.pointer.any_released()) {
+            if let Some((before, _)) = nearest {
+                if before != current {
+                    self.edit(Cmd::MoveJunction {
+                        junction: slot,
+                        before,
+                    });
+                }
+            }
+            self.dragging_junction = None;
+        }
     }
 
     /// Whether to offer a parallel branch: the path has somewhere to put one,
@@ -1322,6 +1398,9 @@ impl App {
     fn insert_point(&mut self, ui: &mut egui::Ui, before: usize) {
         let response =
             theme::insert_point(ui, theme::BLOCK_HEIGHT).on_hover_text("add a block here");
+        if self.record_gaps {
+            self.gap_rects.push((before, response.rect));
+        }
         if response.clicked() {
             self.inserting_at = Some(before);
             // Anchored under the gap, so the choosing happens where the
@@ -1429,10 +1508,10 @@ impl App {
         (hit.clicked().then_some(i), hit.rect)
     }
 
-    /// The fork or merge itself, drawn as wiring and clickable for its own
-    /// parameters — a split's mode, a join's levels and pans.
+    /// The fork or merge itself, drawn as wiring: draggable along the line,
+    /// clickable for its own parameters — a split's mode, a join's levels.
     fn junction(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         slot: usize,
         below: usize,
@@ -1441,14 +1520,18 @@ impl App {
         let Some(i) = self.index_of(slot) else {
             return (None, ui.cursor());
         };
-        let block = &self.chain[i];
         let what = if opening {
-            "the signal forks here — click for how it divides"
+            "the signal forks here\ndrag to move it, click for how it divides"
         } else {
-            "the branches come back together — click for levels"
+            "the branches rejoin here\ndrag to move it, click for levels"
         };
-        let hit = theme::junction(ui, below, opening, i == self.selected)
-            .on_hover_text(format!("{}\n{what}", self.slot_label(block)));
+        let held = self.dragging_junction == Some((slot, opening));
+        let hit = theme::junction(ui, below, opening, i == self.selected || held)
+            .on_hover_cursor(egui::CursorIcon::Grab)
+            .on_hover_text(format!("{}\n{what}", self.slot_label(&self.chain[i])));
+        if hit.drag_started() {
+            self.dragging_junction = Some((slot, opening));
+        }
         (hit.clicked().then_some(i), hit.rect)
     }
 
@@ -2007,6 +2090,22 @@ impl App {
     }
 }
 
+/// Where a dragged fork or merge may go: the lowest and highest slot it can
+/// attach before, and where it is attached now.
+///
+/// A fork ranges from just after the input to the merge; a merge, from the
+/// fork to the output. The ends may meet — a stretch of zero width is how the
+/// device itself represents a branch that parallels nothing.
+fn attach_range(path: &hx_proto::preset::Path, opening: bool) -> Option<(usize, usize, usize)> {
+    // The stretch the lanes span *is* the pair of attach points.
+    let span = path.lanes.first().map(|l| l.span.clone())?;
+    Some(if opening {
+        (path.input.map_or(0, |i| i + 1), span.end, span.start)
+    } else {
+        (span.start, path.output.unwrap_or(span.end), span.end)
+    })
+}
+
 /// Search, categories and a grid of pedals. Returns the model chosen.
 ///
 /// A free function taking the pieces it needs rather than `&mut self`, so the
@@ -2223,6 +2322,151 @@ mod tests {
 
         assert!(app.log.len() <= 300, "log grew to {}", app.log.len());
         assert_eq!(app.log.last().unwrap(), "event 399");
+    }
+
+    /// A fork may travel between the input and the merge, a merge between the
+    /// fork and the output — and they may meet, because a zero-width stretch
+    /// is how the device represents a branch that parallels nothing.
+    #[test]
+    fn a_dragged_junction_stays_between_its_neighbours() {
+        use hx_proto::preset::{Lane, Path};
+        let path = Path {
+            input: Some(0),
+            output: Some(9),
+            split: Some(10),
+            join: Some(19),
+            head: vec![1],
+            lanes: vec![
+                Lane {
+                    branch: 0,
+                    blocks: vec![2, 3],
+                    span: 2..4,
+                },
+                Lane {
+                    branch: 1,
+                    blocks: vec![11],
+                    span: 11..19,
+                },
+            ],
+            tail: vec![4],
+        };
+
+        assert_eq!(
+            attach_range(&path, true),
+            Some((1, 4, 2)),
+            "the fork ranges from after the input to the merge"
+        );
+        assert_eq!(
+            attach_range(&path, false),
+            Some((2, 9, 4)),
+            "the merge ranges from the fork to the output"
+        );
+
+        let straight = Path {
+            head: vec![1],
+            ..Path::default()
+        };
+        assert_eq!(attach_range(&straight, true), None, "no lanes, no drag");
+    }
+
+    /// The whole drag, without a screen: draw the chain once so the gaps are
+    /// known, put the merge in hand, release the pointer over the gap before
+    /// the drive — and the worker must be asked to re-attach the join there.
+    #[test]
+    fn releasing_a_dragged_merge_reattaches_it_at_the_nearest_gap() {
+        use hx_proto::preset::{Kind, Lane, Layout, Path};
+        let (mut app, events, cmds) = app();
+
+        let slot = |position: i64, kind| session::Block {
+            position,
+            routing: None,
+            kind,
+            model: 0,
+            enabled: true,
+            values: vec![],
+            paired: None,
+            paired_values: vec![],
+        };
+        events
+            .send(Evt::Loaded {
+                index: 0,
+                name: "Test".into(),
+                firmware: String::new(),
+                tempo: None,
+                snapshots: vec![],
+                chain: vec![
+                    slot(0, Kind::Input),
+                    slot(1, Kind::Block),
+                    slot(9, Kind::Output),
+                    slot(10, Kind::Split),
+                    slot(11, Kind::Block),
+                    slot(19, Kind::Join),
+                ],
+                layout: Layout {
+                    paths: vec![Path {
+                        input: Some(0),
+                        output: Some(9),
+                        split: Some(10),
+                        join: Some(19),
+                        head: vec![],
+                        lanes: vec![
+                            Lane {
+                                branch: 0,
+                                blocks: vec![1],
+                                span: 1..9,
+                            },
+                            Lane {
+                                branch: 1,
+                                blocks: vec![11],
+                                span: 11..19,
+                            },
+                        ],
+                        tail: vec![],
+                    }],
+                },
+                dirty: true,
+            })
+            .unwrap();
+        app.drain_events();
+
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 600.0));
+        let mut input = egui::RawInput {
+            screen_rect: Some(screen),
+            ..Default::default()
+        };
+
+        // One frame to lay the chain out and record where the gaps are.
+        let _ = ctx.run(input.clone(), |ctx| app.signal_chain(ctx));
+        let target = app
+            .gap_rects
+            .iter()
+            .find(|(before, _)| *before == 1)
+            .map(|(_, rect)| rect.center())
+            .expect("the main line has a gap before the drive");
+
+        // The merge is in hand, and the pointer lets go over that gap.
+        app.dragging_junction = Some((19, false));
+        input.events.push(egui::Event::PointerMoved(target));
+        input.events.push(egui::Event::PointerButton {
+            pos: target,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = ctx.run(input, |ctx| app.signal_chain(ctx));
+
+        assert!(app.dragging_junction.is_none(), "the drag ended");
+        assert!(
+            cmds.try_iter().any(|c| matches!(
+                c,
+                Cmd::MoveJunction {
+                    junction: 19,
+                    before: 1
+                }
+            )),
+            "the worker was asked to re-attach the join before slot 1"
+        );
     }
 
     /// A reload that follows an edit must keep Save available: the worker says
