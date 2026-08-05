@@ -18,6 +18,9 @@ pub mod key {
     pub const RESULT: i64 = 104;
     /// Signed error code inside a status-255 reply's result.
     pub const ERROR_CODE: i64 = 111;
+    /// "Enabled" / "in effect", shared by the global-EQ and external-clock
+    /// replies. Distinct from `ENABLED` (59), which bypasses a block.
+    pub const IN_EFFECT: i64 = 63;
     /// Notification: event id.
     pub const EVENT: i64 = 105;
     /// Notification: event arguments.
@@ -100,6 +103,10 @@ pub mod op {
     pub const SET_ENABLED: i64 = 41;
     /// Route an endpoint: `{98: slot, 51: destination}`.
     pub const SET_ROUTING: i64 = 42;
+    /// Is the tempo being driven by external MIDI clock? `{63: bool}`.
+    pub const TEMPO_IS_EXTERNAL: i64 = 99;
+    /// Global EQ: `{63: enabled, 55: [11 floats]}`.
+    pub const GLOBAL_EQ: i64 = 76;
     /// `{107: setlist, 108: preset index, 109: name}`
     pub const RENAME_PRESET: i64 = 6;
     /// Setlist names. Control channel.

@@ -399,3 +399,53 @@ fn twenty_preset_writes_in_a_row_all_complete() {
     }
     assert_healthy(&mut session, "twenty preset writes");
 }
+
+/// The external-clock flag follows real MIDI beat clock.
+///
+/// This is what identified opcode 99. Patching its reply to `true` in flight
+/// made HX Edit swap its BPM readout for "[External]", and sending the device
+/// actual MIDI clock flips it for as long as the clock runs — so the flag
+/// means "the tempo is not mine to set". Needs `tools/midiclock`, and is
+/// skipped when that is not built.
+#[test]
+#[ignore = "needs an HX device"]
+fn the_external_clock_flag_follows_midi_clock() {
+    let Some(mut session) = device() else { return };
+    if !std::path::Path::new("/tmp/midiclock").exists() {
+        eprintln!("SKIPPED: /tmp/midiclock not built");
+        return;
+    }
+
+    assert!(
+        !session.tempo_is_external().expect("query"),
+        "the device already thinks it is externally clocked"
+    );
+
+    let mut clock = std::process::Command::new("/tmp/midiclock")
+        .arg("8")
+        .spawn()
+        .expect("spawning the clock generator");
+    std::thread::sleep(Duration::from_secs(3));
+
+    let external = session.tempo_is_external().expect("query while clocked");
+    let _ = clock.wait();
+    assert!(external, "MIDI clock was running but the flag stayed false");
+
+    // Let the device notice the clock has stopped before anything else runs.
+    // Without this the next test inherits a device still resynchronising, and
+    // fails for reasons that have nothing to do with it.
+    let settled = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < settled {
+        std::thread::sleep(Duration::from_millis(500));
+        if !session.tempo_is_external().unwrap_or(true) {
+            break;
+        }
+    }
+    assert!(
+        !session
+            .tempo_is_external()
+            .expect("query after the clock stops"),
+        "the flag is still set after the clock stopped"
+    );
+    assert_healthy(&mut session, "an external clock run");
+}

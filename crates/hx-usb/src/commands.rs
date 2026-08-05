@@ -247,6 +247,26 @@ impl Session {
         )
     }
 
+    /// Whether the tempo is currently driven by external MIDI clock.
+    ///
+    /// HX Edit replaces its BPM readout with "[External]" when this is true,
+    /// which is how the flag was identified: patching the reply to true in
+    /// flight changed that display, and sending real MIDI beat clock to the
+    /// device flips it for as long as the clock runs.
+    pub fn tempo_is_external(&mut self) -> Result<bool> {
+        let v = self.request(
+            ChannelId::DATA,
+            rpc::op::TEMPO_IS_EXTERNAL,
+            hx_proto::msgmap! {},
+        )?;
+        Ok(v.get(rpc::key::IN_EFFECT)
+            .and_then(|e| match e {
+                Value::Bool(b) => Some(*b),
+                _ => None,
+            })
+            .unwrap_or(false))
+    }
+
     /// Point an input or output somewhere else — opcode 42, `{98: slot, 51:
     /// destination}`. The destination indexes the same menu the preset stores
     /// under the slot's routing key; changing it through a document write is

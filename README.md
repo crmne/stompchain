@@ -41,11 +41,12 @@ Two things often assumed missing are not HX Edit features on an HX Stomp: the
 tuner lives on the hardware, and Command Center is inert on a three-switch
 device.
 
-Routing the Input and Output (`Input From` / `Output To`) works from both the
-GUI and `stompchain route`, using the opcode captured from HX Edit's own
-routing clicks — a preset-document write is silently ignored for that one
-field, which cost this project its longest-standing open question. The story,
-and the rest of the protocol's answers, are in [PROTOCOL.md](PROTOCOL.md).
+Every question the protocol write-up opened has an answer in it now, down to
+the flag that turned out to mean "the tempo is not mine to set" — identified by
+patching its reply in flight and watching HX Edit's own display change. The
+[PROTOCOL.md](PROTOCOL.md) write-up has the reasoning, the dead ends, and the
+methods; what remains marked open needs a Helix Floor or LT on the bench, since
+those opcodes are inert on an HX Stomp.
 
 ## Installing
 

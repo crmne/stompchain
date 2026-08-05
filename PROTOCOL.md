@@ -224,7 +224,37 @@ service carries a one-byte body echoing the service number, and a capture that
 starts mid-session begins mid-message — the framing recovers at the next
 message boundary because the length walk stays consistent from there.
 
-## Layer 4## Layer 4 — MessagePack RPC [confirmed]
+## Layer 4### Identifying a flag by patching the reply [method]
+
+A boolean nothing acts on is indistinguishable from any other boolean, so the
+way to learn what one means is to change it and watch the client. Opcode 99
+returns `{63: bool}` and is `false` in every state reachable over USB, which
+left it unexplained for a long time — polling it during edits, reloads, flash
+writes and even with the tuner engaged never moved it.
+
+`tools/hxsniff` can rewrite a reply on its way into HX Edit while leaving the
+wire to the device untouched:
+
+```sh
+HXSNIFF_PATCH=68813fc2/68813fc3 tools/hxsniff/run.sh
+```
+
+That pattern is `104 -> {63: false}` becoming `true`, which matches only an
+opcode-99 reply. With it applied, HX Edit's tempo readout changes from `120.0`
+to **`[External]`** — so opcode 99 asks *is the tempo being driven by an
+external MIDI clock*. Sending the device real MIDI beat clock confirms it from
+the other side: the flag reads true for exactly as long as the clock runs.
+`tools/midiclock.swift` generates the clock and
+`crates/hx-usb/tests/device.rs` holds the regression test.
+
+Two lesser findings came out of the same hunt. **The device stops answering the
+editor entirely while its tuner is engaged** (CC68 over MIDI) and resumes when
+it is dismissed — worth knowing before diagnosing a timeout as a wedge. And
+**key 63 means "in effect"** rather than anything preset-related: opcode 76
+uses it for whether the global EQ is switched on, alongside its eleven
+coefficients under key 55.
+
+## Layer 4 — MessagePack RPC [confirmed]
 
 The body is standard **MessagePack** with integer keys. Line 6's strings are C
 strings whose declared length *includes* the trailing NUL, so `0xa9` introduces
@@ -274,9 +304,8 @@ Two real exchanges from our capture:
 | 78 | highlight slot | — |
 
 Opcodes 0, 13, 23, 76, 99, 112 and 254 are observed during session setup but
-their meaning needs hardware that exposes them — the Command Center opcodes
-are inert on an HX Stomp, so a Helix Floor or LT is the prerequisite, and they
-stay **[open]** until one is on the bench. Opcodes 6, 25, 59, 61, 68 and 78 come from the
+their meaning needs hardware that exposes them: the Command Center opcodes are
+inert on an HX Stomp, so a Helix Floor or LT is the prerequisite. Opcodes 6, 25, 59, 61, 68 and 78 come from the
 `kempline/helix_usb` project rather than our own captures. **[inferred]**
 
 Common argument keys: `107` setlist, `108` preset index, `109` name, `118` object

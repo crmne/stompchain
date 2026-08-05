@@ -108,7 +108,7 @@ the channel hello.
 | 41 | `0x1080` | click a block's bypass switch | `{98: block, 59: enabled bool}` | nil | [confirmed] |
 | 76 | `0x1080` | connect | `{}` | `{63: bool, 55: [11 floats]}` — Global EQ | [confirmed] |
 | 78 | `0x1080` | click a block in the signal chain | `{98: block, 26: 0}` | nil | [confirmed] |
-| 99 | `0x1080` | connect | `{}` | `{63: bool}` — false in every USB-reachable state tried: fresh sessions, committed edits, preset reloads, during flash writes. Remaining candidates are front-panel states (edited-preset indicator, tuner, looper). | [narrowed] |
+| 99 | `0x1080` | connect | `{}` (arguments ignored) | `{63: bool}` — is the tempo driven by external MIDI clock. HX Edit shows `[External]` instead of the BPM when true. | [confirmed] |
 | 112 | `0x1001` | connect | nil | nil | [open] |
 | 254 | `0x1001` | connect | `{}` | nil | [open] |
 

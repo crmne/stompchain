@@ -187,10 +187,53 @@ static const char *ttype(unsigned char t)
     }
 }
 
+/* Rewrite a reply before HX Edit sees it.
+ *
+ * Set HXSNIFF_PATCH to a hex pattern and its replacement, separated by a
+ * slash: `HXSNIFF_PATCH=68813fc2/68813fc3` flips the single-key boolean in
+ * an opcode-99 reply from false to true. Only what the *application* sees
+ * changes; the bytes on the wire to the device are never touched.
+ *
+ * The point of this is to identify a flag by its effect: a value nothing acts
+ * on cannot be distinguished from any other, so the way to learn what a flag
+ * means is to change it and watch the client.
+ */
+static void patch_in(unsigned char *buf, int len)
+{
+    static unsigned char find[16], repl[16];
+    static int n = -1;
+    if (n < 0) {
+        const char *spec = getenv("HXSNIFF_PATCH");
+        n = 0;
+        if (spec) {
+            const char *slash = strchr(spec, '/');
+            if (slash) {
+                int i;
+                for (i = 0; i < 16 && spec + 2 * i + 1 < slash; i++)
+                    sscanf(spec + 2 * i, "%2hhx", &find[i]);
+                n = i;
+                for (i = 0; i < n; i++)
+                    sscanf(slash + 1 + 2 * i, "%2hhx", &repl[i]);
+            }
+        }
+    }
+    if (n <= 0 || !buf || len < n)
+        return;
+    for (int i = 0; i + n <= len; i++) {
+        if (memcmp(buf + i, find, n) == 0) {
+            memcpy(buf + i, repl, n);
+            emit("PATCHED", 0x81, buf + i, n, "reply rewritten");
+        }
+    }
+}
+
 static void trampoline(struct libusb_transfer *t)
 {
     char extra[96];
     int in = (t->endpoint & 0x80) != 0;
+
+    if (in && t->actual_length > 0)
+        patch_in(t->buffer, t->actual_length);
 
     snprintf(extra, sizeof extra, "status=%d actual=%d", t->status,
              t->actual_length);
