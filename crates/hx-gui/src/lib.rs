@@ -1525,10 +1525,12 @@ impl App {
         } else {
             "the branches rejoin here\ndrag to move it, click for levels"
         };
+        let label = self.slot_label(&self.chain[i]);
+        let tag = if opening { split_tag(&label) } else { None };
         let held = self.dragging_junction == Some((slot, opening));
-        let hit = theme::junction(ui, below, opening, i == self.selected || held)
+        let hit = theme::junction(ui, below, opening, i == self.selected || held, tag)
             .on_hover_cursor(egui::CursorIcon::Grab)
-            .on_hover_text(format!("{}\n{what}", self.slot_label(&self.chain[i])));
+            .on_hover_text(format!("{label}\n{what}"));
         if hit.drag_started() {
             self.dragging_junction = Some((slot, opening));
         }
@@ -1962,6 +1964,44 @@ impl App {
         chosen.filter(|to| *to != current)
     }
 
+    /// How a split divides the signal, as a row of chips — the defining
+    /// choice for the block, in the same place an endpoint offers its
+    /// routing. Returns the model number of a newly chosen type.
+    ///
+    /// Changing type is an ordinary model change on the split's slot; the
+    /// attach points and the branch survive it (verified on hardware), the
+    /// knobs below re-render for the new type, and undo steps back through it.
+    fn split_type_menu(&self, ui: &mut egui::Ui, position: i64) -> Option<u32> {
+        let block = self.chain.iter().find(|b| b.position == position)?;
+        if block.kind != hx_proto::preset::Kind::Split {
+            return None;
+        }
+        let catalog = self.catalog.as_ref()?;
+        let current = catalog.model_number(block.model)?.id.clone();
+        let family = catalog.models_in(catalog.category_of(&current)?);
+
+        let mut picked = None;
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Type").small().color(theme::DIM));
+            for model in family {
+                let name = model.name.strip_prefix("Split ").unwrap_or(&model.name);
+                let on = model.id == current;
+                let chip = theme::category_chip(ui, name, theme::ACCENT, on)
+                    .on_hover_text(split_type_hint(&model.name));
+                if chip.clicked() && !on {
+                    // Only models the firmware knows by number can be sent.
+                    picked = catalog
+                        .symbols()
+                        .iter()
+                        .find(|s| s.model.as_deref() == Some(model.id.as_str()))
+                        .map(|s| s.number);
+                }
+            }
+        });
+        ui.add_space(4.0);
+        picked
+    }
+
     /// The selected block drawn as a pedal: its artwork, then its controls as
     /// knobs beneath, the way Logic's Pedalboard and the hardware itself do.
     /// Used for both halves of an Amp+Cab block, so the model is passed in
@@ -1996,6 +2036,7 @@ impl App {
         });
         ui.add_space(10.0);
         let reroute = self.routing_menu(ui, model, position);
+        let retype = self.split_type_menu(ui, position);
 
         // Values arrive in the order the device indexes them, which the catalog
         // knows how to reproduce — it is not simply the model's parameter list.
@@ -2069,6 +2110,12 @@ impl App {
                 to,
             });
         }
+        if let Some(model) = retype {
+            self.edit(Cmd::SetModel {
+                block: position,
+                model,
+            });
+        }
         if let Some((index, value, switch)) = edit {
             let slot = &mut self.chain[self.selected];
             let target = if paired {
@@ -2087,6 +2134,29 @@ impl App {
                 switch,
             });
         }
+    }
+}
+
+/// One line on what a split type does with the signal, for its chip's hover.
+fn split_type_hint(name: &str) -> &'static str {
+    match name {
+        "Split Y" => "the signal runs down both branches",
+        "Split A/B" => "the signal takes one branch at a time",
+        "Split Crossover" => "splits the signal by frequency",
+        "Split Dynamic" => "splits the signal by playing level",
+        _ => "how the signal divides at the fork",
+    }
+}
+
+/// The tag worn by a fork in the chain, for types that change how the preset
+/// behaves. The default Y is silent — a tag is for the deviations worth
+/// noticing at a glance.
+fn split_tag(name: &str) -> Option<&'static str> {
+    match name {
+        "Split A/B" => Some("A/B"),
+        "Split Crossover" => Some("XO"),
+        "Split Dynamic" => Some("DYN"),
+        _ => None,
     }
 }
 
@@ -2322,6 +2392,45 @@ mod tests {
 
         assert!(app.log.len() <= 300, "log grew to {}", app.log.len());
         assert_eq!(app.log.last().unwrap(), "event 399");
+    }
+
+    /// The fork wears a tag only when its type changes the preset's
+    /// behaviour; the default Y stays quiet.
+    #[test]
+    fn only_the_notable_split_types_wear_a_tag() {
+        assert_eq!(split_tag("Split Y"), None);
+        assert_eq!(split_tag("Split A/B"), Some("A/B"));
+        assert_eq!(split_tag("Split Crossover"), Some("XO"));
+        assert_eq!(split_tag("Split Dynamic"), Some("DYN"));
+        assert_eq!(split_tag("Mixer"), None, "a merge has no type to announce");
+    }
+
+    /// The lookups the type chips run: the split's category holds the whole
+    /// family, and every member resolves to a number the firmware accepts.
+    /// Needs HX Edit's resources; skips quietly where they are not installed.
+    #[test]
+    fn the_split_family_resolves_through_the_catalog() {
+        let Ok(catalog) = Catalog::load() else {
+            return;
+        };
+        let split_y = catalog.model_number(257).expect("Split Y is model 257");
+        let family = catalog.models_in(catalog.category_of(&split_y.id).expect("a category"));
+        let names: Vec<&str> = family.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Split Y", "Split A/B", "Split Crossover", "Split Dynamic"],
+            "the family, in the order the chips show"
+        );
+        for model in family {
+            assert!(
+                catalog
+                    .symbols()
+                    .iter()
+                    .any(|s| s.model.as_deref() == Some(model.id.as_str())),
+                "{} resolves to a firmware number",
+                model.name
+            );
+        }
     }
 
     /// A fork may travel between the input and the merge, a merge between the

@@ -475,7 +475,15 @@ pub fn switch(on: &mut bool) -> impl egui::Widget + '_ {
 ///
 /// `opening` curves out to the branches; the merge is the same figure
 /// mirrored. `below` is how many branch lanes hang under the main line.
-pub fn junction(ui: &mut Ui, below: usize, opening: bool, selected: bool) -> Response {
+/// `tag` is worn under the dot — "A/B", "XO" — for split types that change
+/// how the preset behaves; the default Y goes untagged.
+pub fn junction(
+    ui: &mut Ui,
+    below: usize,
+    opening: bool,
+    selected: bool,
+    tag: Option<&str>,
+) -> Response {
     let size = Vec2::new(JUNCTION_WIDTH, BLOCK_HEIGHT);
     // Draggable as well as clickable: the attach point is a position on the
     // line, and positions are things you drag.
@@ -521,6 +529,15 @@ pub fn junction(ui: &mut Ui, below: usize, opening: bool, selected: bool) -> Res
     }
     // A dot on the fork, so it reads as something you can click.
     painter.circle_filled(rect.center(), 4.0, colour);
+    if let Some(tag) = tag {
+        painter.text(
+            rect.center() + Vec2::new(0.0, 13.0),
+            egui::Align2::CENTER_CENTER,
+            tag,
+            egui::FontId::proportional(9.0),
+            colour,
+        );
+    }
 
     response
 }
