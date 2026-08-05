@@ -62,14 +62,16 @@ from_installed() {
 }
 
 from_dmg() {
-    local dmg="$1" mount
+    local dmg="$1" mount cleanup
     command -v hdiutil >/dev/null || die "reading a .dmg needs macOS"
     mount="$(mktemp -d)"
     say "mounting $(basename "$dmg")"
     hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$dmg" >/dev/null \
         || die "could not mount $dmg"
     # Detach whatever happens next, so a failure does not leave it mounted.
-    trap 'hdiutil detach "$mount" >/dev/null 2>&1 || true; rmdir "$mount" 2>/dev/null || true' EXIT
+    printf -v cleanup 'hdiutil detach %q >/dev/null 2>&1 || true; rmdir %q 2>/dev/null || true' \
+        "$mount" "$mount"
+    trap "$cleanup" EXIT
 
     local app
     app="$(find "$mount" -maxdepth 2 -name "HX Edit.app" -print -quit)"
@@ -78,14 +80,15 @@ from_dmg() {
 }
 
 from_exe() {
-    local exe="$1" work
+    local exe="$1" work cleanup
     # Line 6's Windows installer is a self-extracting archive; 7-Zip reads it.
     local sevenzip
     sevenzip="$(command -v 7z || command -v 7za || command -v 7zz || true)"
     [ -n "$sevenzip" ] || die "reading a .exe needs 7-Zip (brew install p7zip, or apt install p7zip-full)"
 
     work="$(mktemp -d)"
-    trap 'rm -rf "$work"' EXIT
+    printf -v cleanup 'rm -rf -- %q' "$work"
+    trap "$cleanup" EXIT
     say "extracting $(basename "$exe")"
     "$sevenzip" x -o"$work" -y "$exe" >/dev/null || die "could not extract $exe"
 
