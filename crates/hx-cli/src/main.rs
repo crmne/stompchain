@@ -77,6 +77,23 @@ enum Cmd {
     Topology,
     /// Dump one slot's raw body, for protocol work.
     Slot { position: usize },
+    /// Commit the edit buffer to a preset, making the changes permanent.
+    ///
+    /// Everything else edits the device's scratch buffer: change a parameter
+    /// and it sounds different at once, but reload the preset and it is gone.
+    Save {
+        /// Where to save. Defaults to the loaded preset.
+        index: Option<String>,
+        /// Rename while saving. Defaults to the current name.
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, default_value_t = 0)]
+        setlist: i64,
+    },
+    /// Read a device setting by numeric id, or list the ones that answer.
+    Setting { id: Option<i64> },
+    /// Write a device setting: a number, `true`/`false`, or a decimal.
+    SetSetting { id: i64, value: String },
     /// List setlists.
     Setlists,
     /// List the impulse response slots.
@@ -225,6 +242,13 @@ fn on_device(cmd: Cmd) -> Result<()> {
             println!("snapshot {number} renamed to {name}");
             Ok(())
         }
+        Cmd::Save {
+            index,
+            name,
+            setlist,
+        } => save_preset(s, setlist, index.as_deref(), name.as_deref()),
+        Cmd::Setting { id } => show_setting(s, id),
+        Cmd::SetSetting { id, value } => set_setting(s, id, &value),
         Cmd::Slot { position } => {
             let preset = session.read_preset()?;
             match preset.raw_slot(position) {
@@ -556,6 +580,68 @@ fn watch(session: &mut hx_usb::Session) -> Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(700));
         session.keepalive()?;
     }
+}
+
+/// Commit the edit buffer to a preset slot.
+fn save_preset(
+    session: &mut hx_usb::Session,
+    setlist: i64,
+    index: Option<&str>,
+    name: Option<&str>,
+) -> Result<()> {
+    let (_, loaded, current) = session.preset_info()?;
+    let target = match index {
+        Some(text) => slot(text)?,
+        None => loaded,
+    };
+    let name = name.unwrap_or(&current);
+    session.save_preset(setlist, target, name)?;
+    println!("saved to {} as {name:?}", hx_proto::rpc::slot_label(target));
+    Ok(())
+}
+
+/// Show one device setting, or survey the whole namespace.
+fn show_setting(session: &mut hx_usb::Session, id: Option<i64>) -> Result<()> {
+    match id {
+        Some(id) => {
+            println!("{id}: {:?}", session.object(id)?);
+        }
+        None => {
+            // The namespace is flat and undocumented, so the useful thing is
+            // to show what answers rather than pretend to name it.
+            for id in 0..256 {
+                if let Ok(v) = session.object(id) {
+                    if v != hx_proto::msgpack::Value::Nil {
+                        println!("{id:>4}: {v:?}");
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Write one device setting, inferring the type from how it reads back.
+fn set_setting(session: &mut hx_usb::Session, id: i64, text: &str) -> Result<()> {
+    use hx_proto::msgpack::Value;
+    // The device refuses a value of the wrong type, so match what is there.
+    let current = session.object(id)?;
+    let value = match (&current, text) {
+        (Value::Bool(_), "true" | "on" | "1") => Value::Bool(true),
+        (Value::Bool(_), "false" | "off" | "0") => Value::Bool(false),
+        (Value::Bool(_), _) => bail!("setting {id} is a switch; use on or off"),
+        (Value::F32(_) | Value::F64(_), _) => Value::F32(
+            text.parse()
+                .with_context(|| format!("{text:?} is not a number"))?,
+        ),
+        _ => Value::Int(
+            text.parse()
+                .with_context(|| format!("{text:?} is not a whole number"))?,
+        ),
+    };
+    session.set_object(id, value)?;
+    println!("{id}: {current:?} -> {:?}", session.object(id)?);
+    Ok(())
 }
 
 /// Route an endpoint, resolving the destination through the catalog's menu.

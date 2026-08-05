@@ -449,3 +449,109 @@ fn the_external_clock_flag_follows_midi_clock() {
     );
     assert_healthy(&mut session, "an external clock run");
 }
+
+/// Saving is what makes an edit outlive the edit buffer, and it is the one
+/// operation that writes flash on purpose. This changes a parameter, saves,
+/// reloads from storage to prove it stuck, then puts the original back and
+/// saves again — so the preset ends exactly as it started.
+#[test]
+#[ignore = "needs an HX device"]
+fn saving_a_preset_makes_an_edit_survive_a_reload() {
+    use hx_proto::msgpack::Value;
+
+    let Some(mut session) = device() else { return };
+    let (setlist, index, name) = session.preset_info().expect("current preset");
+
+    let preset = session.read_preset().expect("read");
+    let Some((position, slot)) = preset.blocks().next() else {
+        eprintln!("SKIPPED: the loaded preset has no blocks");
+        return;
+    };
+    let original = *slot.values.first().unwrap_or(&0.5);
+    let changed = if original > 0.5 {
+        original - 0.2
+    } else {
+        original + 0.2
+    };
+    drop(preset);
+
+    session
+        .set_param(position as i64, 0, Value::F32(changed))
+        .expect("editing");
+    session
+        .save_preset(setlist, index, &name)
+        .expect("saving the edit");
+
+    // Reload from storage: an unsaved edit would be discarded here.
+    session.select_preset(setlist, index).expect("reload");
+    let after = session.read_preset().expect("read back");
+    let stored = after
+        .slots
+        .get(position)
+        .and_then(|s| s.values.first().copied())
+        .expect("the block survived");
+    assert!(
+        (stored - changed).abs() < 0.001,
+        "saved {changed} but the preset reloaded as {stored}"
+    );
+    drop(after);
+
+    // And put it back exactly as it was.
+    session
+        .set_param(position as i64, 0, Value::F32(original))
+        .expect("restoring");
+    session
+        .save_preset(setlist, index, &name)
+        .expect("saving the restore");
+    session.select_preset(setlist, index).expect("reload");
+    let restored = session
+        .read_preset()
+        .expect("read")
+        .slots
+        .get(position)
+        .and_then(|s| s.values.first().copied())
+        .expect("block");
+    assert!(
+        (restored - original).abs() < 0.001,
+        "failed to restore: wanted {original}, got {restored}"
+    );
+
+    assert_healthy(&mut session, "a preset save round trip");
+}
+
+/// Global settings are a flat numbered namespace, read with opcode 24 and
+/// written with 25. Object 203 is the global EQ's on/off, which is a harmless
+/// thing to toggle and put straight back.
+#[test]
+#[ignore = "needs an HX device"]
+fn a_device_setting_round_trips() {
+    use hx_proto::msgpack::Value;
+
+    let Some(mut session) = device() else { return };
+    const GLOBAL_EQ_ENABLED: i64 = 203;
+
+    let Value::Bool(was) = session.object(GLOBAL_EQ_ENABLED).expect("read") else {
+        eprintln!("SKIPPED: object {GLOBAL_EQ_ENABLED} is not a switch on this device");
+        return;
+    };
+
+    session
+        .set_object(GLOBAL_EQ_ENABLED, Value::Bool(!was))
+        .expect("write");
+    assert_eq!(
+        session.object(GLOBAL_EQ_ENABLED).expect("read back"),
+        Value::Bool(!was),
+        "the device did not take the setting"
+    );
+
+    session
+        .set_object(GLOBAL_EQ_ENABLED, Value::Bool(was))
+        .expect("restore");
+    assert_eq!(
+        session.object(GLOBAL_EQ_ENABLED).expect("read"),
+        Value::Bool(was),
+        "failed to restore the setting"
+    );
+
+    assert_healthy(&mut session, "a device setting round trip");
+}

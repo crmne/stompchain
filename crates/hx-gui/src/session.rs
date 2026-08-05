@@ -61,6 +61,8 @@ pub enum Cmd {
         block: i64,
         to: i64,
     },
+    /// Commit the edit buffer to the loaded preset.
+    SavePreset,
     /// Read the loaded preset and hand back its bytes, for the clipboard or a
     /// file. The document is copied verbatim rather than rebuilt from what the
     /// UI shows, because a preset carries more than the UI models.
@@ -86,6 +88,8 @@ pub enum Evt {
         chain: Vec<Block>,
         layout: hx_proto::preset::Layout,
     },
+    /// The edit buffer has been committed to the preset.
+    Saved,
     /// The loaded preset's bytes, in answer to `Cmd::CopyPreset`.
     Copied {
         name: String,
@@ -198,6 +202,17 @@ impl Worker {
             Cmd::SetRouting { block, to } => {
                 if self.run_on_device(|d| d.set_routing(block, to)) {
                     self.reload();
+                }
+            }
+            Cmd::SavePreset => {
+                let Some((setlist, index, name)) =
+                    self.device.as_mut().and_then(|d| d.preset_info().ok())
+                else {
+                    return self.send(Evt::Failed("no preset loaded".into()));
+                };
+                if self.run_on_device(|d| d.save_preset(setlist, index, &name)) {
+                    self.send(Evt::Activity(format!("saved {name}")));
+                    self.send(Evt::Saved);
                 }
             }
             Cmd::CopyPreset => {

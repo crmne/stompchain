@@ -97,6 +97,9 @@ pub mod op {
     pub const PRESET_INFO: i64 = 23;
     /// `{118: id}` — fetch an object by id.
     pub const FETCH_OBJECT: i64 = 24;
+    /// Write a device object — the mirror of [`FETCH_OBJECT`].
+    /// `{118: object id, 119: value}`.
+    pub const SET_OBJECT: i64 = 25;
     /// `{98: block, 29: true, 26: path, 28: index, 119: value}`
     pub const SET_PARAM: i64 = 30;
     /// `{98: block, 59: enabled}`
@@ -109,6 +112,9 @@ pub mod op {
     pub const GLOBAL_EQ: i64 = 76;
     /// `{107: setlist, 108: preset index, 109: name}`
     pub const RENAME_PRESET: i64 = 6;
+    /// Commit the edit buffer to a preset slot: `{107, 108, 109: name}`.
+    /// Without this, every edit lives only until the preset is reloaded.
+    pub const SAVE_PRESET: i64 = 71;
     /// Setlist names. Control channel.
     pub const LIST_SETLISTS: i64 = 0;
     /// `{101: 2}` — impulse response slots. Control channel.

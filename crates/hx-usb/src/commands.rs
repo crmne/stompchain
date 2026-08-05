@@ -247,6 +247,51 @@ impl Session {
         )
     }
 
+    /// Commit the edit buffer to a preset slot.
+    ///
+    /// Everything else in this API edits the device's *edit buffer*: change a
+    /// parameter and the device sounds different immediately, but reload the
+    /// preset and the change is gone. This is the operation that makes an edit
+    /// permanent, and it is HX Edit's File > Save Preset.
+    pub fn save_preset(&mut self, setlist: i64, index: i64, name: &str) -> Result<()> {
+        self.command(
+            ChannelId::DATA,
+            rpc::op::SAVE_PRESET,
+            hx_proto::msgmap! {
+                rpc::key::SETLIST => Value::Int(setlist),
+                rpc::key::PRESET_INDEX => Value::Int(index),
+                rpc::key::NAME => Value::Str(name.to_owned()),
+            },
+        )
+    }
+
+    /// Read one device object — a global setting, by numeric id.
+    pub fn object(&mut self, id: i64) -> Result<Value> {
+        let v = self.request(
+            ChannelId::DATA,
+            rpc::op::FETCH_OBJECT,
+            hx_proto::msgmap! { rpc::key::OBJECT_ID => Value::Int(id) },
+        )?;
+        Ok(v.get(rpc::key::VALUE).cloned().unwrap_or(Value::Nil))
+    }
+
+    /// Write one device object.
+    ///
+    /// Global settings live in a flat numbered namespace rather than a
+    /// structured document: 147 of the first 160 ids answer on an HX Stomp.
+    /// The value's type has to match what the device holds — sending a float
+    /// where it wants a boolean is refused with error -3.
+    pub fn set_object(&mut self, id: i64, value: Value) -> Result<()> {
+        self.command(
+            ChannelId::DATA,
+            rpc::op::SET_OBJECT,
+            hx_proto::msgmap! {
+                rpc::key::OBJECT_ID => Value::Int(id),
+                rpc::key::VALUE => value,
+            },
+        )
+    }
+
     /// Whether the tempo is currently driven by external MIDI clock.
     ///
     /// HX Edit replaces its BPM readout with "[External]" when this is true,

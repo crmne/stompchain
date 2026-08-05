@@ -40,6 +40,12 @@ pub struct App {
     clipboard: Option<(String, Vec<u8>)>,
     /// Where the bytes should go once `Cmd::CopyPreset` answers.
     pending_copy: CopyTarget,
+    /// Whether the edit buffer has changes the preset does not.
+    ///
+    /// The device edits a scratch copy: a changed parameter is audible at once
+    /// but vanishes on reload unless it is saved. An editor that does not say
+    /// so loses people's work quietly, so this drives a dot in the title.
+    dirty: bool,
     selected: usize,
     /// Category chosen in the browser, or none to follow the current block.
     browsing: Option<u32>,
@@ -106,6 +112,7 @@ impl App {
             search: String::new(),
             clipboard: None,
             pending_copy: CopyTarget::Clipboard,
+            dirty: false,
             selected: 0,
             browsing: None,
             irs: Vec::new(),
@@ -129,6 +136,12 @@ impl App {
 
     fn send(&self, cmd: Cmd) {
         let _ = self.to_device.send(cmd);
+    }
+
+    /// Send something that changes the edit buffer, and remember that it did.
+    fn edit(&mut self, cmd: Cmd) {
+        self.dirty = true;
+        self.send(cmd);
     }
 
     fn drain_events(&mut self) {
@@ -159,6 +172,7 @@ impl App {
                     layout,
                 }) => {
                     self.layout = layout;
+                    self.dirty = false;
                     self.preset_index = index;
                     self.preset_name = name;
                     self.firmware = firmware;
@@ -184,6 +198,7 @@ impl App {
                     self.tempo_draft = None;
                     self.snapshot_draft = None;
                 }
+                Ok(Evt::Saved) => self.dirty = false,
                 Ok(Evt::Copied { name, blob }) => {
                     let size = blob.len();
                     match std::mem::replace(&mut self.pending_copy, CopyTarget::Clipboard) {
@@ -324,6 +339,7 @@ impl App {
                     self.connection_button(ui);
                     ui.add_space(12.0);
                     self.preset_title(ui);
+                    self.save_button(ui);
                     ui.add_space(10.0);
                     self.tempo_control(ui);
                     ui.add_space(10.0);
@@ -345,6 +361,29 @@ impl App {
                     });
                 });
             });
+    }
+
+    /// Commit the edit buffer, and say when there is something to commit.
+    ///
+    /// The device edits a scratch copy of the preset: changes are audible
+    /// immediately but are lost on reload unless they are saved. HX Edit has
+    /// this on File > Save Preset; putting it beside the name makes the state
+    /// visible rather than something you have to remember.
+    fn save_button(&mut self, ui: &mut egui::Ui) {
+        if self.preset_index < 0 {
+            return;
+        }
+        if self.dirty {
+            ui.label(RichText::new("●").color(theme::ACCENT))
+                .on_hover_text("unsaved changes");
+        }
+        let hit = ui
+            .add_enabled(self.dirty, egui::Button::new("Save"))
+            .on_hover_text("write these changes into the preset")
+            .on_disabled_hover_text("no changes to save");
+        if hit.clicked() {
+            self.send(Cmd::SavePreset);
+        }
     }
 
     /// Copy, paste, import and export for whole presets.
@@ -967,7 +1006,7 @@ impl App {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Clear").clicked() {
-                        self.send(Cmd::ClearBlock(block.position));
+                        self.edit(Cmd::ClearBlock(block.position));
                     }
                     let last = self.chain.len().saturating_sub(1);
                     if ui
@@ -975,7 +1014,7 @@ impl App {
                         .on_hover_text("move later in the chain")
                         .clicked()
                     {
-                        self.send(Cmd::MoveBlock {
+                        self.edit(Cmd::MoveBlock {
                             from: block.position as usize,
                             to: self.chain[self.selected + 1].position as usize,
                         });
@@ -985,14 +1024,14 @@ impl App {
                         .on_hover_text("move earlier in the chain")
                         .clicked()
                     {
-                        self.send(Cmd::MoveBlock {
+                        self.edit(Cmd::MoveBlock {
                             from: block.position as usize,
                             to: self.chain[self.selected - 1].position as usize,
                         });
                     }
                     let mut on = block.enabled;
                     if ui.checkbox(&mut on, "Enabled").changed() {
-                        self.send(Cmd::SetEnabled {
+                        self.edit(Cmd::SetEnabled {
                             block: block.position,
                             enabled: on,
                         });
@@ -1171,7 +1210,7 @@ impl App {
             self.search.clear();
         }
         if let Some(model) = pick {
-            self.send(Cmd::SetModel {
+            self.edit(Cmd::SetModel {
                 block: block.position,
                 model,
             });
@@ -1183,30 +1222,25 @@ impl App {
     /// Editable via opcode 42, which was captured from HX Edit's own routing
     /// clicks — a document write is accepted but ignored for this field, which
     /// is why this control was read-only for a while.
-    fn routing_menu(&self, ui: &mut egui::Ui, model: &hx_catalog::Model, position: i64) {
-        let Some(current) = self
+    fn routing_menu(
+        &self,
+        ui: &mut egui::Ui,
+        model: &hx_catalog::Model,
+        position: i64,
+    ) -> Option<i64> {
+        let current = self
             .chain
             .iter()
             .find(|b| b.position == position)
-            .and_then(|b| b.routing)
-        else {
-            return;
-        };
-        let Some(catalog) = self.catalog.as_ref() else {
-            return;
-        };
+            .and_then(|b| b.routing)?;
+        let catalog = self.catalog.as_ref()?;
         // The routing setting is the one the device keeps outside the value
         // array, so it is found by name rather than by index.
-        let Some(param) = model
+        let param = model
             .params
             .iter()
-            .find(|p| p.id == "@input" || p.id == "@output")
-        else {
-            return;
-        };
-        let Some(choices) = catalog.choices(param) else {
-            return;
-        };
+            .find(|p| p.id == "@input" || p.id == "@output")?;
+        let choices = catalog.choices(param)?;
 
         let mut chosen = None;
         let showing = choices
@@ -1232,14 +1266,7 @@ impl App {
         });
         ui.add_space(4.0);
 
-        if let Some(to) = chosen {
-            if to != current {
-                self.send(Cmd::SetRouting {
-                    block: position,
-                    to,
-                });
-            }
-        }
+        chosen.filter(|to| *to != current)
     }
 
     /// Draw one model's controls. Used for both halves of an Amp+Cab block, so
@@ -1273,7 +1300,7 @@ impl App {
             ui.label(RichText::new(&model.name).strong());
         });
         ui.add_space(6.0);
-        self.routing_menu(ui, model, position);
+        let reroute = self.routing_menu(ui, model, position);
 
         // Values arrive in the order the device indexes them, which the catalog
         // knows how to reproduce — it is not simply the model's parameter list.
@@ -1314,6 +1341,12 @@ impl App {
             }
         });
 
+        if let Some(to) = reroute {
+            self.edit(Cmd::SetRouting {
+                block: position,
+                to,
+            });
+        }
         if let Some((index, value, switch)) = edit {
             let slot = &mut self.chain[self.selected];
             let target = if paired {
@@ -1325,7 +1358,7 @@ impl App {
             // The cab's parameters are addressed on the same block; only which
             // half they belong to differs, and the device infers that from the
             // index range.
-            self.send(Cmd::SetParam {
+            self.edit(Cmd::SetParam {
                 block: position,
                 index,
                 value,
