@@ -27,7 +27,7 @@ pub fn apply(ctx: &egui::Context) {
     v.widgets.hovered.bg_fill = Color32::from_rgb(0x2f, 0x34, 0x3e);
     v.widgets.active.bg_fill = Color32::from_rgb(0x39, 0x3f, 0x4b);
     v.selection.bg_fill = Color32::from_rgb(0x2c, 0x3a, 0x52);
-    v.selection.stroke = Stroke::new(1.0, ACCENT);
+    v.selection.stroke = Stroke::new(1.0_f32, ACCENT);
 
     style.spacing.item_spacing = Vec2::new(8.0, 6.0);
     style.spacing.slider_width = 180.0;
@@ -59,9 +59,9 @@ pub fn block_button(
             Color32::from_rgb(0x2a, 0x2e, 0x36)
         };
         let border = if selected {
-            Stroke::new(2.0, ACCENT)
+            Stroke::new(2.0_f32, ACCENT)
         } else {
-            Stroke::new(1.0, Color32::from_rgb(0x3a, 0x3f, 0x49))
+            Stroke::new(1.0_f32, Color32::from_rgb(0x3a, 0x3f, 0x49))
         };
 
         let painter = ui.painter();
@@ -285,7 +285,7 @@ pub fn knob(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>) 
         painter.circle_stroke(
             centre,
             radius,
-            Stroke::new(1.0, Color32::from_rgb(0x50, 0x56, 0x62)),
+            Stroke::new(1.0_f32, Color32::from_rgb(0x50, 0x56, 0x62)),
         );
 
         // The travelled arc, drawn as short segments.
@@ -299,13 +299,13 @@ pub fn knob(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>) 
             let a = start + sweep * t;
             let p = centre + Vec2::new(a.cos(), a.sin()) * (radius + 3.0);
             if let Some(prev) = previous {
-                painter.line_segment([prev, p], Stroke::new(2.5, ACCENT));
+                painter.line_segment([prev, p], Stroke::new(2.5_f32, ACCENT));
             }
             previous = Some(p);
         }
 
         let pointer = centre + Vec2::new(angle.cos(), angle.sin()) * (radius - 5.0);
-        painter.line_segment([centre, pointer], Stroke::new(2.0, TEXT));
+        painter.line_segment([centre, pointer], Stroke::new(2.0_f32, TEXT));
         painter.circle_filled(centre, 2.5, Color32::from_rgb(0x8a, 0x90, 0x9c));
     }
 
@@ -334,7 +334,7 @@ pub fn switch(on: &mut bool) -> impl egui::Widget + '_ {
             painter.rect_stroke(
                 body,
                 Rounding::same(5.0),
-                Stroke::new(1.0, Color32::from_rgb(0x50, 0x56, 0x62)),
+                Stroke::new(1.0_f32, Color32::from_rgb(0x50, 0x56, 0x62)),
             );
             painter.circle_filled(
                 body.center(),
@@ -369,7 +369,7 @@ pub fn junction(ui: &mut Ui, lanes: usize, opening: bool, selected: bool) -> Res
 
     let painter = ui.painter();
     let colour = if selected { ACCENT } else { WIRE };
-    let stroke = Stroke::new(if selected { 2.0 } else { 1.5 }, colour);
+    let stroke = Stroke::new(if selected { 2.0_f32 } else { 1.5_f32 }, colour);
 
     // The trunk meets the branches at the midpoint; each lane gets a stub at
     // its own centre line.
@@ -419,6 +419,6 @@ pub fn wire_run(ui: &mut Ui, width: f32, height: f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
     if ui.is_rect_visible(rect) {
         ui.painter()
-            .hline(rect.x_range(), rect.center().y, Stroke::new(1.5, WIRE));
+            .hline(rect.x_range(), rect.center().y, Stroke::new(1.5_f32, WIRE));
     }
 }

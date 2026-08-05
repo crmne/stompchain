@@ -1,0 +1,8 @@
+# Pin the toolchain so local builds and CI use the same compiler, clippy and
+# rustfmt. Every one of these moves between releases, and "passes locally,
+# fails in CI" is exactly the failure mode a floating toolchain buys.
+# Upgrading is deliberate: bump the version here, fix what the new lints and
+# formatting find, one commit.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
