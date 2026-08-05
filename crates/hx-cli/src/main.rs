@@ -75,6 +75,8 @@ enum Cmd {
     Route { block: i64, to: String },
     /// Print the signal path as the device is wired: one row per lane.
     Topology,
+    /// Dump one slot's raw body, for protocol work.
+    Slot { position: usize },
     /// List setlists.
     Setlists,
     /// List the impulse response slots.
@@ -223,6 +225,17 @@ fn on_device(cmd: Cmd) -> Result<()> {
             println!("snapshot {number} renamed to {name}");
             Ok(())
         }
+        Cmd::Slot { position } => {
+            let preset = session.read_preset()?;
+            match preset.raw_slot(position) {
+                Some(body) => println!(
+                    "slot {position} kind {:?}\n{body:#?}",
+                    preset.slots[position].kind
+                ),
+                None => println!("slot {position} has no body"),
+            }
+            Ok(())
+        }
         Cmd::Topology => {
             let preset = session.read_preset()?;
             let catalog = hx_catalog::Catalog::load().ok();
@@ -268,31 +281,49 @@ fn on_device(cmd: Cmd) -> Result<()> {
                 format!("{:>2} {}{off}{}", position, name(slot), routed(position))
             };
 
-            for (n, path) in preset.layout().paths.iter().enumerate() {
-                if preset.layout().paths.len() > 1 {
+            let layout = preset.layout();
+            for (n, path) in layout.paths.iter().enumerate() {
+                if layout.paths.len() > 1 {
                     println!("path {}", n + 1);
                 }
-                for (l, lane) in path.lanes.iter().enumerate() {
-                    let ends = if l == 0 {
-                        (path.input, path.output)
-                    } else {
-                        (path.split, path.join)
-                    };
-                    let mut cells = Vec::new();
-                    if let Some(i) = ends.0 {
-                        cells.push(row(i));
-                    }
-                    cells.extend(lane.blocks.iter().map(|b| row(*b)));
-                    if let Some(i) = ends.1 {
-                        cells.push(row(i));
-                    }
-                    let label = if path.lanes.len() > 1 {
-                        [" A  ", " B  "][l]
-                    } else {
-                        "    "
-                    };
-                    println!("{label}{}", cells.join("  ->  "));
+                let cells =
+                    |slots: &[usize]| -> Vec<String> { slots.iter().map(|p| row(*p)).collect() };
+
+                // Everything the undivided signal passes through, in order.
+                let mut line = Vec::new();
+                if let Some(i) = path.input {
+                    line.push(row(i));
                 }
+                line.extend(cells(&path.head));
+
+                if path.lanes.is_empty() {
+                    line.extend(cells(&path.tail));
+                    if let Some(i) = path.output {
+                        line.push(row(i));
+                    }
+                    println!("    {}", line.join("  ->  "));
+                    continue;
+                }
+
+                // The branches, then what they rejoin into.
+                println!(
+                    "    {}  ->  {}",
+                    line.join("  ->  "),
+                    path.split.map(row).unwrap_or_default()
+                );
+                for (l, lane) in path.lanes.iter().enumerate() {
+                    println!(
+                        "      {}  {}",
+                        ["A", "B"][l.min(1)],
+                        cells(&lane.blocks).join("  ->  ")
+                    );
+                }
+                let mut rest = vec![path.join.map(row).unwrap_or_default()];
+                rest.extend(cells(&path.tail));
+                if let Some(i) = path.output {
+                    rest.push(row(i));
+                }
+                println!("    {}", rest.join("  ->  "));
             }
             Ok(())
         }

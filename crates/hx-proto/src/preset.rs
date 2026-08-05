@@ -55,7 +55,15 @@ impl Layout {
     }
 }
 
-/// One signal path: an input, its lanes, and an output.
+/// One signal path: an input, whatever the signal passes through, an output.
+///
+/// A split does not divide the whole path — it divides a *stretch* of it. The
+/// blocks before the split and after the join are common to both branches, and
+/// the split records where it attaches, so a preset reads:
+///
+/// ```text
+/// input → head… → ⑂ → lanes… → ⑃ → tail… → output
+/// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Path {
     pub input: Option<usize>,
@@ -64,8 +72,13 @@ pub struct Path {
     /// the line — it is where the wiring parts — so it is kept out of the lanes.
     pub split: Option<usize>,
     pub join: Option<usize>,
-    /// One lane if the path runs straight through, two if it splits.
+    /// Blocks before the split, carrying the undivided signal.
+    pub head: Vec<usize>,
+    /// The branches, when the path splits. Empty when it runs straight through,
+    /// in which case every block is in `head`.
     pub lanes: Vec<Lane>,
+    /// Blocks after the join, carrying the recombined signal.
+    pub tail: Vec<usize>,
 }
 
 /// A single row of blocks.
@@ -174,6 +187,10 @@ mod key {
     /// Split and join keep their model and values one level down.
     pub const SPLIT_BODY: i64 = 15;
     pub const JOIN_BODY: i64 = 17;
+    /// Inside a split or join body: the slot index it attaches before. A split
+    /// carrying 2 divides the signal just before slot 2; a join carrying 6
+    /// recombines it just before slot 6.
+    pub const ATTACH: i64 = 13;
 
     /// Inside a value array: the count, then the values.
     pub const ARRAY_VALUES: i64 = 4;
@@ -333,39 +350,48 @@ impl Preset {
     ///
     /// Positions are derived from the slot kinds rather than hard-coded, so a
     /// device with a different number of block slots still works.
+    /// Where a split or join attaches: the slot index it sits just before.
+    fn attach(&self, position: usize, body_key: i64) -> Option<usize> {
+        self.slot_body(position)?
+            .get(body_key)?
+            .get(key::ATTACH)
+            .and_then(Value::as_i64)
+            .map(|n| n as usize)
+    }
+
     pub fn layout(&self) -> Layout {
         let mut paths: Vec<Path> = Vec::new();
+        // Blocks are gathered per path first and assigned to head, lanes and
+        // tail afterwards, because where they belong depends on the split's
+        // attachment point — which is stored on the split, not on them.
+        let mut main: Vec<Vec<usize>> = Vec::new();
+        let mut lower: Vec<Vec<usize>> = Vec::new();
+        let mut past_split = false;
 
         for (position, slot) in self.slots.iter().enumerate() {
             match slot.kind {
-                // An input opens a path. Its blocks accumulate into the first
-                // lane until something says otherwise.
-                Kind::Input => paths.push(Path {
-                    input: Some(position),
-                    lanes: vec![Lane {
-                        branch: 0,
-                        blocks: Vec::new(),
-                        span: position + 1..position + 1,
-                    }],
-                    ..Path::default()
-                }),
+                Kind::Input => {
+                    paths.push(Path {
+                        input: Some(position),
+                        ..Path::default()
+                    });
+                    main.push(Vec::new());
+                    lower.push(Vec::new());
+                    past_split = false;
+                }
                 Kind::Output => {
                     if let Some(path) = paths.last_mut() {
                         path.output = Some(position);
                     }
                 }
-                // A split adds the second lane. It appears after the output in
-                // the slot array even though the signal reaches it first, which
-                // is why reading the array as a running order goes wrong.
+                // The split appears after the output in the slot array even
+                // though the signal reaches it earlier, which is why reading
+                // the array as a running order goes wrong.
                 Kind::Split => {
                     if let Some(path) = paths.last_mut() {
                         path.split = Some(position);
-                        path.lanes.push(Lane {
-                            branch: 1,
-                            blocks: Vec::new(),
-                            span: position + 1..position + 1,
-                        });
                     }
+                    past_split = true;
                 }
                 Kind::Join => {
                     if let Some(path) = paths.last_mut() {
@@ -373,29 +399,58 @@ impl Preset {
                     }
                 }
                 Kind::Block | Kind::Empty | Kind::Unknown(_) => {
-                    if let Some(lane) = paths.last_mut().and_then(|p| p.lanes.last_mut()) {
-                        lane.span.end = position + 1;
-                    }
-                    // Blocks belong to whichever lane is currently open: the
-                    // lower one once a split has been seen, otherwise the upper.
-                    // Empty slots are skipped — a lane is mostly empty slots on
-                    // a small device, and they are positions, not blocks.
                     if slot.model.is_none() {
-                        continue;
+                        continue; // a free position, not a block
                     }
-                    if let Some(lane) = paths.last_mut().and_then(|p| p.lanes.last_mut()) {
-                        lane.blocks.push(position);
+                    let bucket = if past_split { &mut lower } else { &mut main };
+                    if let Some(list) = bucket.last_mut() {
+                        list.push(position);
                     }
                 }
             }
         }
 
-        // A path with a split but no blocks below it is drawn as a single lane;
-        // an empty second row is noise.
-        for path in &mut paths {
-            if path.lanes.len() > 1 && path.lanes[1].blocks.is_empty() {
-                path.lanes.truncate(1);
+        for (n, path) in paths.iter_mut().enumerate() {
+            let straight = main.get(n).cloned().unwrap_or_default();
+            let branch = lower.get(n).cloned().unwrap_or_default();
+
+            // Without a split — or with nothing on the lower branch — the path
+            // is one undivided line and an empty second lane would be noise.
+            let divides = path.split.is_some() && !branch.is_empty();
+            if !divides {
+                path.head = straight;
+                continue;
             }
+
+            let split_at = path
+                .split
+                .and_then(|p| self.attach(p, key::SPLIT_BODY))
+                .unwrap_or(0);
+            let join_at = path
+                .join
+                .and_then(|p| self.attach(p, key::JOIN_BODY))
+                .unwrap_or(usize::MAX);
+
+            path.head = straight.iter().copied().filter(|p| *p < split_at).collect();
+            let upper: Vec<usize> = straight
+                .iter()
+                .copied()
+                .filter(|p| *p >= split_at && *p < join_at)
+                .collect();
+            path.tail = straight.iter().copied().filter(|p| *p >= join_at).collect();
+
+            path.lanes = vec![
+                Lane {
+                    branch: 0,
+                    blocks: upper,
+                    span: split_at..join_at.min(self.slots.len()),
+                },
+                Lane {
+                    branch: 1,
+                    blocks: branch,
+                    span: path.split.map_or(0, |p| p + 1)..path.join.unwrap_or(self.slots.len()),
+                },
+            ];
         }
 
         Layout { paths }
@@ -512,6 +567,11 @@ impl Preset {
         out.extend_from_slice(&(total as u32).to_le_bytes());
         out.extend_from_slice(&(total as u32).to_le_bytes());
         Some(out)
+    }
+
+    /// The raw body of one slot, for protocol work.
+    pub fn raw_slot(&self, position: usize) -> Option<&Value> {
+        self.slot_body(position)
     }
 
     /// Slots holding an actual effect, with their position in the chain.
@@ -746,6 +806,11 @@ mod tests {
     /// Build a preset from a bare list of slot kinds. Blocks are given a model
     /// so they count as occupied — a slot with no model is a free position.
     fn shaped(kinds: &[i64]) -> Preset {
+        shaped_at(kinds, 0, usize::MAX)
+    }
+
+    /// As `shaped`, but with the split and join attached at given slots.
+    fn shaped_at(kinds: &[i64], split_at: usize, join_at: usize) -> Preset {
         let slot = |k: i64| {
             let mut fields = vec![(crate::msgpack::Key::Int(key::KIND), Value::Int(k))];
             if k == BLOCK {
@@ -753,6 +818,28 @@ mod tests {
                     crate::msgpack::Key::Int(key::BODY),
                     crate::msgmap! {
                         key::MODEL_REF => crate::msgmap! { key::MODEL => Value::Int(101) },
+                    },
+                ));
+            }
+            if k == SPLIT {
+                fields.push((
+                    crate::msgpack::Key::Int(key::BODY),
+                    crate::msgmap! {
+                        key::SPLIT_BODY => crate::msgmap! {
+                            key::INLINE_MODEL => Value::Int(257),
+                            key::ATTACH => Value::Int(split_at as i64),
+                        },
+                    },
+                ));
+            }
+            if k == JOIN {
+                fields.push((
+                    crate::msgpack::Key::Int(key::BODY),
+                    crate::msgmap! {
+                        key::JOIN_BODY => crate::msgmap! {
+                            key::INLINE_MODEL => Value::Int(151),
+                            key::ATTACH => Value::Int(join_at.min(9999) as i64),
+                        },
                     },
                 ));
             }
@@ -779,19 +866,34 @@ mod tests {
     const JOIN: i64 = 3;
     const BLOCK: i64 = 6;
 
+    /// A split divides a *stretch* of the path, not the whole of it: blocks
+    /// before it and after the join carry the undivided signal. Getting this
+    /// wrong drew every block as though it were on a branch.
     #[test]
-    fn a_split_puts_its_blocks_on_a_second_lane() {
-        let layout = shaped(&[IN, BLOCK, BLOCK, OUT, SPLIT, BLOCK, JOIN]).layout();
+    fn a_split_divides_only_the_stretch_between_its_attach_points() {
+        // Slots 1..4 on the main row, split attaching before 2, join before 4.
+        let layout = shaped_at(&[IN, BLOCK, BLOCK, BLOCK, OUT, SPLIT, BLOCK, JOIN], 2, 4).layout();
 
-        assert_eq!(layout.paths.len(), 1);
         let path = &layout.paths[0];
         assert_eq!(path.input, Some(0));
-        assert_eq!(path.output, Some(3));
-        assert_eq!(path.split, Some(4));
-        assert_eq!(path.join, Some(6));
+        assert_eq!(path.output, Some(4));
+        assert_eq!(path.head, vec![1], "slot 1 precedes the split");
         assert_eq!(path.lanes.len(), 2);
-        assert_eq!(path.lanes[0].blocks, vec![1, 2]);
-        assert_eq!(path.lanes[1].blocks, vec![5]);
+        assert_eq!(path.lanes[0].blocks, vec![2, 3], "the upper branch");
+        assert_eq!(path.lanes[1].blocks, vec![6], "the lower branch");
+        assert_eq!(path.tail, Vec::<usize>::new());
+    }
+
+    #[test]
+    fn blocks_after_the_join_are_shared_again() {
+        // Split before 2, join before 3: one block on each branch, one after.
+        let layout = shaped_at(&[IN, BLOCK, BLOCK, BLOCK, OUT, SPLIT, BLOCK, JOIN], 2, 3).layout();
+
+        let path = &layout.paths[0];
+        assert_eq!(path.head, vec![1]);
+        assert_eq!(path.lanes[0].blocks, vec![2]);
+        assert_eq!(path.lanes[1].blocks, vec![6]);
+        assert_eq!(path.tail, vec![3], "slot 3 is past the join");
     }
 
     /// Helix and Helix LT carry two independent signal paths, so a preset that
@@ -813,16 +915,17 @@ mod tests {
     /// The split slot exists in every preset whether or not anything is on the
     /// lower branch, and an empty second row would be noise.
     #[test]
-    fn a_split_with_nothing_below_it_stays_one_lane() {
+    fn a_split_with_nothing_below_it_draws_as_one_line() {
         let layout = shaped(&[IN, BLOCK, OUT, SPLIT, JOIN]).layout();
-        assert_eq!(layout.paths[0].lanes.len(), 1);
+        assert!(layout.paths[0].lanes.is_empty());
+        assert_eq!(layout.paths[0].head, vec![1]);
         assert_eq!(layout.paths[0].split, Some(3));
     }
 
     #[test]
-    fn a_preset_without_a_split_has_one_lane() {
+    fn a_preset_without_a_split_has_one_line() {
         let layout = Preset::parse(&sample()).unwrap().layout();
-        assert!(layout.lanes().all(|l| l.branch == 0));
+        assert!(layout.paths.iter().all(|p| p.lanes.is_empty()));
     }
 
     /// The real thing. This preset's lower branch is empty, so it draws as one
@@ -839,11 +942,10 @@ mod tests {
             path.split.unwrap() > path.output.unwrap(),
             "the split sits after the output in the slot array"
         );
-        assert_eq!(path.lanes.len(), 1, "nothing is on the lower branch");
+        assert!(path.lanes.is_empty(), "nothing is on the lower branch");
         assert!(
-            !path.lanes[0].blocks.contains(&path.split.unwrap())
-                && !path.lanes[0].blocks.contains(&path.join.unwrap()),
-            "the split and join must not appear as blocks in the lane"
+            !path.head.contains(&path.split.unwrap()) && !path.head.contains(&path.join.unwrap()),
+            "the split and join must not appear as blocks in the line"
         );
         // And there is room to put something on the lower branch.
         let preset = Preset::parse(FIXTURE).unwrap();

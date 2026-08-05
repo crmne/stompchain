@@ -234,7 +234,7 @@ setlist**, not a bank number: the librarian's `05A` is `108: 12`, and 12/3+1 = 5
 | 10 | block enabled | bool | [inferred] |
 | 11 | primary model's parameter group `{2, 3, 4}` | map | [confirmed] |
 | 12 | secondary (cab) model's parameter group | map | [confirmed] |
-| 13 | in an op40 result — always `1` | int | [open] |
+| 13 | in an op40 result — always `1`; inside a split or join body it is the slot the branch attaches before | int | [confirmed for split/join, open elsewhere] |
 | 16 | tempo, BPM (preset-level, key `5`) | float | [confirmed] |
 | 19 | slot kind: 0 input, 1 output, 2 split, 3 join, 6 block, 8 empty | int | [confirmed] |
 | 20 | slot contents | map or nil | [confirmed] |
@@ -616,15 +616,18 @@ opcode a third-party tool would use to upload a preset. **[inferred]** that it i
 general write rather than an undo-specific call; nothing observed contradicts it, but
 it was only ever seen carrying a previously-read document.
 
-Notification 21 appeared exactly once, right after the completion. Its meaning is
-**[open]**.
+Notification 21 follows the completion of every document write — fourteen
+consecutive captured undos all show `20` then `21`. It reads as a post-commit
+tick; nothing acts on it. [confirmed pattern]
 
 ### 6.4 Snapshots — no traffic, no conclusion
 
 `SNAPSHOT-selector-open` and `SNAPSHOT-pick` both produced **zero USB traffic**.
 Either the picker is local until a different snapshot is chosen, or the click landed
-on the snapshot already active. **No opcode for switching snapshots was captured
-— [open].**
+on the snapshot already active. **No opcode for switching snapshots was captured here**, but it is opcode 88 —
+found later by driving the snapshots from the keyboard rather than the mouse,
+since HX Edit sends nothing when a click lands on the already-active snapshot.
+See PROTOCOL.md. [confirmed]
 
 What the capture does show is where snapshots live in the preset document: key `10`
 holds `{6, 7, 8, 9: 20, 10: [<3 snapshot objects>], 13: [bool × 20]}`, each snapshot
@@ -649,9 +652,10 @@ nothing was changed, so no write opcode was exercised. **[open].**
 ### 6.7 Preset copy
 
 `PRESET-copy` and `PRESET-select-target` both produced **zero traffic** (keep-alives
-only). Copy/paste in the librarian is a client-side clipboard operation in HX Edit
-3.82; presumably the paste would eventually write via op21 or a librarian opcode, but
-the sweep never pasted. **[open].**
+only) — so copy in the librarian is a client-side clipboard operation, which is an
+answer rather than a gap. Paste is a document write (op21): this project implements
+copy, paste, import and export that way, and the round trip is verified byte-exact
+against hardware. [confirmed]
 
 ---
 

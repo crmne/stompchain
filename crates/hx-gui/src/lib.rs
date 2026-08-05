@@ -742,8 +742,8 @@ impl App {
     /// The number of lanes is not fixed at two: Helix and Helix LT carry two
     /// independent signal paths, so a preset that splits both has four.
     fn signal_chain(&mut self, ctx: &egui::Context) {
-        let lanes = self.layout.lanes().count().max(1);
-        let height = 34.0 + lanes as f32 * theme::LANE_HEIGHT;
+        let rows: usize = self.layout.paths.iter().map(|p| p.lanes.len().max(1)).sum();
+        let height = 34.0 + rows.max(1) as f32 * theme::LANE_HEIGHT;
 
         egui::TopBottomPanel::top("chain")
             .exact_height(height.min(ctx.screen_rect().height() * 0.55))
@@ -783,15 +783,20 @@ impl App {
             });
     }
 
-    /// One signal path: input, the lanes, output — with the wiring between.
+    /// One signal path: input, whatever the signal passes through, output.
+    ///
+    /// A split divides a *stretch* of the path, not all of it — the split
+    /// records the slot it attaches before, and the blocks on either side of
+    /// that stretch carry the undivided signal. Drawing every block as though
+    /// it were on a branch was wrong, and obviously so next to HX Edit.
     fn path_row(&self, ui: &mut egui::Ui, path: &hx_proto::preset::Path) -> Option<usize> {
         let mut pick = None;
-        let branched = path.lanes.len() > 1;
-        let lanes = path.lanes.len().max(1);
-        let tall = theme::LANE_HEIGHT * lanes as f32;
-        // Every lane is padded out to the longest, so the columns line up and
-        // the merge happens at one place rather than wherever a lane ran out.
-        let longest = path.lanes.iter().map(|l| l.blocks.len()).max().unwrap_or(0);
+        let lanes = path.lanes.len();
+        let tall = if lanes > 1 {
+            theme::LANE_HEIGHT * lanes as f32
+        } else {
+            theme::BLOCK_HEIGHT
+        };
 
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
@@ -800,30 +805,38 @@ impl App {
             if let Some(input) = path.input {
                 pick = self.endpoint(ui, input, tall).or(pick);
             }
-            if branched {
+            // Everything ahead of the split, on the centre line.
+            for slot in &path.head {
+                theme::wire_run(ui, theme::WIRE_WIDTH, tall);
+                pick = self.block_at(ui, *slot, tall).or(pick);
+            }
+
+            if lanes > 1 {
+                let longest = path.lanes.iter().map(|l| l.blocks.len()).max().unwrap_or(0);
                 if let Some(split) = path.split {
                     pick = self.junction(ui, split, lanes, true).or(pick);
                 }
-            } else {
-                theme::wire_run(ui, theme::WIRE_WIDTH, tall);
-            }
-
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
-                for lane in &path.lanes {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 0.0;
-                        pick = self.lane_row(ui, &lane.blocks, longest).or(pick);
-                    });
-                    ui.add_space(theme::LANE_HEIGHT - theme::BLOCK_HEIGHT);
-                }
-            });
-
-            if branched {
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    for lane in &path.lanes {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            pick = self.lane_row(ui, &lane.blocks, longest).or(pick);
+                        });
+                        ui.add_space(theme::LANE_HEIGHT - theme::BLOCK_HEIGHT);
+                    }
+                });
                 if let Some(join) = path.join {
                     pick = self.junction(ui, join, lanes, false).or(pick);
                 }
-            } else {
+            }
+
+            // And everything the recombined signal passes through.
+            for slot in &path.tail {
+                pick = self.block_at(ui, *slot, tall).or(pick);
+                theme::wire_run(ui, theme::WIRE_WIDTH, tall);
+            }
+            if path.tail.is_empty() && lanes > 1 {
                 theme::wire_run(ui, theme::WIRE_WIDTH, tall);
             }
             if let Some(output) = path.output {
@@ -833,10 +846,35 @@ impl App {
         pick
     }
 
+    /// One block on the centre line, vertically centred against `tall`.
+    fn block_at(&self, ui: &mut egui::Ui, slot: usize, tall: f32) -> Option<usize> {
+        let i = self.index_of(slot)?;
+        let block = &self.chain[i];
+        let art = self.artwork(block);
+        let mut pick = None;
+        ui.allocate_ui(egui::vec2(theme::BLOCK_WIDTH, tall), |ui| {
+            ui.vertical(|ui| {
+                ui.add_space((tall - theme::BLOCK_HEIGHT) / 2.0);
+                if theme::block_button(
+                    ui,
+                    &self.slot_label(block),
+                    art.as_ref(),
+                    i == self.selected,
+                    block.enabled,
+                )
+                .clicked()
+                {
+                    pick = Some(i);
+                }
+            });
+        });
+        pick
+    }
+
     /// One lane's blocks, padded out to `longest` so lanes stay in step.
     fn lane_row(&self, ui: &mut egui::Ui, blocks: &[usize], longest: usize) -> Option<usize> {
         let mut pick = None;
-        for slot in blocks {
+        for (n, slot) in blocks.iter().enumerate() {
             let Some(i) = self.index_of(*slot) else {
                 continue;
             };
@@ -853,7 +891,9 @@ impl App {
             {
                 pick = Some(i);
             }
-            theme::wire_run(ui, theme::WIRE_WIDTH, theme::BLOCK_HEIGHT);
+            if n + 1 < blocks.len() {
+                theme::wire_run(ui, theme::WIRE_WIDTH, theme::BLOCK_HEIGHT);
+            }
         }
         // A short lane runs on as plain wire to where the merge happens.
         let short = longest.saturating_sub(blocks.len()) as f32;
