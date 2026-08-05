@@ -615,6 +615,59 @@ impl Preset {
         true
     }
 
+    /// Free up `at` by sliding the blocks after it one place along.
+    ///
+    /// Returns false when the lane is full — there is no empty slot after `at`
+    /// to slide into — rather than dropping whatever fell off the end.
+    ///
+    /// `within` bounds the search so a block never slides out of its lane and
+    /// into the other branch of a split, which would silently rewire the
+    /// preset.
+    pub fn make_room(&mut self, at: usize, within: std::ops::Range<usize>) -> bool {
+        if !within.contains(&at) {
+            return false;
+        }
+        let Some(free) = (at..within.end).find(|p| {
+            self.slots.get(*p).is_some_and(|s| {
+                s.model.is_none() && s.kind != Kind::Input && s.kind != Kind::Output
+            })
+        }) else {
+            return false;
+        };
+        let Some(Value::Array(items)) = self.tone.at_mut(&[key::PATH, key::SLOTS]) else {
+            return false;
+        };
+        if free >= items.len() {
+            return false;
+        }
+        // Slide everything from `at` up to the free slot along by one, which
+        // leaves the empty one sitting at `at`.
+        items[at..=free].rotate_right(1);
+        self.slots = collect_slots(
+            self.tone
+                .get(key::PATH)
+                .and_then(|p| p.get(key::SLOTS))
+                .unwrap_or(&Value::Nil),
+        );
+        true
+    }
+
+    /// The slot range a lane occupies, for bounding [`make_room`].
+    pub fn lane_bounds(&self, position: usize) -> Option<std::ops::Range<usize>> {
+        let layout = self.layout();
+        for path in &layout.paths {
+            let upper = path.input.map_or(0, |i| i + 1)..path.output.unwrap_or(self.slots.len());
+            if upper.contains(&position) {
+                return Some(upper);
+            }
+            let lower = path.split.map_or(0, |s| s + 1)..path.join.unwrap_or(self.slots.len());
+            if path.split.is_some() && lower.contains(&position) {
+                return Some(lower);
+            }
+        }
+        None
+    }
+
     /// Lift a snapshot out of the document.
     pub fn copy_snapshot(&self, index: usize) -> Option<Value> {
         match self.tone.get(key::SNAPSHOT_SECTION)?.get(key::SNAPSHOTS)? {
@@ -1095,6 +1148,43 @@ mod tests {
 
     /// The endpoints are fixtures of the topology. Pasting a block over the
     /// input would produce a document the device has no way to read.
+    #[test]
+    fn making_room_slides_blocks_along() {
+        let mut preset = Preset::parse(FIXTURE).unwrap();
+        let before: Vec<_> = preset.blocks().map(|(p, s)| (p, s.model)).collect();
+        let (first, _) = before[0];
+        let bounds = preset.lane_bounds(first).expect("the block is in a lane");
+
+        assert!(preset.make_room(first, bounds));
+        assert!(
+            preset.slots[first].model.is_none(),
+            "the requested slot is now free"
+        );
+        // Everything that was there is still there, one place along.
+        let after: Vec<_> = preset.blocks().map(|(_, s)| s.model).collect();
+        assert_eq!(
+            after,
+            before.iter().map(|(_, m)| *m).collect::<Vec<_>>(),
+            "sliding lost or reordered a block"
+        );
+    }
+
+    /// A full lane has nowhere to slide, and must say so rather than pushing a
+    /// block off the end.
+    #[test]
+    fn making_room_in_a_full_lane_fails() {
+        let mut preset = Preset::parse(FIXTURE).unwrap();
+        let bounds = preset.lane_bounds(1).unwrap();
+        // Fill every free slot in the lane.
+        let block = preset.copy_slot(1).unwrap();
+        for p in bounds.clone() {
+            if preset.slots[p].model.is_none() {
+                preset.paste_slot(p, &block);
+            }
+        }
+        assert!(!preset.make_room(1, bounds));
+    }
+
     #[test]
     fn a_slot_cannot_be_pasted_over_an_endpoint() {
         let mut preset = Preset::parse(FIXTURE).unwrap();

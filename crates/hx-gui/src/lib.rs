@@ -44,6 +44,15 @@ pub struct App {
     clipboard: Option<(String, Vec<u8>)>,
     /// Where the bytes should go once `Cmd::CopyPreset` answers.
     pending_copy: CopyTarget,
+    /// Whether the device window is open.
+    show_device: bool,
+    /// The device's global EQ switch, as last read.
+    global_eq: bool,
+    /// How many steps the worker can undo and redo, for enabling the buttons.
+    undo_depth: usize,
+    redo_depth: usize,
+    /// Where a click on a `+` in the chain wants to add a block.
+    inserting_at: Option<usize>,
     /// Whether the edit buffer has changes the preset does not.
     ///
     /// The device edits a scratch copy: a changed parameter is audible at once
@@ -66,6 +75,7 @@ pub struct App {
     /// Snapshot being renamed, with its draft name.
     snapshot_draft: Option<(usize, String)>,
     /// MIDI CC to bind to the selected block's bypass.
+    /// Which MIDI CC the "assign bypass" control offers.
     assign_cc: i64,
     /// Editable copy of the preset name, so typing does not fight the device.
     renaming: Option<String>,
@@ -118,6 +128,11 @@ impl App {
             clipboard: None,
             pending_copy: CopyTarget::Clipboard,
             dirty: false,
+            show_device: false,
+            global_eq: false,
+            undo_depth: 0,
+            redo_depth: 0,
+            inserting_at: None,
             selected: 0,
             browsing: None,
             irs: Vec::new(),
@@ -204,6 +219,11 @@ impl App {
                     self.snapshot_draft = None;
                 }
                 Ok(Evt::Saved) => self.dirty = false,
+                Ok(Evt::History { undo, redo }) => {
+                    self.undo_depth = undo;
+                    self.redo_depth = redo;
+                }
+                Ok(Evt::Settings { global_eq }) => self.global_eq = global_eq,
                 Ok(Evt::Copied { name, blob }) => {
                     let size = blob.len();
                     match std::mem::replace(&mut self.pending_copy, CopyTarget::Clipboard) {
@@ -270,7 +290,15 @@ impl App {
         Some(theme::Art::whole(format!("file://{}", path.display())))
     }
 
+    /// A model's display name.
+    ///
+    /// Model 0 is treated as "no model": the endpoints report it because they
+    /// carry no model reference, and the symbol table's entry 0 is a real amp,
+    /// so resolving it names the wrong thing entirely.
     fn model_name(&self, model: u32) -> String {
+        if model == 0 {
+            return String::new();
+        }
         self.catalog
             .as_ref()
             .and_then(|c| c.model_number(model))
@@ -309,7 +337,7 @@ impl App {
             Kind::Input => ["HelixStomp_AppDSPFlowInput", "HD2_AppDSPFlow1Input"]
                 .into_iter()
                 .find_map(|id| catalog.model(id)),
-            Kind::Output => ["HelixStomp_AppDSPFlowOutput", "HD2_AppDSPFlowOutput"]
+            Kind::Output => ["HelixStomp_AppDSPFlowOutputMain", "HD2_AppDSPFlowOutput"]
                 .into_iter()
                 .find_map(|id| catalog.model(id)),
             _ => catalog.model_number(block.model),
@@ -326,47 +354,125 @@ impl eframe::App for App {
 
         self.dropped_files(ctx);
         self.top_bar(ctx);
+        self.status_bar(ctx);
         self.preset_list(ctx);
-        self.impulse_responses(ctx);
         self.activity(ctx);
         self.signal_chain(ctx);
+        // The shelf sits beside the pedal being edited rather than under it,
+        // so choosing a different model is plainly a secondary action.
+        self.shelf(ctx);
         self.editor(ctx);
+        self.device_window(ctx);
     }
 }
 
 impl App {
+    /// One row: the preset you are editing, and what you can do to it.
+    ///
+    /// This had grown to two rows holding two menus, a connection state and a
+    /// log toggle — an inventory of the program rather than of the music. The
+    /// preset actions moved to the preset list they act on, the device moved
+    /// to a status bar at the bottom, and what is left is the preset itself.
     fn top_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("top")
-            .exact_height(48.0)
+            .exact_height(46.0)
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    ui.add_space(6.0);
-                    self.connection_button(ui);
-                    ui.add_space(12.0);
+                    ui.add_space(8.0);
                     self.preset_title(ui);
-                    self.save_button(ui);
-                    ui.add_space(10.0);
+                    ui.add_space(12.0);
                     self.tempo_control(ui);
-                    ui.add_space(10.0);
+                    ui.add_space(12.0);
                     self.snapshot_bar(ui);
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
-                        self.preset_menu(ui);
-                        self.edit_menu(ui);
-                        ui.toggle_value(&mut self.show_activity, "log")
-                            .on_hover_text("show what the device is reporting");
-                        ui.label(RichText::new(&self.status).color(theme::DIM));
-                        if !self.firmware.is_empty() {
-                            ui.separator();
-                            ui.label(
-                                RichText::new(format!("{}  fw {}", self.device, self.firmware))
-                                    .color(theme::DIM),
-                            );
-                        }
+                        self.save_button(ui);
+                        self.history_buttons(ui);
                     });
                 });
             });
+    }
+
+    /// The device, along the bottom, where a status bar belongs.
+    fn status_bar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("status")
+            .exact_height(28.0)
+            .show(ctx, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.add_space(8.0);
+                    let colour = match self.connection {
+                        Connection::Online => egui::Color32::from_rgb(0x4c, 0xc0, 0x60),
+                        _ => theme::DIM,
+                    };
+                    theme::status_dot(ui, colour);
+
+                    // The device's name is the way in to its settings: that is
+                    // where you would look for them.
+                    let name = if self.device.is_empty() {
+                        "No device".to_owned()
+                    } else {
+                        self.device.clone()
+                    };
+                    if ui
+                        .add_enabled(
+                            matches!(self.connection, Connection::Online),
+                            egui::Button::new(RichText::new(name).strong()).frame(false),
+                        )
+                        .on_hover_text("impulse responses and device settings")
+                        .clicked()
+                    {
+                        self.show_device = !self.show_device;
+                    }
+                    if !self.firmware.is_empty() {
+                        ui.label(
+                            RichText::new(format!("firmware {}", self.firmware))
+                                .small()
+                                .color(theme::DIM),
+                        );
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(8.0);
+                        match self.connection {
+                            Connection::Online => {
+                                if ui.small_button("Disconnect").clicked() {
+                                    self.send(Cmd::Disconnect);
+                                }
+                            }
+                            Connection::Connecting => {
+                                ui.spinner();
+                            }
+                            Connection::Offline => {
+                                if ui.small_button("Connect").clicked() {
+                                    self.connection = Connection::Connecting;
+                                    self.send(Cmd::Connect);
+                                }
+                            }
+                        }
+                        ui.label(RichText::new(&self.status).small().color(theme::DIM));
+                    });
+                });
+            });
+    }
+
+    /// Undo and redo, where you can see them.
+    fn history_buttons(&mut self, ui: &mut egui::Ui) {
+        let live = matches!(self.connection, Connection::Online);
+        if ui
+            .add_enabled(live && self.redo_depth > 0, egui::Button::new("Redo"))
+            .on_hover_text("put back what undo took away")
+            .clicked()
+        {
+            self.send(Cmd::Redo);
+        }
+        if ui
+            .add_enabled(live && self.undo_depth > 0, egui::Button::new("Undo"))
+            .on_hover_text("step back through changes to the chain")
+            .clicked()
+        {
+            self.send(Cmd::Undo);
+        }
     }
 
     /// Commit the edit buffer, and say when there is something to commit.
@@ -380,8 +486,7 @@ impl App {
             return;
         }
         if self.dirty {
-            ui.label(RichText::new("●").color(theme::ACCENT))
-                .on_hover_text("unsaved changes");
+            theme::status_dot(ui, theme::ACCENT).on_hover_text("unsaved changes");
         }
         let hit = ui
             .add_enabled(self.dirty, egui::Button::new("Save"))
@@ -392,135 +497,64 @@ impl App {
         }
     }
 
-    /// Block and snapshot operations, and undo.
-    ///
-    /// These are all document edits: the device has no opcode for moving a
-    /// block or copying a snapshot, so each is done by rewriting the preset
-    /// and writing it back. That makes undo natural — the document as it was
-    /// is simply written again.
-    fn edit_menu(&mut self, ui: &mut egui::Ui) {
-        let live = matches!(self.connection, Connection::Online) && !self.chain.is_empty();
-        let selected_slot = self.chain.get(self.selected).map(|b| b.position as usize);
-        let is_block = self
-            .chain
-            .get(self.selected)
-            .is_some_and(|b| b.kind == hx_proto::preset::Kind::Block);
-
-        ui.menu_button("Edit", |ui| {
-            ui.set_min_width(190.0);
-
-            if ui
-                .add_enabled(live && is_block, egui::Button::new("Copy Block"))
-                .clicked()
-            {
-                self.copied_block = selected_slot;
-                self.note(format!("copied block {}", self.selected + 1));
-                ui.close_menu();
-            }
-
-            let can_paste = live && self.copied_block.is_some() && selected_slot.is_some();
-            if ui
-                .add_enabled(can_paste, egui::Button::new("Paste Block"))
-                .clicked()
-            {
-                if let (Some(from), Some(to)) = (self.copied_block, selected_slot) {
-                    self.edit(Cmd::CopyBlock { from, to });
-                }
-                ui.close_menu();
-            }
-
-            if ui
-                .add_enabled(live && is_block, egui::Button::new("Clear Block"))
-                .clicked()
-            {
-                if let Some(block) = self.chain.get(self.selected) {
-                    self.edit(Cmd::ClearBlock(block.position));
-                }
-                ui.close_menu();
-            }
-
-            ui.separator();
-
-            if ui
-                .add_enabled(
-                    live && self.snapshots.len() > 1,
-                    egui::Button::new("Copy Snapshot to Next"),
-                )
-                .clicked()
-            {
-                let from = self.current_snapshot;
-                let to = (from + 1) % self.snapshots.len();
-                self.edit(Cmd::CopySnapshot { from, to });
-                ui.close_menu();
-            }
-
-            ui.separator();
-
-            if ui.add_enabled(live, egui::Button::new("Undo")).clicked() {
-                self.send(Cmd::Undo);
-                ui.close_menu();
-            }
-        });
-    }
-
-    /// Copy, paste, import and export for whole presets.
+    /// Copy, paste, import and export, on the preset list itself.
     ///
     /// A preset travels as the device's own document, byte for byte, so what
     /// comes back is what was there — including the parts this editor does not
-    /// model yet. Pasting a rebuilt-from-the-UI preset would quietly drop them.
-    fn preset_menu(&mut self, ui: &mut egui::Ui) {
+    /// model. Rebuilding one from what the UI shows would quietly drop them.
+    fn preset_actions(&mut self, ui: &mut egui::Ui) {
         let live = matches!(self.connection, Connection::Online) && self.preset_index >= 0;
+        let small = |ui: &mut egui::Ui, label: &str, on: bool| {
+            ui.add_enabled(
+                on,
+                egui::Button::new(RichText::new(label).small()).frame(false),
+            )
+        };
 
-        ui.menu_button("Preset", |ui| {
-            ui.set_min_width(190.0);
-
-            if ui.add_enabled(live, egui::Button::new("Copy")).clicked() {
-                self.pending_copy = CopyTarget::Clipboard;
-                self.send(Cmd::CopyPreset);
-                ui.close_menu();
-            }
-
-            let paste = match &self.clipboard {
-                Some((name, _)) => format!("Paste “{name}”"),
-                None => "Paste".to_owned(),
-            };
-            let can_paste = live && self.clipboard.is_some();
-            if ui
-                .add_enabled(can_paste, egui::Button::new(paste))
-                .clicked()
+        if small(ui, "EXPORT", live)
+            .on_hover_text("save this preset to a file")
+            .clicked()
+        {
+            let suggested = format!("{}.hxpreset", sanitise(&self.preset_name));
+            if let Some(path) = rfd::FileDialog::new()
+                .set_file_name(suggested)
+                .add_filter("HX preset", &["hxpreset"])
+                .save_file()
             {
-                if let Some((name, blob)) = self.clipboard.clone() {
-                    self.note(format!("pasting {name} over {}", self.preset_name));
-                    self.send(Cmd::PastePreset(blob));
-                }
-                ui.close_menu();
+                self.pending_copy = CopyTarget::File(path);
+                self.send(Cmd::CopyPreset);
             }
-
-            ui.separator();
-
-            if ui.add_enabled(live, egui::Button::new("Export…")).clicked() {
-                let suggested = format!("{}.hxpreset", sanitise(&self.preset_name));
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_file_name(suggested)
-                    .add_filter("HX preset", &["hxpreset"])
-                    .save_file()
-                {
-                    self.pending_copy = CopyTarget::File(path);
-                    self.send(Cmd::CopyPreset);
-                }
-                ui.close_menu();
+        }
+        if small(ui, "IMPORT", live)
+            .on_hover_text("load a preset file over this one")
+            .clicked()
+        {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("HX preset", &["hxpreset"])
+                .pick_file()
+            {
+                self.import(&path);
             }
-
-            if ui.add_enabled(live, egui::Button::new("Import…")).clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("HX preset", &["hxpreset"])
-                    .pick_file()
-                {
-                    self.import(&path);
-                }
-                ui.close_menu();
+        }
+        if small(ui, "PASTE", live && self.clipboard.is_some())
+            .on_hover_text(match &self.clipboard {
+                Some((name, _)) => format!("paste “{name}” over this preset"),
+                None => "nothing copied yet".to_owned(),
+            })
+            .clicked()
+        {
+            if let Some((name, blob)) = self.clipboard.clone() {
+                self.note(format!("pasting {name} over {}", self.preset_name));
+                self.send(Cmd::PastePreset(blob));
             }
-        });
+        }
+        if small(ui, "COPY", live)
+            .on_hover_text("copy this preset")
+            .clicked()
+        {
+            self.pending_copy = CopyTarget::Clipboard;
+            self.send(Cmd::CopyPreset);
+        }
     }
 
     /// Read a preset file and write it over the loaded preset.
@@ -534,27 +568,7 @@ impl App {
         }
     }
 
-    fn connection_button(&mut self, ui: &mut egui::Ui) {
-        match self.connection {
-            Connection::Online => {
-                if ui.button("Disconnect").clicked() {
-                    self.send(Cmd::Disconnect);
-                }
-            }
-            Connection::Connecting => {
-                ui.spinner();
-            }
-            Connection::Offline => {
-                if ui.button("Connect").clicked() {
-                    self.connection = Connection::Connecting;
-                    self.status = "Connecting…".into();
-                    self.send(Cmd::Connect);
-                }
-            }
-        }
-    }
-
-    /// The loaded preset, click-to-rename.
+    /// The loaded preset, click-to-rename.    /// The loaded preset, click-to-rename.
     fn preset_title(&mut self, ui: &mut egui::Ui) {
         if self.preset_index < 0 {
             return;
@@ -689,7 +703,16 @@ impl App {
             .exact_width(216.0)
             .show(ctx, |ui| {
                 ui.add_space(4.0);
-                ui.label(RichText::new("PRESETS").small().color(theme::DIM));
+                // The actions sit on the list they act on, the way HX Edit
+                // puts COPY / PASTE / IMPORT / EXPORT on its preset header. A
+                // menu called "Preset" at the top of the window made you go
+                // looking somewhere else for something that belongs here.
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("PRESETS").small().color(theme::DIM));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        self.preset_actions(ui);
+                    });
+                });
                 ui.separator();
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
@@ -725,74 +748,124 @@ impl App {
     }
 
     /// The impulse response slots, mirroring HX Edit's IRs tab.
-    fn impulse_responses(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::right("irs")
-            .exact_width(210.0)
+    /// Everything about the *device* rather than the preset.
+    ///
+    /// Impulse responses used to sit in a permanent side panel next to a
+    /// browser category also called IR, which invited exactly the question of
+    /// what the difference was. It is this: the **IR category** puts an IR
+    /// *block* in your signal chain, and that block plays whichever of the
+    /// device's IR slots you point it at. This window is those slots — the
+    /// device's library, shared by every preset. The list refreshes itself
+    /// whenever it changes, so there is nothing to press.
+    fn device_window(&mut self, ctx: &egui::Context) {
+        if !self.show_device {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("Device")
+            .open(&mut open)
+            .default_width(460.0)
+            .default_height(480.0)
+            .collapsible(false)
             .show(ctx, |ui| {
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("IMPULSE RESPONSES").small().color(theme::DIM));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("refresh").clicked() {
-                            self.send(Cmd::ListIrs);
-                        }
-                    });
-                });
+                // Explanatory text has to be told how wide it may be, or egui
+                // lays it out on one line and the window grows to fit it.
+                ui.set_max_width(440.0);
+                ui.label(
+                    RichText::new(format!("{}  ·  firmware {}", self.device, self.firmware))
+                        .color(theme::DIM),
+                );
                 ui.separator();
 
-                if self.connection != Connection::Online {
-                    ui.label(RichText::new("Connect to manage IRs").color(theme::DIM));
-                    return;
-                }
-
-                let mut clear = None;
-                egui::ScrollArea::vertical().id_salt("irs").show(ui, |ui| {
-                    for (slot, name) in &self.irs {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(format!("{:>3}", slot + 1))
-                                    .monospace()
-                                    .color(theme::DIM),
-                            );
-                            ui.label(if name.is_empty() {
-                                "—"
-                            } else {
-                                name.as_str()
-                            });
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if !name.is_empty() && ui.small_button("clear").clicked() {
-                                        clear = Some(*slot);
-                                    }
-                                },
-                            );
-                        });
-                    }
-                    if self.irs.is_empty() {
-                        ui.label(RichText::new("no impulse responses loaded").color(theme::DIM));
-                    }
-                });
-                if let Some(slot) = clear {
-                    self.send(Cmd::ClearIr(slot));
-                }
-
-                ui.add_space(6.0);
-                ui.separator();
-                // Uploading takes a few seconds because the device writes to flash
-                // and we wait for it to confirm; saying so avoids it looking hung.
+                ui.heading("Impulse responses");
                 ui.label(
                     RichText::new(
-                        "Drop a mono WAV on the window to load it into the first free slot. \
-                               Uploads take a few seconds.",
+                        "The device's IR library, shared by every preset. Add an IR block                          to a chain from the shelf, then point it at one of these slots.",
                     )
                     .small()
                     .color(theme::DIM),
                 );
+                ui.add_space(4.0);
+                if self.irs.is_empty() {
+                    ui.label(RichText::new("no impulse responses loaded").color(theme::DIM));
+                }
+                let irs = self.irs.clone();
+                egui::ScrollArea::vertical()
+                    .max_height(170.0)
+                    .id_salt("irs")
+                    .show(ui, |ui| {
+                        for (slot, name) in &irs {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(format!("{:>3}", slot + 1)).monospace());
+                                ui.label(name);
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.small_button("clear").clicked() {
+                                            self.send(Cmd::ClearIr(*slot));
+                                        }
+                                    },
+                                );
+                            });
+                        }
+                    });
+                ui.label(
+                    RichText::new("Drop a mono WAV on the window to load one.")
+                        .small()
+                        .color(theme::DIM),
+                );
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.heading("Preferences");
+                ui.label(
+                    RichText::new(
+                        "The device's own global settings — the same ones HX Edit's                          preferences write. They belong to the device, not the preset.",
+                    )
+                    .small()
+                    .color(theme::DIM),
+                );
+                ui.add_space(4.0);
+                self.preferences(ui);
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.checkbox(&mut self.show_activity, "Show what the device reports");
             });
+        self.show_device = open;
     }
 
-    /// Accept a WAV dropped anywhere on the window.
+    /// The handful of global settings worth exposing by name.
+    ///
+    /// The namespace is 147 numbered objects with no names anywhere in HX
+    /// Edit's data, so naming them is a matter of having identified each one.
+    /// These are the ones that have been: guessing at the rest would be worse
+    /// than leaving them out.
+    fn preferences(&mut self, ui: &mut egui::Ui) {
+        const GLOBAL_EQ_ENABLED: i64 = 203;
+
+        if !matches!(self.connection, Connection::Online) {
+            ui.label(RichText::new("connect to read the device's settings").color(theme::DIM));
+            return;
+        }
+
+        ui.horizontal(|ui| {
+            let mut on = self.global_eq;
+            if ui.checkbox(&mut on, "Global EQ").changed() {
+                self.global_eq = on;
+                self.send(Cmd::SetSetting {
+                    id: GLOBAL_EQ_ENABLED,
+                    on,
+                });
+            }
+            ui.label(
+                RichText::new("applies to every preset, after the output")
+                    .small()
+                    .color(theme::DIM),
+            );
+        });
+    }
+
     fn dropped_files(&mut self, ctx: &egui::Context) {
         let dropped: Vec<_> = ctx.input(|i| {
             i.raw
@@ -905,7 +978,7 @@ impl App {
     /// records the slot it attaches before, and the blocks on either side of
     /// that stretch carry the undivided signal. Drawing every block as though
     /// it were on a branch was wrong, and obviously so next to HX Edit.
-    fn path_row(&self, ui: &mut egui::Ui, path: &hx_proto::preset::Path) -> Option<usize> {
+    fn path_row(&mut self, ui: &mut egui::Ui, path: &hx_proto::preset::Path) -> Option<usize> {
         let mut pick = None;
         let lanes = path.lanes.len();
         let tall = if lanes > 1 {
@@ -921,9 +994,10 @@ impl App {
             if let Some(input) = path.input {
                 pick = self.endpoint(ui, input, tall).or(pick);
             }
-            // Everything ahead of the split, on the centre line.
+            // Everything ahead of the split, on the centre line. A gap before
+            // each block, so a chain can be built from either end.
             for slot in &path.head {
-                theme::wire_run(ui, theme::WIRE_WIDTH, tall);
+                self.insert_point_tall(ui, *slot, tall);
                 pick = self.block_at(ui, *slot, tall).or(pick);
             }
 
@@ -949,11 +1023,11 @@ impl App {
 
             // And everything the recombined signal passes through.
             for slot in &path.tail {
+                self.insert_point_tall(ui, *slot, tall);
                 pick = self.block_at(ui, *slot, tall).or(pick);
-                theme::wire_run(ui, theme::WIRE_WIDTH, tall);
             }
-            if path.tail.is_empty() && lanes > 1 {
-                theme::wire_run(ui, theme::WIRE_WIDTH, tall);
+            if let Some(output) = path.output {
+                self.insert_point_tall(ui, output, tall);
             }
             if let Some(output) = path.output {
                 pick = self.endpoint(ui, output, tall).or(pick);
@@ -962,21 +1036,52 @@ impl App {
         pick
     }
 
+    /// A gap you can add a block to, at `before`.
+    ///
+    /// Clicking it arms the shelf: the next model chosen there is inserted
+    /// here rather than replacing the selected block. Adding a pedal used to
+    /// mean finding an empty slot and changing its model, which required
+    /// knowing the slot topology — this puts the action where the pedal goes.
+    fn insert_point(&mut self, ui: &mut egui::Ui, before: usize) {
+        if theme::insert_point(ui, theme::BLOCK_HEIGHT)
+            .on_hover_text("add a block here")
+            .clicked()
+        {
+            self.inserting_at = Some(before);
+            self.browsing = None;
+            self.search.clear();
+        }
+    }
+
+    /// As `insert_point`, on a row that spans more than one lane.
+    fn insert_point_tall(&mut self, ui: &mut egui::Ui, before: usize, tall: f32) {
+        if theme::insert_point(ui, tall)
+            .on_hover_text("add a block here")
+            .clicked()
+        {
+            self.inserting_at = Some(before);
+            self.browsing = None;
+            self.search.clear();
+        }
+    }
+
     /// One block on the centre line, vertically centred against `tall`.
-    fn block_at(&self, ui: &mut egui::Ui, slot: usize, tall: f32) -> Option<usize> {
+    fn block_at(&mut self, ui: &mut egui::Ui, slot: usize, tall: f32) -> Option<usize> {
         let i = self.index_of(slot)?;
-        let block = &self.chain[i];
-        let art = self.artwork(block);
+        let block = self.chain[i].clone();
+        let art = self.artwork(&block);
+        let colour = self.block_colour(&block);
         let mut pick = None;
         ui.allocate_ui(egui::vec2(theme::BLOCK_WIDTH, tall), |ui| {
             ui.vertical(|ui| {
                 ui.add_space((tall - theme::BLOCK_HEIGHT) / 2.0);
-                if theme::block_button(
+                if theme::block_button_tinted(
                     ui,
-                    &self.slot_label(block),
+                    &self.slot_label(&block),
                     art.as_ref(),
                     i == self.selected,
                     block.enabled,
+                    colour,
                 )
                 .clicked()
                 {
@@ -988,27 +1093,28 @@ impl App {
     }
 
     /// One lane's blocks, padded out to `longest` so lanes stay in step.
-    fn lane_row(&self, ui: &mut egui::Ui, blocks: &[usize], longest: usize) -> Option<usize> {
+    fn lane_row(&mut self, ui: &mut egui::Ui, blocks: &[usize], longest: usize) -> Option<usize> {
         let mut pick = None;
         for (n, slot) in blocks.iter().enumerate() {
             let Some(i) = self.index_of(*slot) else {
                 continue;
             };
-            let block = &self.chain[i];
-            let art = self.artwork(block);
-            if theme::block_button(
+            let block = self.chain[i].clone();
+            let art = self.artwork(&block);
+            if theme::block_button_tinted(
                 ui,
-                &self.slot_label(block),
+                &self.slot_label(&block),
                 art.as_ref(),
                 i == self.selected,
                 block.enabled,
+                self.block_colour(&block),
             )
             .clicked()
             {
                 pick = Some(i);
             }
             if n + 1 < blocks.len() {
-                theme::wire_run(ui, theme::WIRE_WIDTH, theme::BLOCK_HEIGHT);
+                self.insert_point(ui, *slot + 1);
             }
         }
         // A short lane runs on as plain wire to where the merge happens.
@@ -1020,10 +1126,11 @@ impl App {
     }
 
     /// An input or output, standing alongside the lanes rather than in one.
-    fn endpoint(&self, ui: &mut egui::Ui, slot: usize, tall: f32) -> Option<usize> {
+    fn endpoint(&mut self, ui: &mut egui::Ui, slot: usize, tall: f32) -> Option<usize> {
         let i = self.index_of(slot)?;
-        let block = &self.chain[i];
-        let art = self.artwork(block);
+        let block = self.chain[i].clone();
+        let art = self.artwork(&block);
+        let colour = self.block_colour(&block);
         let mut pick = None;
         ui.allocate_ui(egui::vec2(theme::BLOCK_WIDTH, tall), |ui| {
             // Centred by hand. `centered_and_justified` stretches the widget to
@@ -1031,12 +1138,13 @@ impl App {
             // other tile.
             ui.vertical(|ui| {
                 ui.add_space((tall - theme::BLOCK_HEIGHT) / 2.0);
-                if theme::block_button(
+                if theme::block_button_tinted(
                     ui,
-                    &self.slot_label(block),
+                    &self.slot_label(&block),
                     art.as_ref(),
                     i == self.selected,
                     block.enabled,
+                    colour,
                 )
                 .clicked()
                 {
@@ -1067,6 +1175,12 @@ impl App {
         self.chain.iter().position(|b| b.position == slot as i64)
     }
 
+    /// The block being edited, given the whole middle of the window.
+    ///
+    /// This used to share a column with the model list, which made choosing a
+    /// different pedal look as important as adjusting the one you have. The
+    /// pedal is the work; the shelf is a side trip, so it is a panel of its
+    /// own beside this one.
     fn editor(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
             let Some(block) = self.chain.get(self.selected).cloned() else {
@@ -1076,186 +1190,296 @@ impl App {
                 return;
             };
 
-            ui.horizontal(|ui| {
-                ui.heading(self.slot_label(&block));
-                if !self.is_effect(&block) {
-                    return;
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Clear").clicked() {
-                        self.edit(Cmd::ClearBlock(block.position));
-                    }
-                    let last = self.chain.len().saturating_sub(1);
-                    if ui
-                        .add_enabled(self.selected < last, egui::Button::new("»"))
-                        .on_hover_text("move later in the chain")
-                        .clicked()
-                    {
-                        self.edit(Cmd::MoveBlock {
-                            from: block.position as usize,
-                            to: self.chain[self.selected + 1].position as usize,
-                        });
-                    }
-                    if ui
-                        .add_enabled(self.selected > 0, egui::Button::new("«"))
-                        .on_hover_text("move earlier in the chain")
-                        .clicked()
-                    {
-                        self.edit(Cmd::MoveBlock {
-                            from: block.position as usize,
-                            to: self.chain[self.selected - 1].position as usize,
-                        });
-                    }
-                    let mut on = block.enabled;
-                    if ui.checkbox(&mut on, "Enabled").changed() {
-                        self.edit(Cmd::SetEnabled {
-                            block: block.position,
-                            enabled: on,
-                        });
-                        self.chain[self.selected].enabled = on;
-                    }
-                });
-            });
+            self.pedal_header(ui, &block);
             ui.separator();
 
-            // Inputs, outputs and splits carry no model and no knobs.
             if !self.is_effect(&block) {
-                ui.add_space(20.0);
-                ui.vertical_centered(|ui| {
-                    ui.label(
-                        RichText::new("part of the signal path, nothing to edit").color(theme::DIM),
-                    );
-                });
+                self.endpoint_editor(ui, &block);
                 return;
             }
 
-            // HX Edit puts this on a separate Bypass/Controller Assign tab; at
-            // one control it does not warrant one.
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Bypass follows").small().color(theme::DIM));
-                ui.add(
-                    egui::DragValue::new(&mut self.assign_cc)
-                        .range(0..=127)
-                        .prefix("CC"),
-                );
-                if ui.small_button("assign").clicked() {
-                    let cc = self.assign_cc;
-                    self.send(Cmd::AssignCc {
-                        block: block.position,
-                        cc,
-                    });
-                }
-            });
-            ui.add_space(4.0);
-            ui.separator();
+            self.bypass_assignment(ui, &block);
 
-            let model = self.slot_model(&block).cloned();
-            let Some(model) = model else {
-                ui.add_space(20.0);
-                ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("no controls for this slot").color(theme::DIM));
-                });
+            let Some(model) = self.slot_model(&block).cloned() else {
+                ui.label(RichText::new("Install HX Edit for model names").color(theme::DIM));
                 return;
             };
+            egui::ScrollArea::vertical()
+                .id_salt("pedal")
+                .show(ui, |ui| {
+                    ui.add_space(6.0);
+                    let art = self.artwork(&block);
+                    self.pedal(
+                        ui,
+                        &model,
+                        &block.values.clone(),
+                        block.position,
+                        false,
+                        art.as_ref(),
+                    );
 
-            // Only an effect can have its model swapped, so only an effect gets
-            // the browser; everything else uses the full width for its knobs.
-            if self.is_effect(&block) {
-                ui.columns(2, |columns| {
-                    let width = columns[0].available_width();
-                    columns[0].set_max_width(width);
-                    self.model_browser(&mut columns[0], &block);
-
-                    let ui = &mut columns[1];
-                    let width = ui.available_width();
-                    ui.set_max_width(width);
-                    self.pedal(ui, &model, &block.values, block.position, false);
-
-                    if let Some(cab) = block.paired {
-                        if let Some(cab) = self
+                    // An Amp+Cab is two models sharing a block; the cab has its own
+                    // controls and its own name.
+                    if let Some(cab) = block.paired.and_then(|m| {
+                        self.catalog
+                            .as_ref()
+                            .and_then(|c| c.model_number(m))
+                            .cloned()
+                    }) {
+                        ui.add_space(14.0);
+                        ui.separator();
+                        let cab_art = self
                             .catalog
                             .as_ref()
-                            .and_then(|c| c.model_number(cab))
-                            .cloned()
-                        {
-                            ui.add_space(10.0);
-                            ui.separator();
-                            let values = block.paired_values.clone();
-                            self.pedal(ui, &cab, &values, block.position, true);
-                        }
+                            .and_then(|c| c.artwork(&cab))
+                            .map(|p| theme::Art::whole(format!("file://{}", p.display())));
+                        self.pedal(
+                            ui,
+                            &cab,
+                            &block.paired_values.clone(),
+                            block.position,
+                            true,
+                            cab_art.as_ref(),
+                        );
                     }
                 });
-            } else {
-                self.pedal(ui, &model, &block.values, block.position, false);
-            }
         });
     }
 
-    /// The model shelf: categories down the side, thumbnails in a grid.
+    /// The pedal's name and the things you do to the block itself.
+    fn pedal_header(&mut self, ui: &mut egui::Ui, block: &session::Block) {
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            let colour = self.block_colour(block);
+            theme::category_swatch(ui, colour);
+            ui.heading(self.slot_label(block));
+
+            if !self.is_effect(block) {
+                return;
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Named rather than glyphed: "«" and "»" were doing the work of
+                // "move this pedal earlier or later in the chain", and "Clear"
+                // was doing the work of "take it out".
+                if ui
+                    .button("Remove")
+                    .on_hover_text("take this block out of the chain")
+                    .clicked()
+                {
+                    self.edit(Cmd::ClearBlock(block.position));
+                }
+                ui.add_space(6.0);
+                let can_paste = self.copied_block.is_some();
+                if ui
+                    .add_enabled(can_paste, egui::Button::new("Paste"))
+                    .on_hover_text("put the copied block here")
+                    .clicked()
+                {
+                    if let Some(from) = self.copied_block {
+                        self.edit(Cmd::CopyBlock {
+                            from,
+                            to: block.position as usize,
+                        });
+                    }
+                }
+                if ui.button("Copy").on_hover_text("copy this block").clicked() {
+                    self.copied_block = Some(block.position as usize);
+                    self.note(format!("copied {}", self.slot_label(block)));
+                }
+                ui.add_space(6.0);
+                let last = self.chain.len().saturating_sub(1);
+                if ui
+                    .add_enabled(self.selected < last, egui::Button::new("Move later"))
+                    .clicked()
+                {
+                    self.edit(Cmd::MoveBlock {
+                        from: block.position as usize,
+                        to: self.chain[self.selected + 1].position as usize,
+                    });
+                }
+                if ui
+                    .add_enabled(self.selected > 0, egui::Button::new("Move earlier"))
+                    .clicked()
+                {
+                    self.edit(Cmd::MoveBlock {
+                        from: block.position as usize,
+                        to: self.chain[self.selected - 1].position as usize,
+                    });
+                }
+                ui.add_space(10.0);
+                let mut on = block.enabled;
+                if ui.checkbox(&mut on, "Engaged").changed() {
+                    self.edit(Cmd::SetEnabled {
+                        block: block.position,
+                        enabled: on,
+                    });
+                    self.chain[self.selected].enabled = on;
+                }
+            });
+        });
+    }
+
+    /// Assign this block's bypass to a MIDI CC.
     ///
-    /// Modelled on Logic's Pedalboard rather than HX Edit's list, because with
-    /// several hundred models the picture is what you recognise, not the name.
-    fn model_browser(&mut self, ui: &mut egui::Ui, block: &session::Block) {
+    /// Named for exactly what it does. HX Edit has a general assignment table
+    /// — any block, any parameter, any source, including expression pedals and
+    /// footswitches — and this is one corner of it: the bypass, from a MIDI CC.
+    /// Calling it "Bypass follows" implied the rest of that table existed.
+    fn bypass_assignment(&mut self, ui: &mut egui::Ui, block: &session::Block) {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Bypass switched by")
+                    .small()
+                    .color(theme::DIM),
+            );
+            let mut cc = self.assign_cc;
+            if ui
+                .add(
+                    egui::DragValue::new(&mut cc)
+                        .range(0..=127)
+                        .prefix("MIDI CC "),
+                )
+                .changed()
+            {
+                self.assign_cc = cc.clamp(0, 127);
+            }
+            if ui
+                .button("Assign")
+                .on_hover_text("make this CC toggle the block in and out")
+                .clicked()
+            {
+                self.edit(Cmd::AssignCc {
+                    block: block.position,
+                    cc: self.assign_cc,
+                });
+            }
+            ui.label(
+                RichText::new("expression and footswitch sources are not implemented")
+                    .small()
+                    .color(theme::DIM),
+            );
+        });
+        ui.add_space(2.0);
+    }
+
+    /// Inputs, outputs, splits and joins: routing, and their own parameters.
+    ///
+    /// Resolved by slot *kind*, never by model number. An endpoint reports
+    /// model 0, and 0 is a real entry in the symbol table — a Cali 400 — so
+    /// looking it up put an amp's name and knobs on the input block.
+    fn endpoint_editor(&mut self, ui: &mut egui::Ui, block: &session::Block) {
+        let Some(model) = self.slot_model(block).cloned() else {
+            ui.add_space(8.0);
+            ui.label(RichText::new("nothing to edit here").color(theme::DIM));
+            return;
+        };
+        ui.add_space(8.0);
+        let art = self.artwork(block);
+        self.pedal(
+            ui,
+            &model,
+            &block.values.clone(),
+            block.position,
+            false,
+            art.as_ref(),
+        );
+    }
+
+    /// The colour HX Edit gives this block's category.
+    fn block_colour(&self, block: &session::Block) -> egui::Color32 {
+        let fallback = theme::DIM;
         let Some(catalog) = self.catalog.as_ref() else {
-            ui.label(RichText::new("Install HX Edit for model names").color(theme::DIM));
+            return fallback;
+        };
+        catalog
+            .model_number(block.model)
+            .and_then(|m| catalog.category_of(&m.id))
+            .and_then(|c| catalog.category(c))
+            .map(|c| theme::category_colour(c.colour))
+            .unwrap_or(fallback)
+    }
+
+    /// The shelf of models, beside the pedal rather than under it.
+    ///
+    /// Only categories you actually choose between appear. Input and Output
+    /// are fixed ends of the signal path, Split and Merge are the junctions
+    /// between lanes, and Connected Devices is settings for outboard gear —
+    /// none is a pedal you swap in, and listing them raised the fair question
+    /// of what picking one would even do. The endpoints and junctions are
+    /// edited by clicking them in the chain; outboard gear lives in the
+    /// device window.
+    fn shelf(&mut self, ctx: &egui::Context) {
+        let Some(block) = self.chain.get(self.selected).cloned() else {
+            return;
+        };
+        if !self.is_effect(&block) {
+            return;
+        }
+        let Some(catalog) = self.catalog.as_ref() else {
             return;
         };
 
-        // Default to the category the current block belongs to, which is what
-        // HX Edit shows when you select a block.
-        let showing = self.browsing.or_else(|| {
-            catalog
-                .model_number(block.model)
-                .and_then(|m| catalog.category_of(&m.id))
-        });
+        let showing = self
+            .browsing
+            .or_else(|| {
+                catalog
+                    .model_number(block.model)
+                    .and_then(|m| catalog.category_of(&m.id))
+            })
+            .unwrap_or(1);
         let current_id = catalog.model_number(block.model).map(|m| m.id.clone());
 
         let mut chosen = None;
         let mut pick = None;
 
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("MODEL").small().color(theme::DIM));
-            ui.add_space(4.0);
-            ui.add(
-                egui::TextEdit::singleline(&mut self.search)
-                    .hint_text("Search")
-                    .desired_width(150.0),
-            );
-            if !self.search.is_empty() && ui.small_button("✕").clicked() {
-                self.search.clear();
-            }
-        });
+        egui::SidePanel::right("shelf")
+            .default_width(430.0)
+            .width_range(280.0..=620.0)
+            .show(ctx, |ui| {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("SWAP FOR").small().color(theme::DIM));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.search)
+                            .hint_text("Search")
+                            .desired_width(f32::INFINITY),
+                    );
+                });
+                ui.add_space(4.0);
 
-        // Searching looks across every category at once — otherwise you have to
-        // know where a model lives before you can find it.
-        let needle = self.search.to_lowercase();
-        let models: Vec<&hx_catalog::Model> = if needle.is_empty() {
-            showing.map(|c| catalog.models_in(c)).unwrap_or_default()
-        } else {
-            catalog
-                .models()
-                .filter(|m| m.name.to_lowercase().contains(&needle))
-                .collect()
-        };
-
-        egui::ScrollArea::vertical()
-            .id_salt("browser")
-            .show(ui, |ui| {
-                ui.horizontal_top(|ui| {
-                    ui.vertical(|ui| {
-                        ui.set_width(116.0);
-                        for category in catalog.categories() {
-                            if catalog.models_in(category.id).is_empty() {
-                                continue;
-                            }
-                            let on = needle.is_empty() && Some(category.id) == showing;
-                            if ui.selectable_label(on, &category.name).clicked() {
-                                chosen = Some(category.id);
-                            }
+                // Categories as coloured chips, in HX Edit's own colours.
+                ui.horizontal_wrapped(|ui| {
+                    for category in catalog.categories() {
+                        if !category.is_effect() || catalog.models_in(category.id).is_empty() {
+                            continue;
                         }
-                    });
-                    ui.separator();
-                    ui.vertical(|ui| {
+                        let colour = theme::category_colour(category.colour);
+                        let on = self.search.is_empty() && category.id == showing;
+                        if theme::category_chip(ui, &category.name, colour, on).clicked() {
+                            chosen = Some(category.id);
+                        }
+                    }
+                });
+                ui.separator();
+
+                let needle = self.search.to_lowercase();
+                let models: Vec<&hx_catalog::Model> = if needle.is_empty() {
+                    catalog.models_in(showing)
+                } else {
+                    catalog
+                        .models()
+                        .filter(|m| m.name.to_lowercase().contains(&needle))
+                        .filter(|m| {
+                            catalog
+                                .category_of(&m.id)
+                                .is_some_and(|c| catalog.category(c).is_some_and(|c| c.is_effect()))
+                        })
+                        .collect()
+                };
+
+                egui::ScrollArea::vertical()
+                    .id_salt("shelf-models")
+                    .show(ui, |ui| {
                         if models.is_empty() {
                             ui.label(RichText::new("Nothing matches").color(theme::DIM));
                         }
@@ -1264,12 +1488,10 @@ impl App {
                                 let selected = current_id.as_deref() == Some(model.id.as_str());
                                 let art = catalog
                                     .artwork(model)
-                                    .map(|p| format!("file://{}", p.display()));
-                                if theme::model_tile(ui, &model.name, art.as_deref(), selected)
+                                    .map(|p| theme::Art::whole(format!("file://{}", p.display())));
+                                if theme::model_tile(ui, &model.name, art.as_ref(), selected)
                                     .clicked()
                                 {
-                                    // The wire wants a model *number*, so only
-                                    // models in the symbol table can be chosen.
                                     pick = catalog
                                         .symbols()
                                         .iter()
@@ -1279,7 +1501,6 @@ impl App {
                             }
                         });
                     });
-                });
             });
 
         if let Some(id) = chosen {
@@ -1287,18 +1508,22 @@ impl App {
             self.search.clear();
         }
         if let Some(model) = pick {
-            self.edit(Cmd::SetModel {
-                block: block.position,
-                model,
-            });
+            match self.inserting_at.take() {
+                Some(at) => self.edit(Cmd::InsertBlock { at, model }),
+                None => self.edit(Cmd::SetModel {
+                    block: block.position,
+                    model,
+                }),
+            }
         }
     }
 
     /// Where an Input or Main L/R block is routed.
     ///
-    /// Editable via opcode 42, which was captured from HX Edit's own routing
-    /// clicks — a document write is accepted but ignored for this field, which
-    /// is why this control was read-only for a while.
+    /// Editable via opcode 42, captured from HX Edit's own routing clicks — a
+    /// document write is accepted but ignored for this field. Returns the
+    /// chosen destination, so the caller can send it once the catalog borrow
+    /// has ended.
     fn routing_menu(
         &self,
         ui: &mut egui::Ui,
@@ -1311,8 +1536,6 @@ impl App {
             .find(|b| b.position == position)
             .and_then(|b| b.routing)?;
         let catalog = self.catalog.as_ref()?;
-        // The routing setting is the one the device keeps outside the value
-        // array, so it is found by name rather than by index.
         let param = model
             .params
             .iter()
@@ -1329,7 +1552,7 @@ impl App {
             ui.label(RichText::new(&param.name).small().color(theme::DIM));
             egui::ComboBox::from_id_salt(("routing", position))
                 .selected_text(RichText::new(showing).color(theme::ACCENT))
-                .width(230.0)
+                .width(240.0)
                 .show_ui(ui, |ui| {
                     for (index, label) in choices.iter().enumerate() {
                         if ui
@@ -1342,11 +1565,10 @@ impl App {
                 });
         });
         ui.add_space(4.0);
-
         chosen.filter(|to| *to != current)
     }
 
-    /// Draw one model's controls. Used for both halves of an Amp+Cab block, so
+    /// Draw one model's controls.    /// Draw one model's controls. Used for both halves of an Amp+Cab block, so
     /// the model number is passed in rather than read off the block.
     /// The selected block drawn as a pedal: its artwork, then its controls as
     /// knobs beneath, the way Logic's Pedalboard and the hardware itself do.
@@ -1357,6 +1579,7 @@ impl App {
         values: &[f32],
         position: i64,
         paired: bool,
+        art: Option<&theme::Art>,
     ) {
         let Some(catalog) = self.catalog.as_ref() else {
             for (i, value) in values.iter().enumerate() {
@@ -1366,17 +1589,17 @@ impl App {
         };
 
         let mut edit = None;
+        // The pedal, at a size worth looking at. This is the thing being
+        // worked on, so it gets the room; the shelf next door is deliberately
+        // smaller.
         ui.vertical_centered(|ui| {
-            if let Some(path) = catalog.artwork(model) {
-                ui.add(
-                    egui::Image::new(format!("file://{}", path.display()))
-                        .max_height(96.0)
-                        .maintain_aspect_ratio(true),
-                );
+            if let Some(art) = art {
+                theme::pedal_image(ui, art, 240.0);
             }
-            ui.label(RichText::new(&model.name).strong());
+            ui.add_space(4.0);
+            ui.label(RichText::new(&model.name).heading());
         });
-        ui.add_space(6.0);
+        ui.add_space(10.0);
         let reroute = self.routing_menu(ui, model, position);
 
         // Values arrive in the order the device indexes them, which the catalog
@@ -1385,15 +1608,19 @@ impl App {
         // using it directly shifted every knob by one.
         let params = catalog.ordered_params(model);
 
-        // Knobs wrap onto as many rows as the width allows, like a pedal's face.
+        // Knobs wrap onto as many rows as the width allows, like a pedal's
+        // face, and sit under it rather than off to one side.
+        let row_width = (params.len().min(8) as f32) * 88.0;
+        let indent = ((ui.available_width() - row_width) / 2.0).max(0.0);
         ui.horizontal_wrapped(|ui| {
+            ui.add_space(indent);
             for (index, value) in values.iter().enumerate() {
                 let Some(param) = params.get(index).copied() else {
                     continue;
                 };
                 let mut current = *value;
 
-                ui.allocate_ui(egui::vec2(76.0, 92.0), |ui| {
+                ui.allocate_ui(egui::vec2(84.0, 100.0), |ui| {
                     ui.vertical_centered(|ui| {
                         let changed = match param.kind {
                             Kind::Switch => {

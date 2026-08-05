@@ -98,9 +98,35 @@ pub enum Kind {
 pub struct Category {
     pub id: u32,
     pub name: String,
+    /// Abbreviation HX Edit uses where space is tight — "Dist", "Verb".
+    pub short_name: String,
+    /// The colour HX Edit tints this category's blocks, as `0xRRGGBB`.
+    /// Taken from the catalog rather than invented, so a chain drawn here
+    /// looks like the same chain drawn there.
+    pub colour: u32,
     /// Model ids in the order HX Edit lists them, flattened across
     /// subcategories.
     pub models: Vec<String>,
+}
+
+impl Category {
+    /// Whether this category holds effects you choose between.
+    ///
+    /// Five of them do not: Input and Output are fixed endpoints of the
+    /// topology, Split and Merge are the junctions between lanes, and
+    /// Connected Devices is settings for external gear — a Variax, a Powercab.
+    /// None belongs in a list of pedals to pick from, and offering them there
+    /// only invites the question of what happens when you choose one.
+    pub fn is_effect(&self) -> bool {
+        !matches!(self.id, 0 | 18 | 19 | 20 | 21 | 22)
+    }
+
+    /// Structural categories, in the order they are useful.
+    pub const INPUT: u32 = 18;
+    pub const OUTPUT: u32 = 19;
+    pub const SPLIT: u32 = 20;
+    pub const MERGE: u32 = 21;
+    pub const CONNECTED_DEVICES: u32 = 22;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -492,6 +518,29 @@ pub(crate) mod tests {
         let input = c.model("HelixStomp_AppDSPFlowInput").unwrap();
         let from = input.params.iter().find(|p| p.id == "@input").unwrap();
         assert_eq!(frames, c.choices(from).unwrap().len() + 1);
+    }
+
+    /// HX Edit paints its categories, and those colours are in the catalog —
+    /// so a chain drawn here can look like the same chain drawn there rather
+    /// than like someone's guess at it.
+    #[test]
+    fn categories_carry_hx_edits_own_colours() {
+        let Some(c) = catalog() else { return };
+        let by_name = |n: &str| c.categories().iter().find(|c| c.name == n).unwrap();
+
+        assert_eq!(by_name("Distortion").colour, 0xf5_90_1e);
+        assert_eq!(by_name("Amp").colour, 0xdd_11_11);
+        assert_eq!(by_name("Delay").short_name, "Delay");
+        assert_eq!(by_name("Reverb").short_name, "Verb");
+
+        // And the structural ones are marked so they stay out of the browser.
+        assert!(by_name("Distortion").is_effect());
+        for structural in ["Input", "Output", "Split", "Merge", "Connected Devices"] {
+            assert!(
+                !by_name(structural).is_effect(),
+                "{structural} is not something you browse for"
+            );
+        }
     }
 
     #[test]

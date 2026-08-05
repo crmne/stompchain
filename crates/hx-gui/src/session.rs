@@ -75,6 +75,18 @@ pub enum Cmd {
     },
     /// Put the preset back as it was before the last document edit.
     Undo,
+    /// Add a block at a position, sliding whatever is there along.
+    InsertBlock {
+        at: usize,
+        model: u32,
+    },
+    /// Put back what the last undo took away.
+    Redo,
+    /// Flip one of the device's global settings.
+    SetSetting {
+        id: i64,
+        on: bool,
+    },
     /// Read the loaded preset and hand back its bytes, for the clipboard or a
     /// file. The document is copied verbatim rather than rebuilt from what the
     /// UI shows, because a preset carries more than the UI models.
@@ -102,6 +114,15 @@ pub enum Evt {
     },
     /// The edit buffer has been committed to the preset.
     Saved,
+    /// How many steps can be undone and redone.
+    History {
+        undo: usize,
+        redo: usize,
+    },
+    /// Global settings worth showing, read when a session opens.
+    Settings {
+        global_eq: bool,
+    },
     /// The loaded preset's bytes, in answer to `Cmd::CopyPreset`.
     Copied {
         name: String,
@@ -139,6 +160,7 @@ pub fn spawn() -> (Sender<Cmd>, Receiver<Evt>) {
             device: None,
             setlist: 0,
             history: Vec::new(),
+            future: Vec::new(),
         }
         .run()
     });
@@ -154,6 +176,8 @@ struct Worker {
     /// Preset documents as they were before each document-level edit, newest
     /// last. Bounded — an undo history, not an archive.
     history: Vec<Vec<u8>>,
+    /// States undone and therefore redoable, cleared by any fresh edit.
+    future: Vec<Vec<u8>>,
 }
 
 impl Worker {
@@ -236,16 +260,51 @@ impl Worker {
                         .ok_or("could not write that snapshot")
                 });
             }
-            Cmd::Undo => {
-                let Some(previous) = self.history.pop() else {
-                    return self.send(Evt::Activity("nothing to undo".into()));
+            Cmd::Undo => self.step_history(true),
+            Cmd::Redo => self.step_history(false),
+            Cmd::InsertBlock { at, model } => {
+                // Two device operations, and no more: free the slot by
+                // rewriting the document, then set the model. Doing this
+                // through `edit_document` reloaded the whole preset in
+                // between, which is a third round trip landing while the
+                // device is still committing the write — enough to jam it.
+                let Some(device) = self.device.as_mut() else {
+                    return;
                 };
-                let Some(preset) = hx_proto::Preset::parse(&previous) else {
-                    return self.send(Evt::Failed("the undo history is corrupt".into()));
+                let mut preset = match device.read_preset() {
+                    Ok(p) => p,
+                    Err(e) => return self.send(Evt::Failed(e.to_string())),
                 };
-                if self.run_on_device(|d| d.write_preset(&preset)) {
-                    self.send(Evt::Activity("undone".into()));
+                let original = preset.encode();
+
+                let already_free = preset.slots.get(at).is_some_and(|s| s.model.is_none());
+                if !already_free {
+                    let Some(bounds) = preset.lane_bounds(at) else {
+                        return self.send(Evt::Failed("that position is not in a lane".into()));
+                    };
+                    if !preset.make_room(at, bounds) {
+                        return self.send(Evt::Failed(
+                            "this row is full — remove a block first".into(),
+                        ));
+                    }
+                    if !self.run_on_device(|d| d.write_preset(&preset)) {
+                        return;
+                    }
+                }
+
+                if self.run_on_device(|d| d.set_model(at as i64, model)) {
+                    self.history.push(original);
+                    if self.history.len() > 32 {
+                        self.history.remove(0);
+                    }
+                    self.future.clear();
+                    self.report_history();
                     self.reload();
+                }
+            }
+            Cmd::SetSetting { id, on } => {
+                if self.run_on_device(|d| d.set_object(id, hx_proto::msgpack::Value::Bool(on))) {
+                    self.send(Evt::Activity(format!("setting {id} is now {on}")));
                 }
             }
             Cmd::SavePreset => {
@@ -370,6 +429,11 @@ impl Worker {
                 // The name list is a nicety and rides on the control channel,
                 // which is the flakier of the two.
                 self.reload();
+                if let Some(hx_proto::msgpack::Value::Bool(on)) =
+                    self.device.as_mut().and_then(|d| d.object(203).ok())
+                {
+                    self.send(Evt::Settings { global_eq: on });
+                }
                 // The name list rides on the flakier control channel, so give
                 // it the same second chance the session itself gets.
                 let names = self
@@ -380,6 +444,39 @@ impl Worker {
                 }
             }
             Err(e) => self.send(Evt::Failed(e.to_string())),
+        }
+    }
+
+    fn report_history(&self) {
+        let _ = self.events.send(Evt::History {
+            undo: self.history.len(),
+            redo: self.future.len(),
+        });
+    }
+
+    /// Move one step back or forward through the document history.
+    fn step_history(&mut self, back: bool) {
+        let (from, to) = if back {
+            (&mut self.history, &mut self.future)
+        } else {
+            (&mut self.future, &mut self.history)
+        };
+        let Some(document) = from.pop() else {
+            let what = if back { "undo" } else { "redo" };
+            return self.send(Evt::Activity(format!("nothing to {what}")));
+        };
+        let Some(preset) = hx_proto::Preset::parse(&document) else {
+            return self.send(Evt::Failed("the history is corrupt".into()));
+        };
+        // Keep the current state on the other stack so the step is reversible.
+        let current = self.device.as_mut().and_then(|d| d.read_preset().ok());
+        if let Some(current) = current {
+            to.push(current.encode());
+        }
+        if self.run_on_device(|d| d.write_preset(&preset)) {
+            self.send(Evt::Activity(if back { "undone" } else { "redone" }.into()));
+            self.report_history();
+            self.reload();
         }
     }
 
@@ -409,6 +506,9 @@ impl Worker {
             if self.history.len() > 32 {
                 self.history.remove(0);
             }
+            // A fresh edit is a new branch; anything undone is unreachable now.
+            self.future.clear();
+            self.report_history();
             self.reload();
         }
     }

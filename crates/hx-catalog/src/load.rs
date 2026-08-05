@@ -112,6 +112,15 @@ fn categories(dir: &Path) -> Result<Vec<Category>, Error> {
         .into_iter()
         .map(|c| Category {
             id: c.id,
+            short_name: if c.short_name.is_empty() {
+                c.name.clone()
+            } else {
+                c.short_name
+            },
+            // "0xf5901e" — a hex string, not a number. A category with no
+            // colour falls back to plain white rather than black, which would
+            // be indistinguishable from an unpainted block.
+            colour: u32::from_str_radix(c.color.trim_start_matches("0x"), 16).unwrap_or(0xff_ff_ff),
             name: c.name,
             // A category lists models directly or splits them across mono and
             // stereo subcategories; both flatten to the same browse order.
@@ -147,6 +156,11 @@ struct RawCatalog {
 struct RawCategory {
     id: u32,
     name: String,
+    #[serde(default, rename = "shortName")]
+    short_name: String,
+    /// Written as a hex string — "0xf5901e" — not a number.
+    #[serde(default)]
+    color: String,
     #[serde(default)]
     models: Vec<RawCatalogModel>,
     #[serde(default)]

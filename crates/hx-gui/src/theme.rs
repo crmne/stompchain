@@ -9,8 +9,6 @@ pub const TEXT: Color32 = Color32::from_rgb(0xd6, 0xd9, 0xdf);
 pub const DIM: Color32 = Color32::from_rgb(0x7d, 0x84, 0x92);
 /// The amber HX Edit uses for values and the selected preset.
 pub const ACCENT: Color32 = Color32::from_rgb(0xd8, 0xa8, 0x3b);
-/// Tints the block currently being edited.
-pub const SELECTED: Color32 = Color32::from_rgb(0xc4, 0x4b, 0x3c);
 
 pub fn apply(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
@@ -40,35 +38,55 @@ pub fn apply(ctx: &egui::Context) {
 /// The artwork is what makes a chain readable at a glance — the same reason HX
 /// Edit draws it. Models without a picture fall back to the name alone rather
 /// than leaving a hole.
-pub fn block_button(
+/// Turn HX Edit's `0xRRGGBB` category colour into something paintable.
+pub fn category_colour(rgb: u32) -> Color32 {
+    Color32::from_rgb(
+        ((rgb >> 16) & 0xff) as u8,
+        ((rgb >> 8) & 0xff) as u8,
+        (rgb & 0xff) as u8,
+    )
+}
+
+/// One block in the chain, tinted with its category's own colour.
+///
+/// The colours are HX Edit's, read from its catalog rather than invented, so a
+/// chain here reads the same as a chain there: amber distortion, yellow EQ and
+/// dynamics, red amps, green delay. A bypassed block is drawn dim and its name
+/// bracketed, which is also what HX Edit does.
+pub fn block_button_tinted(
     ui: &mut Ui,
     name: &str,
     artwork: Option<&Art>,
     selected: bool,
     enabled: bool,
+    accent: Color32,
 ) -> Response {
     let size = Vec2::new(BLOCK_WIDTH, BLOCK_HEIGHT);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
 
     if ui.is_rect_visible(rect) {
+        // The category colour carries the meaning; the fill only has to keep
+        // it legible. A bypassed block loses its colour, which is the whole
+        // point of bypassing it.
+        let tint = if enabled { accent } else { DIM };
         let fill = if !enabled {
             Color32::from_rgb(0x22, 0x25, 0x2b)
         } else if selected {
-            SELECTED.gamma_multiply(0.55)
+            tint.gamma_multiply(0.30)
         } else {
             Color32::from_rgb(0x2a, 0x2e, 0x36)
         };
         let border = if selected {
-            Stroke::new(2.0_f32, ACCENT)
+            Stroke::new(2.0_f32, tint)
         } else {
-            Stroke::new(1.0_f32, Color32::from_rgb(0x3a, 0x3f, 0x49))
+            Stroke::new(1.0_f32, tint.gamma_multiply(0.55))
         };
 
         let painter = ui.painter();
         painter.rect_filled(rect, Rounding::same(5.0), fill);
         painter.rect_stroke(rect, Rounding::same(5.0), border);
 
-        let text_colour = if enabled { TEXT } else { DIM };
+        let text_colour = if enabled { tint } else { DIM };
         if let Some(art) = artwork {
             let box_ = egui::Rect::from_center_size(
                 rect.center() - Vec2::new(0.0, 10.0),
@@ -96,12 +114,68 @@ pub fn block_button(
     response.on_hover_text(name)
 }
 
+/// A small filled circle. Painted rather than typed, because the bundled font
+/// has no glyph for one and an empty box is worse than no indicator at all.
+pub fn status_dot(ui: &mut Ui, colour: Color32) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(14.0, 14.0), Sense::hover());
+    if ui.is_rect_visible(rect) {
+        ui.painter().circle_filled(rect.center(), 5.0, colour);
+    }
+    response
+}
+
+/// The category's colour, as a bar beside the name it belongs to.
+pub fn category_swatch(ui: &mut Ui, colour: Color32) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(6.0, 22.0), Sense::hover());
+    if ui.is_rect_visible(rect) {
+        ui.painter()
+            .rect_filled(rect, Rounding::same(3.0_f32), colour);
+    }
+    response
+}
+
+/// A category, as a chip in that category's own colour.
+pub fn category_chip(ui: &mut Ui, name: &str, colour: Color32, on: bool) -> Response {
+    let galley = ui.painter().layout_no_wrap(
+        name.to_owned(),
+        egui::FontId::proportional(12.0),
+        if on { Color32::BLACK } else { colour },
+    );
+    let size = Vec2::new(galley.size().x + 16.0, 22.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let painter = ui.painter();
+    if on {
+        painter.rect_filled(rect, Rounding::same(11.0), colour);
+    } else {
+        painter.rect_stroke(
+            rect,
+            Rounding::same(11.0),
+            Stroke::new(
+                1.0_f32,
+                colour.gamma_multiply(if response.hovered() { 1.0 } else { 0.5 }),
+            ),
+        );
+    }
+    painter.galley(
+        egui::pos2(
+            rect.center().x - galley.size().x / 2.0,
+            rect.center().y - galley.size().y / 2.0,
+        ),
+        galley,
+        TEXT,
+    );
+    response
+}
+
 /// One model in the browser, as a picture with its name under it.
 ///
 /// A grid of thumbnails the way Logic's Pedalboard shows its shelf: with a few
 /// hundred models to choose from, the picture is what you actually recognise.
-pub fn model_tile(ui: &mut Ui, name: &str, artwork: Option<&str>, selected: bool) -> Response {
-    let size = Vec2::new(96.0, 92.0);
+pub fn model_tile(ui: &mut Ui, name: &str, artwork: Option<&Art>, selected: bool) -> Response {
+    let size = Vec2::new(118.0, 112.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     if !ui.is_rect_visible(rect) {
         return response;
@@ -120,10 +194,10 @@ pub fn model_tile(ui: &mut Ui, name: &str, artwork: Option<&str>, selected: bool
 
     let art = egui::Rect::from_min_size(
         egui::pos2(rect.left() + 8.0, rect.top() + 6.0),
-        Vec2::new(size.x - 16.0, 52.0),
+        Vec2::new(size.x - 16.0, 70.0),
     );
     match artwork {
-        Some(uri) => fit(ui, uri, art, Color32::WHITE),
+        Some(a) => a.paint(ui, art, Color32::WHITE),
         None => {
             painter.rect_filled(
                 art,
@@ -137,14 +211,14 @@ pub fn model_tile(ui: &mut Ui, name: &str, artwork: Option<&str>, selected: bool
     // the grid stops being a grid.
     let mut galley = ui.painter().layout(
         name.to_owned(),
-        egui::FontId::proportional(11.0),
+        egui::FontId::proportional(12.0),
         if selected { ACCENT } else { TEXT },
         size.x - 8.0,
     );
     if galley.rows.len() > 2 {
         galley = ui.painter().layout_no_wrap(
-            format!("{}…", name.chars().take(14).collect::<String>()),
-            egui::FontId::proportional(11.0),
+            format!("{}…", name.chars().take(16).collect::<String>()),
+            egui::FontId::proportional(12.0),
             if selected { ACCENT } else { TEXT },
         );
     }
@@ -194,7 +268,7 @@ impl Art {
         }
     }
 
-    fn paint(&self, ui: &Ui, area: egui::Rect, tint: Color32) {
+    pub fn paint(&self, ui: &Ui, area: egui::Rect, tint: Color32) {
         match self.frame {
             None => fit(ui, &self.uri, area, tint),
             Some((frame, total)) if total > 0 => {
@@ -236,6 +310,33 @@ fn fit(ui: &Ui, uri: &str, area: egui::Rect, tint: Color32) {
         .min(1.0);
     let placed = egui::Rect::from_center_size(area.center(), natural * scale);
     image.paint_at(ui, placed);
+}
+
+/// The pedal, drawn as large as it goes without inventing detail.
+///
+/// HX Edit's artwork is 128 to 256 pixels square. Asking for more than that
+/// stretches it, and a stretched pedal looks worse than a small sharp one, so
+/// this never scales past 1:1 — it only shrinks to fit `max`.
+pub fn pedal_image(ui: &mut Ui, art: &Art, max: f32) -> Response {
+    let image = egui::Image::new(&art.uri).maintain_aspect_ratio(true);
+    let mut natural = image
+        .load_and_calc_size(ui, Vec2::splat(f32::INFINITY))
+        .unwrap_or(Vec2::splat(max));
+    // One frame of a strip is as tall as it is wide; the file is the whole
+    // strip, so its height is the frame count times that.
+    if let Some((_, total)) = art.frame {
+        if total > 0 {
+            natural.y /= total as f32;
+        }
+    }
+
+    let scale = (max / natural.x).min(max / natural.y).min(1.0);
+    let size = natural * scale;
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    if ui.is_rect_visible(rect) {
+        art.paint(ui, rect, Color32::WHITE);
+    }
+    response
 }
 
 fn elide(text: &str, max: usize) -> String {
@@ -411,6 +512,36 @@ pub fn junction(ui: &mut Ui, lanes: usize, opening: bool, selected: bool) -> Res
     // A dot on the junction, so it reads as something you can click.
     painter.circle_filled(egui::pos2(split_x, trunk_y), 4.0, colour);
 
+    response
+}
+
+/// A gap in the chain you can add something to.
+///
+/// Drawn as ordinary wire until the pointer is over it, when it offers a `+`.
+/// Adding a block was previously only possible by finding an empty slot and
+/// changing its model, which meant knowing the slot topology — this puts the
+/// action where the thing goes.
+pub fn insert_point(ui: &mut Ui, height: f32) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(WIRE_WIDTH, height), Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let painter = ui.painter();
+    let y = rect.center().y;
+    painter.hline(rect.x_range(), y, Stroke::new(1.5_f32, WIRE));
+
+    if response.hovered() {
+        let centre = egui::pos2(rect.center().x, y);
+        painter.circle_filled(centre, 8.0, ACCENT);
+        painter.line_segment(
+            [egui::pos2(centre.x - 4.0, y), egui::pos2(centre.x + 4.0, y)],
+            Stroke::new(2.0_f32, Color32::BLACK),
+        );
+        painter.line_segment(
+            [egui::pos2(centre.x, y - 4.0), egui::pos2(centre.x, y + 4.0)],
+            Stroke::new(2.0_f32, Color32::BLACK),
+        );
+    }
     response
 }
 
