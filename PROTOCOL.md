@@ -224,7 +224,31 @@ service carries a one-byte body echoing the service number, and a capture that
 starts mid-session begins mid-message — the framing recovers at the next
 message boundary because the length walk stays consistent from there.
 
-## Layer 4### Identifying a flag by patching the reply [method]
+## Layer 4### Global settings: opcode 24 reads, opcode 25 writes [confirmed, writing is hazardous]
+
+Device settings are a flat numbered namespace rather than a structured
+document. `op24 {118: id}` reads and `op25 {118: id, 119: value}` writes; 147
+of the first 160 ids answer on an HX Stomp. Known ids: **16** tempo in BPM,
+**28** current preset index, **192** global EQ low-peak gain, **203** global EQ
+enabled. HX Edit's Global EQ window reads 201–203 when it opens, and its
+Save Preset is a different opcode entirely (**71**, `{107, 108, 109: name}` —
+the operation that moves an edit out of the edit buffer and into storage).
+
+The value's type must match what the device already holds; a float where it
+wants a boolean is refused with error −3.
+
+**Writing is not safe with what is currently known. [open]** An op25 write
+succeeds — status 0, and the value reads back correctly — but the device then
+fails several operations later, frequently in a *subsequent* session, refusing
+new connections until its 9V adapter is pulled. There is no error at the time
+of the write. This was isolated by elimination: with one settings-write test in
+the hardware suite, two tests passed before the device stopped accepting
+connections; with that single test removed and nothing else changed, twelve
+passed. HX Edit writes these settings routinely and stays healthy, so something
+it does around them is missing here. Until that is found, this client reads
+global settings and does not write them.
+
+### Identifying a flag by patching the reply [method]
 
 A boolean nothing acts on is indistinguishable from any other boolean, so the
 way to learn what one means is to change it and watch the client. Opcode 99
@@ -253,6 +277,15 @@ it is dismissed — worth knowing before diagnosing a timeout as a wedge. And
 **key 63 means "in effect"** rather than anything preset-related: opcode 76
 uses it for whether the global EQ is switched on, alongside its eleven
 coefficients under key 55.
+
+**Feeding the device MIDI beat clock kills an open editor session.
+[confirmed]** The flag tracks the clock faithfully while it runs, but when the
+clock stops the device stops answering over USB and does not recover — twenty
+seconds of patient polling never gets a reply, and the 9V adapter has to come
+out. Nothing the editor does causes it and nothing it does avoids it, so a
+client that wants to be safe simply should not be the thing sending clock. The
+regression test for the flag is therefore opt-in
+(`STOMPCHAIN_DESTRUCTIVE=1`).
 
 ## Layer 4 — MessagePack RPC [confirmed]
 

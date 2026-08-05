@@ -91,9 +91,10 @@ enum Cmd {
         setlist: i64,
     },
     /// Read a device setting by numeric id, or list the ones that answer.
+    ///
+    /// Read-only on purpose: writing a setting destabilises the device — see
+    /// PROTOCOL.md.
     Setting { id: Option<i64> },
-    /// Write a device setting: a number, `true`/`false`, or a decimal.
-    SetSetting { id: i64, value: String },
     /// List setlists.
     Setlists,
     /// List the impulse response slots.
@@ -248,7 +249,6 @@ fn on_device(cmd: Cmd) -> Result<()> {
             setlist,
         } => save_preset(s, setlist, index.as_deref(), name.as_deref()),
         Cmd::Setting { id } => show_setting(s, id),
-        Cmd::SetSetting { id, value } => set_setting(s, id, &value),
         Cmd::Slot { position } => {
             let preset = session.read_preset()?;
             match preset.raw_slot(position) {
@@ -618,29 +618,6 @@ fn show_setting(session: &mut hx_usb::Session, id: Option<i64>) -> Result<()> {
             }
         }
     }
-    Ok(())
-}
-
-/// Write one device setting, inferring the type from how it reads back.
-fn set_setting(session: &mut hx_usb::Session, id: i64, text: &str) -> Result<()> {
-    use hx_proto::msgpack::Value;
-    // The device refuses a value of the wrong type, so match what is there.
-    let current = session.object(id)?;
-    let value = match (&current, text) {
-        (Value::Bool(_), "true" | "on" | "1") => Value::Bool(true),
-        (Value::Bool(_), "false" | "off" | "0") => Value::Bool(false),
-        (Value::Bool(_), _) => bail!("setting {id} is a switch; use on or off"),
-        (Value::F32(_) | Value::F64(_), _) => Value::F32(
-            text.parse()
-                .with_context(|| format!("{text:?} is not a number"))?,
-        ),
-        _ => Value::Int(
-            text.parse()
-                .with_context(|| format!("{text:?} is not a whole number"))?,
-        ),
-    };
-    session.set_object(id, value)?;
-    println!("{id}: {current:?} -> {:?}", session.object(id)?);
     Ok(())
 }
 

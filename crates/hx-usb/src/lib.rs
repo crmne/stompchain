@@ -517,14 +517,35 @@ impl Session {
             }
             self.ack_idle_channels(id)?;
         }
+        // No announcement inside the budget. That does not mean the device is
+        // stuck — not every deferred operation emits notification 20, and
+        // select-preset frequently does not. What the caller actually needs is
+        // for the device to be free again, so ask it something cheap and take
+        // an answer as proof. Only silence here is a real failure.
+        let deadline = Instant::now() + Self::READY_BUDGET;
+        while Instant::now() < deadline {
+            if self
+                .request_raw(id, rpc::op::PRESET_INFO, Value::Nil)
+                .is_ok()
+            {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
         Err(Error::Protocol(format!(
-            "the device accepted transaction {txn} but never announced completion"
+            "the device accepted transaction {txn} and has not answered since"
         )))
     }
 
-    /// How long a deferred operation may take to announce completion. A single
-    /// captured undo commit takes ~300 ms; flash writes take seconds.
-    const COMPLETION_BUDGET: Duration = Duration::from_secs(15);
+    /// How long to keep asking whether the device is free after a deferred
+    /// operation went unannounced.
+    const READY_BUDGET: Duration = Duration::from_secs(5);
+
+    /// How long to wait for a completion announcement. Captured commits take
+    /// about 300 ms, so a second is generous; past that it is not coming and
+    /// the readiness poll below is the better question to be asking. Waiting
+    /// longer costs seconds on every preset change, which never announces.
+    const COMPLETION_BUDGET: Duration = Duration::from_millis(900);
 
     /// Send a request whose reply carries nothing worth returning.
     ///
@@ -810,11 +831,14 @@ impl Drop for Session {
                 _ => break,
             }
         }
-        for id in ChannelId::ALL {
-            if self.channels.contains_key(&id.device) {
-                let _ = self.close_service(id);
-            }
-        }
+        // No closing handshake. HX Edit sends a bare type-0x02 frame per
+        // channel when it quits, and this used to imitate that — but the
+        // capture behind it turned out to record HX Edit failing against an
+        // already-wedged device, so it was never evidence of a clean teardown.
+        // Sending it per session, rather than once when an application exits,
+        // degrades the device: with it, a second consecutive run of the
+        // hardware suite could not open the device at all; without it, the
+        // suite runs repeatedly. Draining is enough.
     }
 }
 
