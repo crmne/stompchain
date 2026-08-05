@@ -237,16 +237,18 @@ the operation that moves an edit out of the edit buffer and into storage).
 The value's type must match what the device already holds; a float where it
 wants a boolean is refused with error −3.
 
-**Writing is not safe with what is currently known. [open]** An op25 write
-succeeds — status 0, and the value reads back correctly — but the device then
-fails several operations later, frequently in a *subsequent* session, refusing
-new connections until its 9V adapter is pulled. There is no error at the time
-of the write. This was isolated by elimination: with one settings-write test in
-the hardware suite, two tests passed before the device stopped accepting
-connections; with that single test removed and nothing else changed, twelve
-passed. HX Edit writes these settings routinely and stays healthy, so something
-it does around them is missing here. Until that is found, this client reads
-global settings and does not write them.
+Writing works and round-trips. **A note on how nearly it was mis-recorded:**
+this section briefly said op25 destabilised the device, on the strength of an
+elimination experiment — removing the settings-write test took the hardware
+suite from two passing tests to twelve. The inference was wrong. That test also
+called `irs()` on a control channel nothing had opened yet, and a cold control
+channel does not answer its first request; the resulting timeout left the
+session unhealthy and the *next* session unable to open. The write was carrying
+the blame for its neighbour. With the health check corrected, sixteen tests
+including the settings round trip pass twice over with no power cycle between.
+
+The lesson generalises: elimination finds *a* thing that changes the outcome,
+not necessarily the cause. Two changes in one test is one too many.
 
 ### Identifying a flag by patching the reply [method]
 

@@ -34,6 +34,10 @@ pub struct App {
     layout: hx_proto::preset::Layout,
     /// Filter for the model browser. Empty means "show the chosen category".
     search: String,
+    /// A copied block: which slot it came from. The block itself stays on the
+    /// device — a copy is a document operation there, so the app only has to
+    /// remember what to copy from.
+    copied_block: Option<usize>,
     /// A copied preset: its name, and the document verbatim. Held in the app
     /// rather than the system clipboard because it is binary, and because
     /// pasting it into a text field would only produce noise.
@@ -110,6 +114,7 @@ impl App {
             chain: Vec::new(),
             layout: hx_proto::preset::Layout::default(),
             search: String::new(),
+            copied_block: None,
             clipboard: None,
             pending_copy: CopyTarget::Clipboard,
             dirty: false,
@@ -348,6 +353,7 @@ impl App {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
                         self.preset_menu(ui);
+                        self.edit_menu(ui);
                         ui.toggle_value(&mut self.show_activity, "log")
                             .on_hover_text("show what the device is reporting");
                         ui.label(RichText::new(&self.status).color(theme::DIM));
@@ -384,6 +390,77 @@ impl App {
         if hit.clicked() {
             self.send(Cmd::SavePreset);
         }
+    }
+
+    /// Block and snapshot operations, and undo.
+    ///
+    /// These are all document edits: the device has no opcode for moving a
+    /// block or copying a snapshot, so each is done by rewriting the preset
+    /// and writing it back. That makes undo natural — the document as it was
+    /// is simply written again.
+    fn edit_menu(&mut self, ui: &mut egui::Ui) {
+        let live = matches!(self.connection, Connection::Online) && !self.chain.is_empty();
+        let selected_slot = self.chain.get(self.selected).map(|b| b.position as usize);
+        let is_block = self
+            .chain
+            .get(self.selected)
+            .is_some_and(|b| b.kind == hx_proto::preset::Kind::Block);
+
+        ui.menu_button("Edit", |ui| {
+            ui.set_min_width(190.0);
+
+            if ui
+                .add_enabled(live && is_block, egui::Button::new("Copy Block"))
+                .clicked()
+            {
+                self.copied_block = selected_slot;
+                self.note(format!("copied block {}", self.selected + 1));
+                ui.close_menu();
+            }
+
+            let can_paste = live && self.copied_block.is_some() && selected_slot.is_some();
+            if ui
+                .add_enabled(can_paste, egui::Button::new("Paste Block"))
+                .clicked()
+            {
+                if let (Some(from), Some(to)) = (self.copied_block, selected_slot) {
+                    self.edit(Cmd::CopyBlock { from, to });
+                }
+                ui.close_menu();
+            }
+
+            if ui
+                .add_enabled(live && is_block, egui::Button::new("Clear Block"))
+                .clicked()
+            {
+                if let Some(block) = self.chain.get(self.selected) {
+                    self.edit(Cmd::ClearBlock(block.position));
+                }
+                ui.close_menu();
+            }
+
+            ui.separator();
+
+            if ui
+                .add_enabled(
+                    live && self.snapshots.len() > 1,
+                    egui::Button::new("Copy Snapshot to Next"),
+                )
+                .clicked()
+            {
+                let from = self.current_snapshot;
+                let to = (from + 1) % self.snapshots.len();
+                self.edit(Cmd::CopySnapshot { from, to });
+                ui.close_menu();
+            }
+
+            ui.separator();
+
+            if ui.add_enabled(live, egui::Button::new("Undo")).clicked() {
+                self.send(Cmd::Undo);
+                ui.close_menu();
+            }
+        });
     }
 
     /// Copy, paste, import and export for whole presets.

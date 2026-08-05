@@ -256,11 +256,18 @@ impl Preset {
     /// at all: several operations have no dedicated opcode, and the way to
     /// perform them is to change the document and write the whole thing back.
     pub fn encode(&self) -> Vec<u8> {
+        // The section table is a directory of byte offsets into this very
+        // document, so any edit that changes a length invalidates it — and the
+        // device answers a stale table by reading the preset as empty. It is
+        // recomputed rather than carried through; on an unmodified document
+        // the result is identical to what the device sent, which the
+        // round-trip test asserts byte for byte.
+        let sections = self
+            .computed_sections()
+            .unwrap_or_else(|| self.sections.clone());
+
         let mut out = Encoder::encode(&Value::Str(Self::MAGIC.to_owned()));
-        out.extend(Encoder::encode(&Value::Bin(
-            self.sections.clone(),
-            self.sections_width,
-        )));
+        out.extend(Encoder::encode(&Value::Bin(sections, self.sections_width)));
         out.extend(Encoder::encode(&self.tone));
         out
     }
@@ -524,9 +531,9 @@ impl Preset {
     /// Confirmed against two captured presets, and by the test that rebuilds
     /// the fixture's table byte for byte.
     ///
-    /// [`encode`](Self::encode) still carries the stored table through
-    /// unchanged — this exists to *verify* an encoding, and to make building a
-    /// document from scratch possible at all.
+    /// [`encode`](Self::encode) uses this, which is what makes an edit that
+    /// changes the document's length — pasting a block, clearing one — safe to
+    /// write back at all.
     pub fn computed_sections(&self) -> Option<Vec<u8>> {
         const SLOT_ORDER: [i64; 9] = [0, 1, 3, 4, 2, 5, 6, 7, 10];
 
@@ -567,6 +574,73 @@ impl Preset {
         out.extend_from_slice(&(total as u32).to_le_bytes());
         out.extend_from_slice(&(total as u32).to_le_bytes());
         Some(out)
+    }
+
+    /// Lift a slot out of the document, for pasting elsewhere.
+    ///
+    /// The whole slot is taken verbatim — model, values, paired cab, the
+    /// engine tag, everything — because a block is more than this type models
+    /// and rebuilding one from the parts we understand would quietly drop the
+    /// rest. HX Edit's block copy is a client-side clipboard too.
+    pub fn copy_slot(&self, position: usize) -> Option<Value> {
+        match self.tone.get(key::PATH)?.get(key::SLOTS)? {
+            Value::Array(items) => items.get(position).cloned(),
+            _ => None,
+        }
+    }
+
+    /// Drop a previously copied slot into `position`.
+    ///
+    /// Returns false if the position does not exist. The slot keeps whatever
+    /// kind it was given, so pasting a block over an input is refused: the
+    /// endpoints are fixtures of the topology, not slots you can fill.
+    pub fn paste_slot(&mut self, position: usize, slot: &Value) -> bool {
+        let kind = self.slots.get(position).map(|s| s.kind);
+        if !matches!(kind, Some(Kind::Block) | Some(Kind::Empty)) {
+            return false;
+        }
+        let Some(Value::Array(items)) = self.tone.at_mut(&[key::PATH, key::SLOTS]) else {
+            return false;
+        };
+        let Some(existing) = items.get_mut(position) else {
+            return false;
+        };
+        *existing = slot.clone();
+        self.slots = collect_slots(
+            self.tone
+                .get(key::PATH)
+                .and_then(|p| p.get(key::SLOTS))
+                .unwrap_or(&Value::Nil),
+        );
+        true
+    }
+
+    /// Lift a snapshot out of the document.
+    pub fn copy_snapshot(&self, index: usize) -> Option<Value> {
+        match self.tone.get(key::SNAPSHOT_SECTION)?.get(key::SNAPSHOTS)? {
+            Value::Array(entries) => entries.get(index).cloned(),
+            _ => None,
+        }
+    }
+
+    /// Overwrite a snapshot, keeping its existing name.
+    ///
+    /// The name stays because a snapshot's name describes the song section it
+    /// is for, and copying settings from one part to another should not
+    /// relabel where you are.
+    pub fn paste_snapshot(&mut self, index: usize, snapshot: &Value) -> bool {
+        let name = self.snapshots().get(index).cloned().unwrap_or_default();
+        let Some(Value::Array(entries)) =
+            self.tone.at_mut(&[key::SNAPSHOT_SECTION, key::SNAPSHOTS])
+        else {
+            return false;
+        };
+        let Some(existing) = entries.get_mut(index) else {
+            return false;
+        };
+        *existing = snapshot.clone();
+        self.set_snapshot_name(index, &name);
+        true
     }
 
     /// The raw body of one slot, for protocol work.
@@ -991,6 +1065,63 @@ mod tests {
             preset.sections,
             "the recomputed section table does not match the device's own"
         );
+    }
+
+    #[test]
+    fn a_slot_can_be_copied_and_pasted() {
+        let mut preset = Preset::parse(FIXTURE).unwrap();
+        let (from, _) = preset.blocks().next().expect("a block to copy");
+        let source_model = preset.slots[from].model;
+
+        // An empty slot in the same row.
+        let empty = preset
+            .slots
+            .iter()
+            .position(|s| s.kind == Kind::Empty)
+            .expect("an empty slot");
+
+        let block = preset.copy_slot(from).expect("copying");
+        assert!(
+            preset.paste_slot(empty, &block),
+            "pasting into an empty slot"
+        );
+        assert_eq!(
+            preset.slots[empty].model, source_model,
+            "the pasted slot does not hold the copied model"
+        );
+        // The original is untouched — this is a copy, not a move.
+        assert_eq!(preset.slots[from].model, source_model);
+    }
+
+    /// The endpoints are fixtures of the topology. Pasting a block over the
+    /// input would produce a document the device has no way to read.
+    #[test]
+    fn a_slot_cannot_be_pasted_over_an_endpoint() {
+        let mut preset = Preset::parse(FIXTURE).unwrap();
+        let (from, _) = preset.blocks().next().unwrap();
+        let block = preset.copy_slot(from).unwrap();
+        let input = preset.layout().paths[0].input.unwrap();
+
+        assert!(!preset.paste_slot(input, &block));
+        assert_eq!(preset.slots[input].kind, Kind::Input, "the input survived");
+    }
+
+    #[test]
+    fn a_snapshot_can_be_copied_and_pasted_keeping_its_name() {
+        let mut preset = Preset::parse(FIXTURE).unwrap();
+        if preset.snapshots().len() < 2 {
+            return;
+        }
+        preset.set_snapshot_name(0, "Verse");
+        preset.set_snapshot_name(1, "Chorus");
+
+        let verse = preset.copy_snapshot(0).expect("copying");
+        assert!(preset.paste_snapshot(1, &verse));
+
+        // The settings came across; the name did not, because the name says
+        // where you are in the song rather than what the settings are.
+        assert_eq!(preset.snapshots()[1], "Chorus");
+        assert_eq!(preset.snapshots()[0], "Verse");
     }
 
     #[test]

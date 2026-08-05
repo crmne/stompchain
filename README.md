@@ -26,11 +26,17 @@ the hardware:
 - **Editing** — swap any block's model from a searchable thumbnail browser, turn
   knobs with values formatted exactly as HX Edit formats them, bypass blocks,
   reorder the chain, clear slots.
-- **Presets** — select, rename, copy, paste, import, export. A preset travels as
-  the device's own document byte for byte, so nothing is lost in translation;
-  re-encoding is verified byte-exact against a captured preset on every test
-  run.
+- **Presets** — select, rename, **save**, copy, paste, import, export, and back
+  up a whole setlist to a directory. A preset travels as the device's own
+  document byte for byte, so nothing is lost in translation; re-encoding is
+  verified byte-exact against a captured preset on every test run.
+- **Editing the document** — copy a block over another slot, copy a snapshot's
+  settings while keeping its name, reorder, clear, and undo. The preset carries
+  a directory of byte offsets into itself, so these were impossible until that
+  table was decoded and could be recomputed.
 - **Snapshots, setlists, tempo** — switch, rename, and edit them.
+- **Device settings** — the global namespace HX Edit's preferences write to,
+  readable and writable by id (`stompchain setting`, `set-setting`).
 - **Impulse responses** — drop a WAV on the window; upload, list and clear
   verified end to end, including the checksum.
 - **`.hlx` files** — applied as ordinary parameter edits with a `--dry-run`
@@ -100,8 +106,14 @@ stompchain set 4 Drive 5.0  # set a parameter by name, in displayed units
 stompchain enable 4 off     # bypass a block
 stompchain snapshot 2       # switch snapshot
 stompchain move 4 5         # reorder blocks
+stompchain save             # commit the edit buffer — without this, edits are lost
 stompchain backup tone.bin  # the loaded preset, byte for byte
 stompchain restore tone.bin # and back again
+stompchain backup-all dir/  # every preset in the setlist, one file each
+stompchain copy-block 1 3   # copy a block over another slot
+stompchain copy-snapshot 1 2
+stompchain route 0 "Return" # route an input or output
+stompchain setting 203      # read a device setting; set-setting writes
 stompchain export tone.json # human-readable export, for diffing
 stompchain import a.hlx --dry-run   # preview an .hlx; needs no hardware
 stompchain rename 7 "New Name"

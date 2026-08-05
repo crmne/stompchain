@@ -63,6 +63,18 @@ pub enum Cmd {
     },
     /// Commit the edit buffer to the loaded preset.
     SavePreset,
+    /// Copy one block over another slot.
+    CopyBlock {
+        from: usize,
+        to: usize,
+    },
+    /// Copy a snapshot's settings over another, keeping its name.
+    CopySnapshot {
+        from: usize,
+        to: usize,
+    },
+    /// Put the preset back as it was before the last document edit.
+    Undo,
     /// Read the loaded preset and hand back its bytes, for the clipboard or a
     /// file. The document is copied verbatim rather than rebuilt from what the
     /// UI shows, because a preset carries more than the UI models.
@@ -126,6 +138,7 @@ pub fn spawn() -> (Sender<Cmd>, Receiver<Evt>) {
             events: evt_tx,
             device: None,
             setlist: 0,
+            history: Vec::new(),
         }
         .run()
     });
@@ -138,6 +151,9 @@ struct Worker {
     device: Option<hx_usb::Session>,
     /// Which setlist preset selections apply to.
     setlist: i64,
+    /// Preset documents as they were before each document-level edit, newest
+    /// last. Bounded — an undo history, not an archive.
+    history: Vec<Vec<u8>>,
 }
 
 impl Worker {
@@ -201,6 +217,34 @@ impl Worker {
             }
             Cmd::SetRouting { block, to } => {
                 if self.run_on_device(|d| d.set_routing(block, to)) {
+                    self.reload();
+                }
+            }
+            Cmd::CopyBlock { from, to } => {
+                self.edit_document(|p| {
+                    let block = p.copy_slot(from).ok_or("no such block")?;
+                    p.paste_slot(to, &block)
+                        .then_some(())
+                        .ok_or("that slot cannot hold a block")
+                });
+            }
+            Cmd::CopySnapshot { from, to } => {
+                self.edit_document(|p| {
+                    let snap = p.copy_snapshot(from).ok_or("no such snapshot")?;
+                    p.paste_snapshot(to, &snap)
+                        .then_some(())
+                        .ok_or("could not write that snapshot")
+                });
+            }
+            Cmd::Undo => {
+                let Some(previous) = self.history.pop() else {
+                    return self.send(Evt::Activity("nothing to undo".into()));
+                };
+                let Some(preset) = hx_proto::Preset::parse(&previous) else {
+                    return self.send(Evt::Failed("the undo history is corrupt".into()));
+                };
+                if self.run_on_device(|d| d.write_preset(&preset)) {
+                    self.send(Evt::Activity("undone".into()));
                     self.reload();
                 }
             }
@@ -336,6 +380,36 @@ impl Worker {
                 }
             }
             Err(e) => self.send(Evt::Failed(e.to_string())),
+        }
+    }
+
+    /// Apply a change to the whole preset document, keeping an undo step.
+    ///
+    /// Document edits are all-or-nothing: the device takes the new document or
+    /// the preset is lost, so the original is kept first and only a successful
+    /// modification is sent.
+    fn edit_document<F>(&mut self, change: F)
+    where
+        F: FnOnce(&mut hx_proto::Preset) -> Result<(), &'static str>,
+    {
+        let Some(device) = self.device.as_mut() else {
+            return;
+        };
+        let mut preset = match device.read_preset() {
+            Ok(p) => p,
+            Err(e) => return self.send(Evt::Failed(e.to_string())),
+        };
+        let original = preset.encode();
+        if let Err(why) = change(&mut preset) {
+            return self.send(Evt::Failed(why.into()));
+        }
+        if self.run_on_device(|d| d.write_preset(&preset)) {
+            // Bounded: this is an undo history, not an archive.
+            self.history.push(original);
+            if self.history.len() > 32 {
+                self.history.remove(0);
+            }
+            self.reload();
         }
     }
 

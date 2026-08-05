@@ -77,6 +77,23 @@ enum Cmd {
     Topology,
     /// Dump one slot's raw body, for protocol work.
     Slot { position: usize },
+    /// Copy a block over another slot, by position as shown in `chain`.
+    ///
+    /// Writes the whole preset document, so the block arrives complete —
+    /// model, values, paired cab and all.
+    CopyBlock { from: usize, to: usize },
+    /// Copy a snapshot's settings over another, keeping the target's name.
+    CopySnapshot { from: usize, to: usize },
+    /// Back up every preset in a setlist to a directory.
+    ///
+    /// One file per preset, byte for byte as the device holds it. Slow by
+    /// nature: each preset has to be loaded before it can be read, so this
+    /// walks the whole setlist and takes a few minutes.
+    BackupAll {
+        directory: std::path::PathBuf,
+        #[arg(long, default_value_t = 0)]
+        setlist: i64,
+    },
     /// Commit the edit buffer to a preset, making the changes permanent.
     ///
     /// Everything else edits the device's scratch buffer: change a parameter
@@ -91,10 +108,9 @@ enum Cmd {
         setlist: i64,
     },
     /// Read a device setting by numeric id, or list the ones that answer.
-    ///
-    /// Read-only on purpose: writing a setting destabilises the device — see
-    /// PROTOCOL.md.
     Setting { id: Option<i64> },
+    /// Write a device setting: a whole number, `on`/`off`, or a decimal.
+    SetSetting { id: i64, value: String },
     /// List setlists.
     Setlists,
     /// List the impulse response slots.
@@ -249,6 +265,10 @@ fn on_device(cmd: Cmd) -> Result<()> {
             setlist,
         } => save_preset(s, setlist, index.as_deref(), name.as_deref()),
         Cmd::Setting { id } => show_setting(s, id),
+        Cmd::SetSetting { id, value } => set_setting(s, id, &value),
+        Cmd::CopyBlock { from, to } => copy_block(s, from, to),
+        Cmd::CopySnapshot { from, to } => copy_snapshot(s, from, to),
+        Cmd::BackupAll { directory, setlist } => backup_all(s, &directory, setlist),
         Cmd::Slot { position } => {
             let preset = session.read_preset()?;
             match preset.raw_slot(position) {
@@ -618,6 +638,122 @@ fn show_setting(session: &mut hx_usb::Session, id: Option<i64>) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+/// Back up a whole setlist, one file per preset.
+///
+/// There is no bulk-read opcode: a preset can only be read once it is loaded,
+/// so this selects each in turn. It restores the preset that was loaded when
+/// it started, and stops at the first failure rather than leaving a backup
+/// with silent holes in it.
+fn backup_all(
+    session: &mut hx_usb::Session,
+    directory: &std::path::Path,
+    setlist: i64,
+) -> Result<()> {
+    let (_, started_at, _) = session.preset_info()?;
+    let names = session.presets(setlist)?;
+    std::fs::create_dir_all(directory).with_context(|| format!("creating {directory:?}"))?;
+
+    println!(
+        "backing up {} presets to {}",
+        names.len(),
+        directory.display()
+    );
+    for (index, name) in names.iter().enumerate() {
+        let index = index as i64;
+        session
+            .select_preset(setlist, index)
+            .with_context(|| format!("selecting preset {index}"))?;
+        let preset = session
+            .read_preset()
+            .with_context(|| format!("reading preset {index}"))?;
+
+        let label = hx_proto::rpc::slot_label(index);
+        let file = directory.join(format!("{label}-{}.hxpreset", sanitise(name)));
+        std::fs::write(&file, preset.encode()).with_context(|| format!("writing {file:?}"))?;
+        println!("  {label}  {name}");
+    }
+
+    session.select_preset(setlist, started_at)?;
+    println!("done; the preset you had loaded is back");
+    Ok(())
+}
+
+/// Make a preset name safe to use as a filename.
+fn sanitise(name: &str) -> String {
+    let cleaned: String = name
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if cleaned.trim_matches('_').is_empty() {
+        "preset".to_owned()
+    } else {
+        cleaned
+    }
+}
+
+/// Copy one block over another and write the document back.
+fn copy_block(session: &mut hx_usb::Session, from: usize, to: usize) -> Result<()> {
+    let mut preset = session.read_preset()?;
+    let block = preset
+        .copy_slot(from)
+        .with_context(|| format!("no slot {from}"))?;
+    if !preset.paste_slot(to, &block) {
+        bail!("slot {to} cannot hold a block — inputs, outputs, splits and joins are fixed");
+    }
+    session.write_preset(&preset)?;
+    println!("copied block {from} to {to} (unsaved — run `stompchain save`)");
+    Ok(())
+}
+
+/// Copy one snapshot's settings over another.
+fn copy_snapshot(session: &mut hx_usb::Session, from: usize, to: usize) -> Result<()> {
+    let mut preset = session.read_preset()?;
+    let count = preset.snapshots().len();
+    let (a, b) = (from.saturating_sub(1), to.saturating_sub(1));
+    if from == 0 || to == 0 || a >= count || b >= count {
+        bail!("snapshots are numbered 1 to {count}");
+    }
+    let snapshot = preset.copy_snapshot(a).context("copying the snapshot")?;
+    if !preset.paste_snapshot(b, &snapshot) {
+        bail!("could not write snapshot {to}");
+    }
+    session.write_preset(&preset)?;
+    println!("copied snapshot {from} to {to} (unsaved — run `stompchain save`)");
+    Ok(())
+}
+
+/// Write one device setting, matching the type the device already holds.
+fn set_setting(session: &mut hx_usb::Session, id: i64, text: &str) -> Result<()> {
+    use hx_proto::msgpack::Value;
+    // A value of the wrong type is refused with error -3, so read first and
+    // send back the same shape.
+    let current = session.object(id)?;
+    let value = match (&current, text) {
+        (Value::Bool(_), "true" | "on" | "1") => Value::Bool(true),
+        (Value::Bool(_), "false" | "off" | "0") => Value::Bool(false),
+        (Value::Bool(_), _) => bail!("setting {id} is a switch; use on or off"),
+        (Value::F32(_) | Value::F64(_), _) => Value::F32(
+            text.parse()
+                .with_context(|| format!("{text:?} is not a number"))?,
+        ),
+        (Value::Nil, _) => bail!("setting {id} does not exist on this device"),
+        _ => Value::Int(
+            text.parse()
+                .with_context(|| format!("{text:?} is not a whole number"))?,
+        ),
+    };
+    session.set_object(id, value)?;
+    println!("{id}: {current:?} -> {:?}", session.object(id)?);
     Ok(())
 }
 

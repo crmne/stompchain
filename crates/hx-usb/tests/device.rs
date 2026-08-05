@@ -591,3 +591,43 @@ fn device_settings_can_be_read() {
 
     assert_healthy(&mut session, "reading device settings");
 }
+
+/// Writing a device setting: opcode 25, the mirror of the read.
+///
+/// This was believed unsafe for a while. The test that condemned it also
+/// called `irs()` on a control channel nothing had opened, which times out and
+/// leaves the session unhealthy — so the write was carrying the blame for its
+/// neighbour. With the health check fixed, it is exercised again.
+#[test]
+#[ignore = "needs an HX device"]
+fn a_device_setting_round_trips() {
+    use hx_proto::msgpack::Value;
+
+    let Some(mut session) = device() else { return };
+    const GLOBAL_EQ_ENABLED: i64 = 203;
+
+    let Value::Bool(was) = session.object(GLOBAL_EQ_ENABLED).expect("read") else {
+        eprintln!("SKIPPED: object {GLOBAL_EQ_ENABLED} is not a switch here");
+        return;
+    };
+
+    session
+        .set_object(GLOBAL_EQ_ENABLED, Value::Bool(!was))
+        .expect("write");
+    assert_eq!(
+        session.object(GLOBAL_EQ_ENABLED).expect("read back"),
+        Value::Bool(!was),
+        "the device did not take the setting"
+    );
+
+    session
+        .set_object(GLOBAL_EQ_ENABLED, Value::Bool(was))
+        .expect("restore");
+    assert_eq!(
+        session.object(GLOBAL_EQ_ENABLED).expect("read"),
+        Value::Bool(was),
+        "failed to restore the setting"
+    );
+
+    assert_healthy(&mut session, "a device setting round trip");
+}
