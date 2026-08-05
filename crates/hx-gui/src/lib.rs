@@ -1463,19 +1463,36 @@ impl App {
         });
     }
 
-    /// Assign this block's bypass to a MIDI CC.
+    /// What drives this block's bypass.
     ///
-    /// Named for exactly what it does. HX Edit has a general assignment table
-    /// — any block, any parameter, any source, including expression pedals and
-    /// footswitches — and this is one corner of it: the bypass, from a MIDI CC.
-    /// Calling it "Bypass follows" implied the rest of that table existed.
+    /// HX Edit's assignment page in miniature: bypass is a switch, so a
+    /// footswitch or a MIDI CC can drive it but an expression pedal cannot —
+    /// HX Edit lists pedals here and then steps over them, so they are simply
+    /// not offered. Parameters take the full range of sources; see the knob
+    /// context menus.
     fn bypass_assignment(&mut self, ui: &mut egui::Ui, block: &session::Block) {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(
                 RichText::new("Bypass switched by")
                     .small()
                     .color(theme::DIM),
             );
+
+            for switch in 1..=5u8 {
+                if ui
+                    .button(format!("FS{switch}"))
+                    .on_hover_text(format!("footswitch {switch} toggles this block"))
+                    .clicked()
+                {
+                    self.edit(Cmd::AssignBypassFootswitch {
+                        block: block.position,
+                        switch,
+                        on: true,
+                    });
+                }
+            }
+            ui.separator();
+
             let mut cc = self.assign_cc;
             if ui
                 .add(
@@ -1487,21 +1504,26 @@ impl App {
             {
                 self.assign_cc = cc.clamp(0, 127);
             }
-            if ui
-                .button("Assign")
-                .on_hover_text("make this CC toggle the block in and out")
-                .clicked()
-            {
+            if ui.button("Assign").clicked() {
                 self.edit(Cmd::AssignCc {
                     block: block.position,
                     cc: self.assign_cc,
                 });
             }
-            ui.label(
-                RichText::new("expression and footswitch sources are not implemented")
-                    .small()
-                    .color(theme::DIM),
-            );
+            ui.separator();
+            if ui
+                .button("Clear")
+                .on_hover_text("take the bypass off every footswitch")
+                .clicked()
+            {
+                for switch in 1..=5u8 {
+                    self.edit(Cmd::AssignBypassFootswitch {
+                        block: block.position,
+                        switch,
+                        on: false,
+                    });
+                }
+            }
         });
         ui.add_space(2.0);
     }
@@ -1757,6 +1779,7 @@ impl App {
         };
 
         let mut edit = None;
+        let mut assign: Option<(i64, hx_proto::rpc::Source)> = None;
         // The pedal, at a size worth looking at. This is the thing being
         // worked on, so it gets the room; the shelf next door is deliberately
         // smaller.
@@ -1804,7 +1827,23 @@ impl App {
                                 .monospace()
                                 .color(theme::ACCENT),
                         );
-                        ui.label(RichText::new(&param.name).small().color(theme::DIM));
+                        let name = ui.label(RichText::new(&param.name).small().color(theme::DIM));
+                        // Right-click to put the knob under a pedal or switch,
+                        // which is where you are already looking when you
+                        // decide you want to sweep it with your foot.
+                        name.context_menu(|ui| {
+                            ui.label(
+                                RichText::new(format!("Control {} with", param.name))
+                                    .small()
+                                    .color(theme::DIM),
+                            );
+                            for source in hx_proto::rpc::Source::all() {
+                                if ui.button(source.label()).clicked() {
+                                    assign = Some((index as i64, source));
+                                    ui.close_menu();
+                                }
+                            }
+                        });
                         if changed {
                             edit = Some((index as i64, current, param.kind == Kind::Switch));
                         }
@@ -1813,6 +1852,13 @@ impl App {
             }
         });
 
+        if let Some((param, source)) = assign {
+            self.edit(Cmd::AssignParameter {
+                block: position,
+                param,
+                source,
+            });
+        }
         if let Some(to) = reroute {
             self.edit(Cmd::SetRouting {
                 block: position,

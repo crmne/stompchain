@@ -70,7 +70,17 @@ pub mod key {
     /// Two further fields on an assignment whose meaning is not known; they
     /// were constant across every assignment captured.
     pub const ASSIGN_SCOPE: i64 = 96;
+    /// Which controller drives a parameter — see `Source`.
     pub const ASSIGN_FLAGS: i64 = 74;
+    /// Footswitch index on opcodes 56, 57 and 33.
+    pub const SWITCH: i64 = 102;
+    /// Low and high ends of a controller's travel, normalised 0..1.
+    pub const ASSIGN_MIN: i64 = 72;
+    pub const ASSIGN_MAX: i64 = 73;
+    /// Constant 4 on every captured controller assignment.
+    pub const ASSIGN_KIND: i64 = 71;
+    /// Constant false on every captured controller assignment.
+    pub const ASSIGN_EXTRA: i64 = 129;
 
     /// Zero-based impulse response slot.
     pub const IR_SLOT: i64 = 112;
@@ -133,6 +143,14 @@ pub mod op {
     /// so that is the CC number and the rest describe what is being controlled.
     /// Keys 95, 96 and 74 are replayed as observed. **[inferred]**
     pub const ASSIGN_CONTROLLER: i64 = 37;
+    /// Read a parameter's controller assignment: `{98, 29, 26, 28}`.
+    pub const READ_ASSIGNMENT: i64 = 36;
+    /// Assign a block's bypass to a footswitch: `{98: block, 102: switch}`.
+    pub const ASSIGN_FOOTSWITCH: i64 = 56;
+    /// Take a block's bypass off a footswitch. Same arguments as 56.
+    pub const UNASSIGN_FOOTSWITCH: i64 = 57;
+    /// Read a footswitch's configuration: `{102: switch}`.
+    pub const FOOTSWITCH_CONFIG: i64 = 33;
     /// `{98: block}` — empty a slot.
     pub const CLEAR_BLOCK: i64 = 28;
     /// Upload an impulse response. Control channel.
@@ -322,8 +340,72 @@ impl StreamReader {
     }
 }
 
+/// What can drive a parameter, in the order HX Edit lists the sources.
+///
+/// The wire carries the ordinal, so the order is the protocol rather than a
+/// presentation choice: 1 is EXP Pedal 1 and 9 is Snapshots on every device
+/// seen. `None` is the absence of an assignment and has no ordinal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    Expression(u8),
+    Footswitch(u8),
+    MidiCc,
+    Snapshots,
+}
+
+impl Source {
+    /// The ordinal the device expects under `key::ASSIGN_FLAGS`.
+    pub fn ordinal(self) -> i64 {
+        match self {
+            // Two expression pedals, then five footswitches, then the rest.
+            Source::Expression(n) => n.clamp(1, 2) as i64,
+            Source::Footswitch(n) => 2 + n.clamp(1, 5) as i64,
+            Source::MidiCc => 8,
+            Source::Snapshots => 9,
+        }
+    }
+
+    pub fn from_ordinal(n: i64) -> Option<Source> {
+        match n {
+            1..=2 => Some(Source::Expression(n as u8)),
+            3..=7 => Some(Source::Footswitch((n - 2) as u8)),
+            8 => Some(Source::MidiCc),
+            9 => Some(Source::Snapshots),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> String {
+        match self {
+            Source::Expression(n) => format!("EXP Pedal {n}"),
+            Source::Footswitch(n) => format!("Footswitch {n}"),
+            Source::MidiCc => "MIDI CC".into(),
+            Source::Snapshots => "Snapshots".into(),
+        }
+    }
+
+    /// Every source, for offering a choice.
+    pub fn all() -> Vec<Source> {
+        (1..=9).filter_map(Source::from_ordinal).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sources_round_trip_through_their_ordinals() {
+        use super::Source;
+        for n in 1..=9 {
+            let source = Source::from_ordinal(n).expect("a source");
+            assert_eq!(source.ordinal(), n, "{source:?} does not round trip");
+        }
+        // The ordering is the protocol's, captured from HX Edit.
+        assert_eq!(Source::from_ordinal(1), Some(Source::Expression(1)));
+        assert_eq!(Source::from_ordinal(3), Some(Source::Footswitch(1)));
+        assert_eq!(Source::from_ordinal(8), Some(Source::MidiCc));
+        assert_eq!(Source::all().len(), 9);
+    }
+
     use super::*;
 
     /// A real select-preset request captured from HX Edit.

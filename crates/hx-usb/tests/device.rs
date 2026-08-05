@@ -631,3 +631,54 @@ fn a_device_setting_round_trips() {
 
     assert_healthy(&mut session, "a device setting round trip");
 }
+
+/// Assigning a block's bypass to a footswitch, and taking it off again.
+///
+/// Opcodes 56 and 57, captured from HX Edit by scrolling its source menu —
+/// those custom-drawn dropdowns ignore synthetic clicks, but they respond to
+/// the wheel, which is how the whole source list was mapped.
+#[test]
+#[ignore = "needs an HX device"]
+fn a_bypass_can_be_put_on_a_footswitch() {
+    let Some(mut session) = device() else { return };
+
+    let preset = session.read_preset().expect("read");
+    let Some((position, _)) = preset.blocks().next() else {
+        eprintln!("SKIPPED: the loaded preset has no blocks");
+        return;
+    };
+    drop(preset);
+    let block = position as i64;
+
+    session
+        .assign_bypass_footswitch(block, 1)
+        .expect("assigning footswitch 1");
+    session
+        .unassign_bypass_footswitch(block, 1)
+        .expect("taking it off again");
+
+    assert_healthy(&mut session, "a footswitch assignment");
+}
+
+/// Putting a parameter under an expression pedal — opcode 37, in the shape HX
+/// Edit sends for a continuous control rather than a bypass.
+#[test]
+#[ignore = "needs an HX device"]
+fn a_parameter_can_be_put_under_an_expression_pedal() {
+    use hx_proto::rpc::Source;
+
+    let Some(mut session) = device() else { return };
+
+    let preset = session.read_preset().expect("read");
+    let Some((position, _)) = preset.blocks().next() else {
+        eprintln!("SKIPPED: the loaded preset has no blocks");
+        return;
+    };
+    drop(preset);
+
+    session
+        .assign_parameter(position as i64, 0, Source::Expression(1))
+        .expect("assigning EXP 1");
+
+    assert_healthy(&mut session, "an expression assignment");
+}

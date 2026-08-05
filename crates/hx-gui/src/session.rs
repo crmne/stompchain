@@ -31,6 +31,18 @@ pub enum Cmd {
         block: i64,
         cc: i64,
     },
+    /// Put a block's bypass under a footswitch, or take it off one.
+    AssignBypassFootswitch {
+        block: i64,
+        switch: u8,
+        on: bool,
+    },
+    /// Put a parameter under a controller.
+    AssignParameter {
+        block: i64,
+        param: i64,
+        source: hx_proto::rpc::Source,
+    },
     LoadIr {
         slot: i64,
         file: std::path::PathBuf,
@@ -338,6 +350,28 @@ impl Worker {
                     self.future.clear();
                     self.report_history();
                     self.reload();
+                }
+            }
+            Cmd::AssignBypassFootswitch { block, switch, on } => {
+                self.snapshot();
+                let ok = if on {
+                    self.run_on_device(|d| d.assign_bypass_footswitch(block, switch))
+                } else {
+                    self.run_on_device(|d| d.unassign_bypass_footswitch(block, switch))
+                };
+                if ok {
+                    let verb = if on { "assigned to" } else { "taken off" };
+                    self.send(Evt::Activity(format!("bypass {verb} footswitch {switch}")));
+                }
+            }
+            Cmd::AssignParameter {
+                block,
+                param,
+                source,
+            } => {
+                self.snapshot();
+                if self.run_on_device(|d| d.assign_parameter(block, param, source)) {
+                    self.send(Evt::Activity(format!("assigned to {}", source.label())));
                 }
             }
             Cmd::SetSetting { id, on } => {

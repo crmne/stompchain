@@ -397,6 +397,56 @@ impl Session {
         )
     }
 
+    /// Put a parameter under a controller — an expression pedal, a footswitch,
+    /// a MIDI CC.
+    ///
+    /// Captured from HX Edit's Bypass/Controller Assign page by scrolling its
+    /// source menu, which is how those custom-drawn dropdowns can be driven at
+    /// all: they ignore synthetic clicks. The ordinal under key 74 is the
+    /// source, keys 72 and 73 the ends of its travel.
+    pub fn assign_parameter(&mut self, block: i64, param: i64, source: rpc::Source) -> Result<()> {
+        self.command(
+            ChannelId::DATA,
+            rpc::op::ASSIGN_CONTROLLER,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::PATH => Value::Int(0),
+                rpc::key::PARAM_INDEX => Value::Int(param),
+                rpc::key::COMMIT => Value::Bool(true),
+                rpc::key::ASSIGN_FLAGS => Value::Int(source.ordinal()),
+                rpc::key::ASSIGN_KIND => Value::Int(4),
+                rpc::key::ASSIGN_EXTRA => Value::Bool(false),
+            },
+        )
+    }
+
+    /// Make a footswitch toggle a block in and out.
+    ///
+    /// Bypass is a switch, so only a footswitch or a MIDI CC can drive it —
+    /// HX Edit lists expression pedals for it but steps over them.
+    pub fn assign_bypass_footswitch(&mut self, block: i64, switch: u8) -> Result<()> {
+        self.command(
+            ChannelId::DATA,
+            rpc::op::ASSIGN_FOOTSWITCH,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::SWITCH => Value::Int(switch.saturating_sub(1) as i64),
+            },
+        )
+    }
+
+    /// Take a block's bypass off a footswitch again.
+    pub fn unassign_bypass_footswitch(&mut self, block: i64, switch: u8) -> Result<()> {
+        self.command(
+            ChannelId::DATA,
+            rpc::op::UNASSIGN_FOOTSWITCH,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::SWITCH => Value::Int(switch.saturating_sub(1) as i64),
+            },
+        )
+    }
+
     /// Change the tempo of the loaded preset.
     ///
     /// No opcode carries tempo on its own, so this edits the preset document

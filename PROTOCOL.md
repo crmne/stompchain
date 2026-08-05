@@ -250,6 +250,32 @@ including the settings round trip pass twice over with no power cycle between.
 The lesson generalises: elimination finds *a* thing that changes the outcome,
 not necessarily the cause. Two changes in one test is one too many.
 
+### Controller assignments [confirmed]
+
+HX Edit's Bypass/Controller Assign page puts any parameter under any source.
+Four opcodes cover it:
+
+| Opcode | Arguments | Does |
+|---|---|---|
+| 37 | `{98: block, 26: 0, 28: param, 29: true, 74: source, 71: 4, 129: false}` | put a parameter under a controller |
+| 36 | `{98, 29, 26, 28}` | read a parameter's assignment |
+| 56 | `{98: block, 102: switch}` | put a block's bypass on a footswitch |
+| 57 | `{98: block, 102: switch}` | take it off again |
+| 33 | `{102: switch}` | read a footswitch's configuration |
+
+Key **74 is the source**, as an ordinal in the order HX Edit lists them: 1–2 the
+expression pedals, 3–7 the footswitches, 8 MIDI CC, 9 Snapshots. Keys 72 and 73
+carry the ends of the controller's travel, normalised. Bypass is a switch, so
+only a footswitch or a CC can drive it — HX Edit lists expression pedals for a
+bypass and then steps over them.
+
+**Method: those dropdowns answer the scroll wheel. [method]** HX Edit's
+custom-drawn menus ignore synthetic clicks, and its controls are invisible to
+the accessibility API, which had this section stuck at "the menu opens and
+nothing can be chosen". A scroll event over the closed dropdown steps its
+selection and sends the traffic, which is how the whole source list was mapped
+one entry at a time.
+
 ### Identifying a flag by patching the reply [method]
 
 A boolean nothing acts on is indistinguishable from any other boolean, so the
