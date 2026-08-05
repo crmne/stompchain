@@ -58,6 +58,7 @@ only. Every request gets exactly one reply. **[confirmed]**
 |---|---|
 | `0` | complete — `104` holds the result |
 | `1` | accepted, asynchronous — `104` is nil and the real completion arrives later as **notification 20** carrying the same `102` |
+| `255` | refused — `104` is `{111: signed error code}` |
 
 Both async cases in the captures are unambiguous:
 
@@ -74,8 +75,14 @@ Both async cases in the captures are unambiguous:
 ```
 
 A client must therefore not treat `103: 1` as failure, and must keep a pending-txn
-table keyed on 102 so notification 20 can complete it. **No status other than 0 or 1
-was ever observed**, so real error codes are **[open]**.
+table keyed on 102 so notification 20 can complete it.
+
+HX Edit's traffic contains only 0 and 1; status 255 surfaced once deliberately
+bad requests were sent (a parameter on an empty slot, snapshot 7, model 99999),
+answering `{111: -3}`, `{111: -46}` and `{111: -302}` respectively. Note that
+the asynchronous acceptances are **not validated up front** — selecting preset
+999 on a 126-preset device answers `103: 1` and then nothing happens — and that
+a no-op such as clearing an empty IR slot is an honest `103: 0`.
 
 ---
 

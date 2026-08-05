@@ -32,6 +32,8 @@ pub enum Error {
     Claim(String),
     #[error("usb error: {0}")]
     Usb(String),
+    #[error("the device refused: error {0}")]
+    Device(i64),
     #[error("protocol error: {0}")]
     Protocol(String),
     #[error("timed out waiting for a reply to transaction {0}")]
@@ -494,7 +496,19 @@ impl Session {
     /// locking up hard enough to need its power pulled, so the retry is gone.
     /// If a request goes unanswered the honest thing is to say so and let the
     /// caller decide.
+    /// Like [`request`](Self::request), but returning the reply's status too.
+    ///
+    /// Exists for protocol experiments; ordinary callers use `request`, which
+    /// deliberately does not judge statuses (see the comment inside).
+    pub fn request_full(&mut self, id: ChannelId, opcode: i64, args: Value) -> Result<(i64, Value)> {
+        self.request_inner(id, opcode, args)
+    }
+
     pub fn request(&mut self, id: ChannelId, opcode: i64, args: Value) -> Result<Value> {
+        self.request_inner(id, opcode, args).map(|(_, v)| v)
+    }
+
+    fn request_inner(&mut self, id: ChannelId, opcode: i64, args: Value) -> Result<(i64, Value)> {
         let txn = {
             let ch = self
                 .channels
@@ -543,8 +557,21 @@ impl Session {
                         // a preset read answers with 0 and a blob — HX Edit
                         // sees the same values. Since no value is known to mean
                         // failure, the status is reported rather than judged.
-                        let _ = status;
-                        return Ok(result);
+                        // 0 is done and 1 is accepted-completes-later; 255 is
+                        // the device refusing, with a signed error code under
+                        // key 111 (-3 bad reference, -46 bad snapshot, -302
+                        // unknown model — the map is in PROTOCOL.md). Statuses
+                        // were unjudged for a long time because every value HX
+                        // Edit's own traffic shows is 0 or 1; the refusals only
+                        // appeared once we sent deliberately bad requests.
+                        if status == 255 {
+                            let code = result
+                                .get(rpc::key::ERROR_CODE)
+                                .and_then(Value::as_i64)
+                                .unwrap_or(0);
+                            return Err(Error::Device(code));
+                        }
+                        return Ok((status, result));
                     }
                 }
             }
@@ -693,7 +720,8 @@ impl Session {
 /// Not a CRC, which cost some time to establish — two captured uploads were
 /// checked against CRC-32, Adler-32, byte sum and length before this plain
 /// word sum reproduced both exactly.
-fn checksum(bytes: &[u8]) -> u64 {
+/// The word-sum checksum opcode 9 carries (key 113): wrapping sum of LE u32s.
+pub fn checksum(bytes: &[u8]) -> u64 {
     bytes
         .chunks_exact(4)
         .fold(0u32, |acc, w| {

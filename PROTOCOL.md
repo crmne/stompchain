@@ -178,83 +178,8 @@ Every bulk transfer on `0x01`/`0x81` is one framed message:
 
 ```
 offset  size  field
-0       3     payload length, u24 LE  (not counting this 8-byte header)
-3       1     flags: 0x18 normal, 0x28 channel handshake
-4       2     destination node, u16 LE
-6       2     source node, u16 LE
-8       n     payload, zero-padded to a 4-byte boundary
-```
-
-Verified as `pad4(len + 8) == transfer_length` on **2934 of 2934** packets with
-zero exceptions, which is what makes this framing trustworthy rather than merely
-plausible.
-
-## Layer 2 — channels [confirmed]
-
-Traffic is multiplexed over several independent bidirectional channels, each a
-pair of node ids. The device-side node is `0x10xx` and the host-side node
-`0x03xx`; request and reply carry the same pair with source and destination
-swapped.
-
-| Device node | Host node | Service | Carries |
-|---|---|---|---|
-| `0x1001` | `0x03ef` | 5, **then 2** | device/session control |
-| `0x1002` | `0x03f0` | 4 | UI and state notifications |
-| `0x1080` | `0x03ed` | 6 | preset and global data |
-
-A channel opens a service by sending a one-byte stream message whose body is the
-service id. The control channel is opened **twice**: once for service 5, then
-again from scratch for service 2, which is where its requests ride.
-
-The second open is a *complete* handshake — a fresh type-`0x02` frame with the
-sequence restarting at zero — not a second service opened on the existing one.
-Doing it the latter way breaks every channel, not just the control one.
-
-Two details make the difference between this working and failing silently:
-
-- **A bare type-`0x02` frame closes the first service** before the second is
-  opened. Without it the device answers nothing on the new service.
-- **Byte accounting carries across the re-open.** Restarting the count at zero
-  produces an acknowledgement the device ignores; HX Edit's continues from where
-  the first service left off.
-
-With both, control-channel requests work — and so does impulse response upload,
-whose failure was entirely in its control-channel bootstrap rather than anything
-IR-specific.
-
-Each channel payload begins with its own 8-byte header:
-
-```
-offset  size  field
-0       2     sequence number, u16 BE   (low byte is the effective counter)
-2       2     message type, u16 BE
-4       4     acknowledgement, u32 LE — cumulative bytes received from the peer
-```
-
-**The message type is a bit field, not an enumeration. [confirmed]** `0x04`
-means "carries stream data" and combines with the others: `0x0c` is data plus an
-acknowledgement, `0x14` is data alongside a keep-alive. Testing `type == 0x04`
-compiles, runs, and silently drops a quarter of the real messages — which is
-exactly the bug that made large transfers stall here.
-
-Types observed: `0x02` handshake, `0x04` data, `0x08` bare acknowledgement,
-`0x0c` data with acknowledgement, `0x10` keep-alive, `0x14` data with keep-alive.
-Keep-alives run about once per second per channel and dominate an idle capture.
-
-The acknowledgement field is a cumulative byte counter, so a bulk transfer of a
-preset shows the host's ack advancing by exactly `0x100` per 256-byte chunk. This
-is a small windowed reliable-stream protocol layered over USB bulk.
-
-## Layer 3 — the channel byte stream [confirmed]
-
-Everything after the channel header is a **byte stream**, chunked arbitrarily
-across USB messages. It must be concatenated per channel before parsing. The
-stream is a sequence of length-prefixed messages:
-
-```
-offset  size  field
-0       2     0x0000 or 0x0001                          [open]
-2       2     service id on small messages; other values on large ones  [open]
+0       2     originator: 1 host, 0 device                [confirmed]
+2       2     service id; garbage on some device replies  [confirmed]
 4       4     MessagePack body length, u32 LE
 8       n     MessagePack body
 ```
@@ -263,10 +188,27 @@ offset  size  field
 without desynchronising, which is the evidence that the layering is right: a
 strict MessagePack reader fails immediately if the framing is off by a byte.
 
-The field at offset 2 is usually the service id (4, 5, 6) but was `0x00e3` on a
-2542-byte preset transfer, so that reading is not general. **[open]**
+The two leading fields were resolved by a census of every stream message in the
+captures (~900):
 
-## Layer 4 — MessagePack RPC [confirmed]
+- **Offset 0 is the originator.** Host messages always carry 1, device messages
+  always 0, with zero exceptions. It is not a flags word.
+- **Offset 2 is the service id, but the device does not always initialise it.**
+  Host messages always carry the true service. Device messages usually do, but
+  certain replies — the first large reply on the control channel, and every
+  jumbo preset document — carry junk instead: the *same* reply arrives as
+  `0x0000`, `0x28e1` or `0x2100` in different captures of the same action, and
+  the junk bytes are recognisable residue (frame-flag values, fragments of the
+  blob length, even ASCII from neighbouring buffers). The receiver must trust
+  only the length at offset 4 and ignore offset 2 on device messages, which is
+  what this implementation does.
+
+Two small related facts fell out of the same census: the reply to opening a
+service carries a one-byte body echoing the service number, and a capture that
+starts mid-session begins mid-message — the framing recovers at the next
+message boundary because the length walk stays consistent from there.
+
+## Layer 4## Layer 4 — MessagePack RPC [confirmed]
 
 The body is standard **MessagePack** with integer keys. Line 6's strings are C
 strings whose declared length *includes* the trailing NUL, so `0xa9` introduces
@@ -374,8 +316,37 @@ fault is in the message itself — a missing or wrong field — not the transpor
 
 Key 112 is the destination slot, 109 the display name, and **110 the samples as
 little-endian `f32`** — the whole IR in one MessagePack blob, roughly 8 KB for a
-1024-sample file. Key 113 looks like a checksum and 114/115 like a format
-descriptor; neither was isolated. **[open]**
+1024-sample file. Key 113 is a wrapping sum of the sample bytes taken as
+little-endian u32 words (not a CRC — see the checksum note below).
+
+**Keys 114 and 115 declare the stored length. [confirmed]** The device stores
+`114 × 256 × 2^115` samples. Isolated by uploading the same data under varied
+values and comparing the stored content hash:
+
+| 114 | 115 | data sent | stored |
+|---|---|---|---|
+| 1 | 3 | 1024 | 2048, zero-padded |
+| 1 | 2 | 1024 | 1024, byte-identical |
+| 1 | 1 | 512  | 512, byte-identical |
+| 2 | 2 | 1024 | 2048, zero-padded — same image as 1/3 |
+| 0 | –​ | any  | hangs the session |
+
+So 115 is a length exponent and 114 a multiplier — plausibly a channel count,
+though HX Edit always sends 1 and only the product is observable. Data shorter
+than the declared length is zero-padded; data **longer** than declared wedges
+the device's transfer state machine badly enough to need the 9V adapter pulled,
+which is why this client derives the code from the sample count and refuses
+anything over 2048 samples.
+
+**The IR list reveals the stored bytes. [confirmed]** Each op 13 entry carries
+key 104: the MD5, as lowercase hex, of the stored sample bytes *after* padding.
+Uploading 1024 known samples under code 3 and hashing them locally with 4 KB of
+zeros appended reproduces the device's value exactly. That makes end-to-end
+verification of an upload free, and it is how the table above was measured.
+
+Keys 123, 124 and 125 are not IR-specific — preset list entries carry the same
+trio (`false`, `false`, `0` everywhere so far); their meaning is untested but
+they echo back verbatim.
 
 Opcode 15 `{112: slot}` empties a slot.
 
@@ -405,14 +376,10 @@ diverges. It located each cause in turn — byte 10 (a blob tag), then byte 789
 (an int16 zero) — where inspection had produced only plausible theories. That
 test is `crates/hx-proto/tests/roundtrip.rs` and it needs no hardware.
 
-**Our upload implementation is wrong, and wrongly enough to hang the device.
-[confirmed]** Sending opcode 9 with the shape below, chunked at 256 bytes with
-reads interleaved, times out mid-transfer and leaves the device unable to accept
-a new session — reproduced twice, each time needing the 9V pulled. So the shape
-below is *what HX Edit sends*, not a recipe that works. Something else about the
-transfer differs: the checksum, the pacing, a per-chunk acknowledgement we are
-not sending, or an opcode that must precede it. Treat this section as evidence,
-not instructions.
+**Uploads are verified end to end.** An earlier version of this section warned
+that our upload hung the device; the cause was the control-channel
+misconfiguration described above, not the message. The remaining hazard is the
+declared-length rule: see keys 114/115 below.
 
 **A message this large must be chunked, and paced. [confirmed]** The device
 accepts 256 bytes of stream data per frame and paces the sender with
@@ -459,10 +426,21 @@ traffic, check that it actually changed something.
 `index / 3 + 1` followed by `A`/`B`/`C`. Selecting index 7 and reading the
 metadata back returns `CT-Sad`, which is what HX Edit shows at 03B.
 
-**Key 103 is not a plain error code. [confirmed]** A successful select-preset
-answers `103: 1` with a nil result, while a preset read answers `103: 0` with a
-blob. HX Edit sees the same values, and the preset does load, so a client must
-not treat non-zero as failure. Which values indicate real errors is **[open]**.
+**Reply statuses (key 103). [confirmed]** Three values cover everything
+observed:
+
+| status | meaning |
+|---|---|
+| 0 | done |
+| 1 | accepted; the operation completes later (select preset, write preset, IR upload) |
+| 255 | refused; the result is `{111: signed error code}` |
+
+HX Edit's own traffic contains only 0 and 1, which is why the refusals stayed
+unmapped until deliberately bad requests were sent. Codes observed so far: `-3`
+a bad block or parameter reference, `-46` an out-of-range snapshot, `-302` an
+unknown model number. Two sharp edges: **accepted is not validated** — selecting
+preset 999 on a 126-preset device answers 1 and simply does nothing — and a
+no-op is not an error: clearing an already-empty IR slot answers 0.
 
 The preset *name* is not part of the preset document — it comes from opcode 23.
 
@@ -538,7 +516,7 @@ appeared as parameters:
 |---|---|---|
 | `20.5` | input | `Input From` — indexes the `input_type` menu in `HelixControls.json` |
 | `20.6` | output | `Output To` — indexes `output_type` |
-| `20.9` | any | a per-model type tag: every amp carries 18, EQ and dynamics 1, endpoints 0. Meaning **[open]** |
+| `20.9` | effect slots | the model's engine class — see below **[confirmed]** |
 
 `Input From` and `Output To` are the first control HX Edit shows on Input and
 Main L/R. They can be read, but the device **does not apply a change to them
@@ -546,9 +524,27 @@ from a preset-document write** — it accepts the document, keeps everything els
 and leaves the routing as it was. No opcode for them has been found, so the
 editor shows them read-only. **[open]**
 
-Note that `20.9` was initially read as a branch index. It is not: both copies of
-the same amp model report 18 whichever branch they are on. Which branch a block
-is on is implied by its position in the array — see below.
+Key `20.9` was pinned down by setting one model per category into the same slot
+and reading it back:
+
+| models | `20.9` |
+|---|---|
+| distortion, dynamics, EQ, modulation, pitch, wah, volume/pan, preamp, cab | 1 |
+| delay, reverb | 8 |
+| amp | 18 |
+| IR block, 1024-tap | 19 |
+| IR block, 2048-tap | 20 |
+| send/return, looper | 25 |
+
+The reading that fits is an **engine or resource class**: simple effects share
+one code, effects needing delay RAM share another, amps their own, the two IR
+lengths take adjacent codes for double the memory, and the two block types that
+touch hardware I/O share the last. It is a function of the model alone — both
+copies of the same amp carry 18 whichever branch they sit on (it was first
+misread as a branch index; the branch is implied by array position, see below).
+Endpoints, splits and joins carry no key 9 at all. The device maintains the
+value itself on model changes, so an editor only ever needs to carry it through
+byte-exact — never to synthesise it.
 
 ### The slot array is a topology, not a running order [confirmed]
 

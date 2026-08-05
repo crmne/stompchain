@@ -16,6 +16,8 @@ pub mod key {
     pub const STATUS: i64 = 103;
     /// Response: result payload.
     pub const RESULT: i64 = 104;
+    /// Signed error code inside a status-255 reply's result.
+    pub const ERROR_CODE: i64 = 111;
     /// Notification: event id.
     pub const EVENT: i64 = 105;
     /// Notification: event arguments.
@@ -268,7 +270,13 @@ impl StreamReader {
         let mut out = Vec::new();
         let mut pos = 0usize;
         while self.buf.len() >= pos + 8 {
+            // Originator tag: 1 from the host, 0 from the device. Kept for
+            // symmetry but never gated on.
             let flags = u16::from_le_bytes([self.buf[pos], self.buf[pos + 1]]);
+            // Nominally the service id, but the device sends uninitialised
+            // memory here on some replies — the same reply arrives with
+            // different values across captures. Only the length can be
+            // trusted, so this is carried, not checked.
             let service = u16::from_le_bytes([self.buf[pos + 2], self.buf[pos + 3]]);
             let len = u32::from_le_bytes([
                 self.buf[pos + 4],

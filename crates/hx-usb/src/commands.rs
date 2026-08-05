@@ -123,6 +123,23 @@ impl Session {
     /// unknown; if the device rejects an upload, that is the first thing to
     /// suspect.
     pub fn upload_ir(&mut self, slot: i64, name: &str, samples: &[f32]) -> Result<()> {
+        // The descriptor declares the stored length as 256 × 2^code samples
+        // (key 115; key 114 is a multiplier the editor always sends as 1).
+        // The device zero-pads shorter data to the declared length — but data
+        // *longer* than declared wedges its transfer state machine hard enough
+        // to need the 9V adapter pulled, so the length is checked here rather
+        // than discovered there.
+        let code = match samples.len() {
+            0 => return Err(Error::Protocol("an empty impulse response".into())),
+            1..=1024 => 2,
+            1025..=2048 => 3,
+            n => {
+                return Err(Error::Protocol(format!(
+                    "{n} samples will not fit; the device stores at most 2048"
+                )))
+            }
+        };
+
         self.bootstrap()?;
         let mut bytes = Vec::with_capacity(samples.len() * 4);
         for s in samples {
@@ -136,7 +153,7 @@ impl Session {
                 rpc::key::IR_CHECKSUM => Value::UInt(checksum(&bytes)),
                 rpc::key::NAME => Value::Str(name.to_owned()),
                 rpc::key::IR_FORMAT_A => Value::Int(1),
-                rpc::key::IR_FORMAT_B => Value::Int(3),
+                rpc::key::IR_FORMAT_B => Value::Int(code),
                 123 => Value::Bool(false),
                 124 => Value::Bool(false),
                 125 => Value::Int(0),

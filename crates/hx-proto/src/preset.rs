@@ -95,11 +95,13 @@ pub struct Slot {
     pub values: Vec<f32>,
     /// The paired model's values, in its own parameter order.
     pub paired_values: Vec<f32>,
-    /// Key 9. Determined by the model rather than by the slot: every amp
-    /// carries 18, every EQ and dynamics block 1, and the endpoints 0. It was
-    /// first read as a branch index, which it is not — the branch is implied by
-    /// the slot's position, which is what [`Preset::layout`] uses. Kept because
-    /// it must be written back unchanged and its meaning is still open.
+    /// Key 9: the model's engine class. Simple effects carry 1, delay-RAM
+    /// effects 8, amps 18, IR blocks 19 or 20 by tap count, send/looper 25;
+    /// endpoints, splits and joins carry none (0 here is this field's
+    /// default). A function of the model alone — it was first misread as a
+    /// branch index, but the branch is implied by slot position, which is what
+    /// [`Preset::layout`] uses. The device maintains it on model changes, so
+    /// it is only ever carried through byte-exact, never synthesised.
     pub type_tag: i64,
 }
 
