@@ -62,7 +62,9 @@ pub fn block_button_tinted(
     accent: Color32,
 ) -> Response {
     let size = Vec2::new(BLOCK_WIDTH, BLOCK_HEIGHT);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    // Draggable as well as clickable: a chain is an order, and dragging is how
+    // people reorder things.
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
 
     if ui.is_rect_visible(rect) {
         // The category colour carries the meaning; the fill only has to keep
@@ -76,7 +78,9 @@ pub fn block_button_tinted(
         } else {
             Color32::from_rgb(0x2a, 0x2e, 0x36)
         };
-        let border = if selected {
+        let border = if response.dragged() {
+            Stroke::new(2.0_f32, ACCENT)
+        } else if selected {
             Stroke::new(2.0_f32, tint)
         } else {
             Stroke::new(1.0_f32, tint.gamma_multiply(0.55))
@@ -122,6 +126,15 @@ pub fn status_dot(ui: &mut Ui, colour: Color32) -> Response {
         ui.painter().circle_filled(rect.center(), 5.0, colour);
     }
     response
+}
+
+/// Mark where a dragged block would land.
+pub fn drop_marker(ui: &Ui, rect: egui::Rect, before: bool) {
+    let x = if before { rect.left() } else { rect.right() };
+    ui.painter().line_segment(
+        [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+        Stroke::new(3.0_f32, ACCENT),
+    );
 }
 
 /// The category's colour, as a bar beside the name it belongs to.
@@ -175,7 +188,7 @@ pub fn category_chip(ui: &mut Ui, name: &str, colour: Color32, on: bool) -> Resp
 /// A grid of thumbnails the way Logic's Pedalboard shows its shelf: with a few
 /// hundred models to choose from, the picture is what you actually recognise.
 pub fn model_tile(ui: &mut Ui, name: &str, artwork: Option<&Art>, selected: bool) -> Response {
-    let size = Vec2::new(118.0, 112.0);
+    let size = Vec2::new(140.0, 136.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     if !ui.is_rect_visible(rect) {
         return response;
@@ -194,7 +207,7 @@ pub fn model_tile(ui: &mut Ui, name: &str, artwork: Option<&Art>, selected: bool
 
     let art = egui::Rect::from_min_size(
         egui::pos2(rect.left() + 8.0, rect.top() + 6.0),
-        Vec2::new(size.x - 16.0, 70.0),
+        Vec2::new(size.x - 16.0, 94.0),
     );
     match artwork {
         Some(a) => a.paint(ui, art, Color32::WHITE),
@@ -522,7 +535,11 @@ pub fn junction(ui: &mut Ui, lanes: usize, opening: bool, selected: bool) -> Res
 /// changing its model, which meant knowing the slot topology — this puts the
 /// action where the thing goes.
 pub fn insert_point(ui: &mut Ui, height: f32) -> Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(WIRE_WIDTH, height), Sense::click());
+    // Click *and drag*: a click-only widget here never completed its click,
+    // while the blocks either side — which sense drags — always did. Sensing
+    // the drag makes this widget the one that owns the press.
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(WIRE_WIDTH, height), Sense::click_and_drag());
     if !ui.is_rect_visible(rect) {
         return response;
     }

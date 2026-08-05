@@ -161,6 +161,7 @@ pub fn spawn() -> (Sender<Cmd>, Receiver<Evt>) {
             setlist: 0,
             history: Vec::new(),
             future: Vec::new(),
+            snapshot_taken: false,
         }
         .run()
     });
@@ -178,6 +179,13 @@ struct Worker {
     history: Vec<Vec<u8>>,
     /// States undone and therefore redoable, cleared by any fresh edit.
     future: Vec<Vec<u8>>,
+    /// Whether the current burst of edits has already been snapshotted.
+    ///
+    /// Turning a knob is one edit per pixel of drag; a history entry each
+    /// would be useless. One entry is taken for the first change after a load
+    /// or a save, so undo steps back to the last known-good state — which is
+    /// what "undo" means to someone who has just been turning knobs.
+    snapshot_taken: bool,
 }
 
 impl Worker {
@@ -229,6 +237,7 @@ impl Worker {
                 switch,
             } => {
                 use hx_proto::msgpack::Value;
+                self.snapshot();
                 let wire = if switch {
                     Value::Bool(value >= 0.5)
                 } else {
@@ -237,6 +246,7 @@ impl Worker {
                 self.run_on_device(|d| d.set_param(block, index, wire));
             }
             Cmd::SetEnabled { block, enabled } => {
+                self.snapshot();
                 self.run_on_device(|d| d.set_enabled(block, enabled));
             }
             Cmd::SetRouting { block, to } => {
@@ -263,11 +273,12 @@ impl Worker {
             Cmd::Undo => self.step_history(true),
             Cmd::Redo => self.step_history(false),
             Cmd::InsertBlock { at, model } => {
+                use hx_proto::preset::Kind;
+
                 // Two device operations, and no more: free the slot by
-                // rewriting the document, then set the model. Doing this
-                // through `edit_document` reloaded the whole preset in
-                // between, which is a third round trip landing while the
-                // device is still committing the write — enough to jam it.
+                // rewriting the document, then set the model. Reloading in
+                // between lands a third round trip while the device is still
+                // committing the write, which is enough to jam it.
                 let Some(device) = self.device.as_mut() else {
                     return;
                 };
@@ -277,12 +288,39 @@ impl Worker {
                 };
                 let original = preset.encode();
 
-                let already_free = preset.slots.get(at).is_some_and(|s| s.model.is_none());
-                if !already_free {
-                    let Some(bounds) = preset.lane_bounds(at) else {
-                        return self.send(Evt::Failed("that position is not in a lane".into()));
-                    };
-                    if !preset.make_room(at, bounds) {
+                // The gap before an endpoint or a junction means "at the end
+                // of the lane that finishes here" — you cannot put a pedal on
+                // the output itself, which is what asking for that slot did.
+                let holds_blocks = preset
+                    .slots
+                    .get(at)
+                    .is_some_and(|s| matches!(s.kind, Kind::Block | Kind::Empty));
+                let Some(bounds) =
+                    preset.lane_bounds(if holds_blocks { at } else { at.max(1) - 1 })
+                else {
+                    return self.send(Evt::Failed("nothing can go there".into()));
+                };
+
+                let free_in_lane = |p: &hx_proto::Preset| {
+                    bounds
+                        .clone()
+                        .find(|i| p.slots.get(*i).is_some_and(|s| s.model.is_none()))
+                };
+                let target = if holds_blocks {
+                    at
+                } else {
+                    match free_in_lane(&preset) {
+                        Some(slot) => slot,
+                        None => {
+                            return self.send(Evt::Failed(
+                                "this row is full — remove a block first".into(),
+                            ))
+                        }
+                    }
+                };
+
+                if preset.slots.get(target).is_some_and(|s| s.model.is_some()) {
+                    if !preset.make_room(target, bounds) {
                         return self.send(Evt::Failed(
                             "this row is full — remove a block first".into(),
                         ));
@@ -292,7 +330,7 @@ impl Worker {
                     }
                 }
 
-                if self.run_on_device(|d| d.set_model(at as i64, model)) {
+                if self.run_on_device(|d| d.set_model(target as i64, model)) {
                     self.history.push(original);
                     if self.history.len() > 32 {
                         self.history.remove(0);
@@ -316,6 +354,8 @@ impl Worker {
                 if self.run_on_device(|d| d.save_preset(setlist, index, &name)) {
                     self.send(Evt::Activity(format!("saved {name}")));
                     self.send(Evt::Saved);
+                    // The saved state is the new baseline to undo back to.
+                    self.snapshot_taken = false;
                 }
             }
             Cmd::CopyPreset => {
@@ -397,6 +437,7 @@ impl Worker {
                 }
             }
             Cmd::SetModel { block, model } => {
+                self.snapshot();
                 if self.run_on_device(|d| d.set_model(block, model)) {
                     self.reload();
                 }
@@ -445,6 +486,23 @@ impl Worker {
             }
             Err(e) => self.send(Evt::Failed(e.to_string())),
         }
+    }
+
+    /// Remember the preset as it stands, unless this burst already did.
+    fn snapshot(&mut self) {
+        if self.snapshot_taken {
+            return;
+        }
+        let Some(document) = self.device.as_mut().and_then(|d| d.read_preset().ok()) else {
+            return;
+        };
+        self.snapshot_taken = true;
+        self.history.push(document.encode());
+        if self.history.len() > 32 {
+            self.history.remove(0);
+        }
+        self.future.clear();
+        self.report_history();
     }
 
     fn report_history(&self) {
@@ -592,6 +650,7 @@ impl Worker {
             .preset_info()
             .map(|(_, i, n)| (i, n))
             .unwrap_or((-1, String::new()));
+        self.snapshot_taken = false;
         self.send(Evt::Loaded {
             index,
             name,
