@@ -1,0 +1,16 @@
+[package]
+name = "hx-usb"
+description = "USB transport for Line 6 HX-family devices"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+hx-proto.workspace = true
+# nusb is pure Rust, so there is no libusb to cross-compile. It also exposes
+# Device::from_fd, which is the only way in on Android: the Java USB Host API
+# hands the app a file descriptor and nothing else.
+nusb = "0.2"
+thiserror.workspace = true

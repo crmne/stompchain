@@ -1,0 +1,424 @@
+//! Dark styling and the two custom widgets, following HX Edit's look closely
+//! enough that the layout reads as familiar.
+
+use egui::{Color32, Response, Rounding, Sense, Stroke, Ui, Vec2};
+
+pub const BACKGROUND: Color32 = Color32::from_rgb(0x12, 0x14, 0x18);
+pub const PANEL: Color32 = Color32::from_rgb(0x1a, 0x1d, 0x23);
+pub const TEXT: Color32 = Color32::from_rgb(0xd6, 0xd9, 0xdf);
+pub const DIM: Color32 = Color32::from_rgb(0x7d, 0x84, 0x92);
+/// The amber HX Edit uses for values and the selected preset.
+pub const ACCENT: Color32 = Color32::from_rgb(0xd8, 0xa8, 0x3b);
+/// Tints the block currently being edited.
+pub const SELECTED: Color32 = Color32::from_rgb(0xc4, 0x4b, 0x3c);
+
+pub fn apply(ctx: &egui::Context) {
+    let mut style = (*ctx.style()).clone();
+    let v = &mut style.visuals;
+
+    v.dark_mode = true;
+    v.panel_fill = PANEL;
+    v.window_fill = BACKGROUND;
+    v.extreme_bg_color = BACKGROUND;
+    v.override_text_color = Some(TEXT);
+
+    v.widgets.noninteractive.bg_fill = PANEL;
+    v.widgets.inactive.bg_fill = Color32::from_rgb(0x25, 0x29, 0x31);
+    v.widgets.hovered.bg_fill = Color32::from_rgb(0x2f, 0x34, 0x3e);
+    v.widgets.active.bg_fill = Color32::from_rgb(0x39, 0x3f, 0x4b);
+    v.selection.bg_fill = Color32::from_rgb(0x2c, 0x3a, 0x52);
+    v.selection.stroke = Stroke::new(1.0, ACCENT);
+
+    style.spacing.item_spacing = Vec2::new(8.0, 6.0);
+    style.spacing.slider_width = 180.0;
+    ctx.set_style(style);
+}
+
+/// One block in the signal chain: the model's own artwork above its name,
+/// tinted and outlined when it is the block being edited, greyed when bypassed.
+///
+/// The artwork is what makes a chain readable at a glance — the same reason HX
+/// Edit draws it. Models without a picture fall back to the name alone rather
+/// than leaving a hole.
+pub fn block_button(
+    ui: &mut Ui,
+    name: &str,
+    artwork: Option<&Art>,
+    selected: bool,
+    enabled: bool,
+) -> Response {
+    let size = Vec2::new(BLOCK_WIDTH, BLOCK_HEIGHT);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+
+    if ui.is_rect_visible(rect) {
+        let fill = if !enabled {
+            Color32::from_rgb(0x22, 0x25, 0x2b)
+        } else if selected {
+            SELECTED.gamma_multiply(0.55)
+        } else {
+            Color32::from_rgb(0x2a, 0x2e, 0x36)
+        };
+        let border = if selected {
+            Stroke::new(2.0, ACCENT)
+        } else {
+            Stroke::new(1.0, Color32::from_rgb(0x3a, 0x3f, 0x49))
+        };
+
+        let painter = ui.painter();
+        painter.rect_filled(rect, Rounding::same(5.0), fill);
+        painter.rect_stroke(rect, Rounding::same(5.0), border);
+
+        let text_colour = if enabled { TEXT } else { DIM };
+        if let Some(art) = artwork {
+            let box_ = egui::Rect::from_center_size(
+                rect.center() - Vec2::new(0.0, 10.0),
+                Vec2::new(76.0, 48.0),
+            );
+            let tint = if enabled {
+                Color32::WHITE
+            } else {
+                Color32::from_gray(110)
+            };
+            art.paint(ui, box_, tint);
+        }
+
+        // Model names routinely exceed the tile, so they are truncated with an
+        // ellipsis; the full name is on the hover tooltip.
+        ui.painter().text(
+            rect.center_bottom() - Vec2::new(0.0, 11.0),
+            egui::Align2::CENTER_CENTER,
+            elide(name, 15),
+            egui::FontId::proportional(11.0),
+            text_colour,
+        );
+    }
+
+    response.on_hover_text(name)
+}
+
+/// One model in the browser, as a picture with its name under it.
+///
+/// A grid of thumbnails the way Logic's Pedalboard shows its shelf: with a few
+/// hundred models to choose from, the picture is what you actually recognise.
+pub fn model_tile(ui: &mut Ui, name: &str, artwork: Option<&str>, selected: bool) -> Response {
+    let size = Vec2::new(96.0, 92.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+
+    let painter = ui.painter().with_clip_rect(rect);
+    if selected {
+        painter.rect_filled(rect, Rounding::same(5.0), ui.visuals().selection.bg_fill);
+    } else if response.hovered() {
+        painter.rect_filled(
+            rect,
+            Rounding::same(5.0),
+            Color32::from_rgb(0x25, 0x29, 0x31),
+        );
+    }
+
+    let art = egui::Rect::from_min_size(
+        egui::pos2(rect.left() + 8.0, rect.top() + 6.0),
+        Vec2::new(size.x - 16.0, 52.0),
+    );
+    match artwork {
+        Some(uri) => fit(ui, uri, art, Color32::WHITE),
+        None => {
+            painter.rect_filled(
+                art,
+                Rounding::same(3.0),
+                Color32::from_rgb(0x21, 0x25, 0x2c),
+            );
+        }
+    }
+
+    // Two lines of name, wrapped by hand: the tiles must stay the same size or
+    // the grid stops being a grid.
+    let mut galley = ui.painter().layout(
+        name.to_owned(),
+        egui::FontId::proportional(11.0),
+        if selected { ACCENT } else { TEXT },
+        size.x - 8.0,
+    );
+    if galley.rows.len() > 2 {
+        galley = ui.painter().layout_no_wrap(
+            format!("{}…", name.chars().take(14).collect::<String>()),
+            egui::FontId::proportional(11.0),
+            if selected { ACCENT } else { TEXT },
+        );
+    }
+    painter.galley(
+        egui::pos2(rect.center().x - galley.size().x / 2.0, art.bottom() + 4.0),
+        galley,
+        TEXT,
+    );
+
+    response.on_hover_text(name)
+}
+
+/// Signal-path geometry. Fixed rather than derived so the two lanes of a split
+/// line up column for column, which is the whole point of drawing them stacked.
+pub const BLOCK_WIDTH: f32 = 104.0;
+pub const BLOCK_HEIGHT: f32 = 86.0;
+pub const WIRE_WIDTH: f32 = 22.0;
+pub const JUNCTION_WIDTH: f32 = 34.0;
+/// Height of one lane including the gap under it.
+pub const LANE_HEIGHT: f32 = BLOCK_HEIGHT + 10.0;
+/// One block and the wire that follows it.
+pub const COLUMN: f32 = BLOCK_WIDTH + WIRE_WIDTH;
+
+pub const WIRE: Color32 = Color32::from_rgb(0x4a, 0x50, 0x5c);
+
+/// A picture to draw on a tile: a whole file, or one frame of a strip.
+///
+/// The endpoints need the second form. HX Edit draws whichever destination an
+/// input or output is routed to, and those live as vertical strips of equal
+/// frames in one file rather than as separate images.
+#[derive(Clone, PartialEq)]
+pub struct Art {
+    pub uri: String,
+    /// `(frame, total)` when the file is a strip; `None` for a plain image.
+    pub frame: Option<(usize, usize)>,
+}
+
+impl Art {
+    pub fn whole(uri: String) -> Art {
+        Art { uri, frame: None }
+    }
+
+    pub fn strip(uri: String, frame: usize, total: usize) -> Art {
+        Art {
+            uri,
+            frame: Some((frame, total)),
+        }
+    }
+
+    fn paint(&self, ui: &Ui, area: egui::Rect, tint: Color32) {
+        match self.frame {
+            None => fit(ui, &self.uri, area, tint),
+            Some((frame, total)) if total > 0 => {
+                // One frame of a vertical strip, kept square: the source cells
+                // are square, so the drawn box must be too or the icon skews.
+                let side = area.height().min(area.width());
+                let box_ = egui::Rect::from_center_size(area.center(), Vec2::splat(side));
+                let top = frame.min(total - 1) as f32 / total as f32;
+                egui::Image::new(&self.uri)
+                    .tint(tint)
+                    .uv(egui::Rect::from_min_max(
+                        egui::pos2(0.0, top),
+                        egui::pos2(1.0, top + 1.0 / total as f32),
+                    ))
+                    .paint_at(ui, box_);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Draw an image centred inside `area`, preserving its proportions.
+///
+/// `Image::paint_at` stretches to whatever rectangle it is given, which turns
+/// wide pedal photographs into squashed ones. Asking the image for its natural
+/// size first and scaling by the smaller of the two ratios letterboxes it
+/// instead.
+fn fit(ui: &Ui, uri: &str, area: egui::Rect, tint: Color32) {
+    let image = egui::Image::new(uri).maintain_aspect_ratio(true).tint(tint);
+
+    // Until the texture has loaded its size is unknown; fill the box for that
+    // frame and let the next one place it properly.
+    let natural = image
+        .load_and_calc_size(ui, egui::Vec2::splat(f32::INFINITY))
+        .unwrap_or(area.size());
+
+    let scale = (area.width() / natural.x)
+        .min(area.height() / natural.y)
+        .min(1.0);
+    let placed = egui::Rect::from_center_size(area.center(), natural * scale);
+    image.paint_at(ui, placed);
+}
+
+fn elide(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    text.chars().take(max - 1).collect::<String>() + "…"
+}
+
+/// A rotary knob, the way a pedal has them.
+///
+/// Sliders are fine for a mixer but wrong for a stompbox: the whole point of the
+/// artwork is that the thing looks like the pedal you already know, and a pedal
+/// has knobs. Dragging vertically turns it, which is what every audio
+/// application does and what the hand expects.
+pub fn knob(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>) -> Response {
+    let size = Vec2::splat(44.0);
+    let (rect, mut response) = ui.allocate_exact_size(size, Sense::click_and_drag());
+
+    let (min, max) = (*range.start(), *range.end());
+    let span = max - min;
+    if response.dragged() && span.abs() > f32::EPSILON {
+        // A full sweep takes about 200px of travel, which is fine control
+        // without being tedious. Up increases, as on a real knob turned right.
+        let delta = -response.drag_delta().y / 200.0 * span;
+        *value = (*value + delta).clamp(min.min(max), max.max(min));
+        response.mark_changed();
+    }
+
+    if ui.is_rect_visible(rect) {
+        let centre = rect.center();
+        let radius = rect.width() * 0.42;
+        let fraction = if span.abs() > f32::EPSILON {
+            ((*value - min) / span).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+
+        // Knobs sweep 270°, leaving a gap at the bottom so the pointer position
+        // is unambiguous.
+        let start = std::f32::consts::PI * 0.75;
+        let sweep = std::f32::consts::PI * 1.5;
+        let angle = start + sweep * fraction;
+
+        let painter = ui.painter();
+        painter.circle_filled(centre, radius, Color32::from_rgb(0x2b, 0x2f, 0x38));
+        painter.circle_stroke(
+            centre,
+            radius,
+            Stroke::new(1.0, Color32::from_rgb(0x50, 0x56, 0x62)),
+        );
+
+        // The travelled arc, drawn as short segments.
+        let steps = 24;
+        let mut previous = None;
+        for i in 0..=steps {
+            let t = i as f32 / steps as f32;
+            if t > fraction {
+                break;
+            }
+            let a = start + sweep * t;
+            let p = centre + Vec2::new(a.cos(), a.sin()) * (radius + 3.0);
+            if let Some(prev) = previous {
+                painter.line_segment([prev, p], Stroke::new(2.5, ACCENT));
+            }
+            previous = Some(p);
+        }
+
+        let pointer = centre + Vec2::new(angle.cos(), angle.sin()) * (radius - 5.0);
+        painter.line_segment([centre, pointer], Stroke::new(2.0, TEXT));
+        painter.circle_filled(centre, 2.5, Color32::from_rgb(0x8a, 0x90, 0x9c));
+    }
+
+    response
+}
+
+/// A footswitch-style toggle, for the parameters a pedal exposes as a switch.
+///
+/// Sized to sit in the same grid cell as a knob so a row of controls lines up
+/// whatever mix of the two a model happens to have.
+pub fn switch(on: &mut bool) -> impl egui::Widget + '_ {
+    move |ui: &mut Ui| {
+        let (rect, mut response) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::click());
+        if response.clicked() {
+            *on = !*on;
+            response.mark_changed();
+        }
+        if ui.is_rect_visible(rect) {
+            let body = egui::Rect::from_center_size(rect.center(), Vec2::new(30.0, 30.0));
+            let painter = ui.painter();
+            painter.rect_filled(
+                body,
+                Rounding::same(5.0),
+                Color32::from_rgb(0x2b, 0x2f, 0x38),
+            );
+            painter.rect_stroke(
+                body,
+                Rounding::same(5.0),
+                Stroke::new(1.0, Color32::from_rgb(0x50, 0x56, 0x62)),
+            );
+            painter.circle_filled(
+                body.center(),
+                7.0,
+                if *on {
+                    ACCENT
+                } else {
+                    Color32::from_rgb(0x3a, 0x3f, 0x49)
+                },
+            );
+        }
+        response
+    }
+}
+
+/// Where the signal divides into branches, or comes back together.
+///
+/// Drawn as the wiring itself rather than as a box in the line, which is what
+/// it is: the signal leaves the main path, runs through a second lane, and
+/// rejoins. HX Edit and Logic's Pedalboard both draw it this way, and boxing it
+/// up puts a thing in the chain that is not a thing. It stays clickable, since
+/// a split still has a mode and a join still has levels.
+///
+/// `opening` draws the trunk on the left and the branches on the right; the
+/// merge is the same figure mirrored.
+pub fn junction(ui: &mut Ui, lanes: usize, opening: bool, selected: bool) -> Response {
+    let size = Vec2::new(JUNCTION_WIDTH, LANE_HEIGHT * lanes as f32);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+
+    let painter = ui.painter();
+    let colour = if selected { ACCENT } else { WIRE };
+    let stroke = Stroke::new(if selected { 2.0 } else { 1.5 }, colour);
+
+    // The trunk meets the branches at the midpoint; each lane gets a stub at
+    // its own centre line.
+    let split_x = rect.center().x;
+    let (trunk_x, branch_x) = if opening {
+        (rect.left(), rect.right())
+    } else {
+        (rect.right(), rect.left())
+    };
+    // Where each lane's blocks actually sit: a lane is a block followed by the
+    // gap under it, so its centre is not the centre of its slice. Using the
+    // slice midpoint left the branch lines a few pixels off the wires they
+    // were meant to meet, which showed as a step before the output.
+    let lane_centre = |n: usize| rect.top() + LANE_HEIGHT * n as f32 + BLOCK_HEIGHT / 2.0;
+
+    // The trunk meets the lanes halfway between the outermost two, which is
+    // also where the endpoint tiles are centred.
+    let trunk_y = (lane_centre(0) + lane_centre(lanes.saturating_sub(1))) / 2.0;
+    painter.line_segment(
+        [egui::pos2(trunk_x, trunk_y), egui::pos2(split_x, trunk_y)],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            egui::pos2(split_x, lane_centre(0)),
+            egui::pos2(split_x, lane_centre(lanes.saturating_sub(1))),
+        ],
+        stroke,
+    );
+    for n in 0..lanes {
+        painter.line_segment(
+            [
+                egui::pos2(split_x, lane_centre(n)),
+                egui::pos2(branch_x, lane_centre(n)),
+            ],
+            stroke,
+        );
+    }
+    // A dot on the junction, so it reads as something you can click.
+    painter.circle_filled(egui::pos2(split_x, trunk_y), 4.0, colour);
+
+    response
+}
+
+/// Blank wire, for padding a short lane out to the merge point.
+pub fn wire_run(ui: &mut Ui, width: f32, height: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    if ui.is_rect_visible(rect) {
+        ui.painter()
+            .hline(rect.x_range(), rect.center().y, Stroke::new(1.5, WIRE));
+    }
+}

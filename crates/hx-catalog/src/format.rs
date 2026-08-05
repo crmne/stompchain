@@ -1,0 +1,234 @@
+//! Turning raw parameter values into the text HX Edit shows.
+//!
+//! The device deals in native units — `0.78`, `-0.1`, `1.0`. HX Edit shows
+//! "78%", "-0.1 dB", "Limit". The mapping lives in `HelixControls.json` as a
+//! small formatting language: an optional scale, then either a printf pattern,
+//! a list of labels for a menu, or a set of ranges each with its own pattern.
+
+use serde::Deserialize;
+
+use crate::{Catalog, Kind, Param};
+
+/// How one family of parameters is displayed.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct Display {
+    /// Defer to another entry. Roughly a quarter of the table is aliases.
+    alias: Option<String>,
+    /// Multiply before display: percentages are stored 0..1 and shown 0..100.
+    #[serde(rename = "dspToDisplayScale")]
+    scale: Option<f32>,
+    #[serde(rename = "dspToDisplayIntegerOffset")]
+    offset: Option<f32>,
+    format: Option<Pattern>,
+    #[serde(rename = "formatUnits")]
+    format_units: Option<String>,
+}
+
+/// The `format` field wears three different hats depending on the parameter.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum Pattern {
+    /// A printf pattern, e.g. `%+.1f`.
+    Printf(String),
+    /// Menu labels, indexed by value.
+    Labels(Vec<String>),
+    /// Per-range patterns, for parameters that read differently at each end.
+    Ranges(Vec<Range>),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Range {
+    #[serde(rename = "lowerBound")]
+    lower: f32,
+    #[serde(rename = "upperBound")]
+    upper: f32,
+    #[serde(rename = "formatUnits")]
+    format_units: Option<String>,
+    format: Option<String>,
+    #[serde(rename = "unitsMultiplier")]
+    multiplier: Option<f32>,
+}
+
+impl Display {
+    pub(crate) fn render(&self, value: f32, catalog: &Catalog) -> String {
+        if let Some(target) = self.alias.as_deref().and_then(|a| catalog.display(a)) {
+            return target.render(value, catalog);
+        }
+
+        let scaled = value * self.scale.unwrap_or(1.0) + self.offset.unwrap_or(0.0);
+
+        match &self.format {
+            Some(Pattern::Labels(labels)) => labels
+                .get(scaled.round().max(0.0) as usize)
+                .cloned()
+                .unwrap_or_else(|| trim(scaled)),
+            Some(Pattern::Ranges(ranges)) => ranges
+                .iter()
+                .find(|r| scaled >= r.lower && scaled < r.upper)
+                .map(|r| {
+                    let v = scaled * r.multiplier.unwrap_or(1.0);
+                    let pattern = r.format_units.as_ref().or(r.format.as_ref());
+                    pattern.map_or_else(|| trim(v), |p| printf(p, v))
+                })
+                .unwrap_or_else(|| trim(scaled)),
+            Some(Pattern::Printf(p)) => printf(self.format_units.as_ref().unwrap_or(p), scaled),
+            None => self
+                .format_units
+                .as_ref()
+                .map_or_else(|| trim(scaled), |p| printf(p, scaled)),
+        }
+    }
+}
+
+impl Display {
+    /// Turn a value the user typed back into the units the device wants.
+    ///
+    /// The exact inverse of [`render`](Self::render) for the common cases:
+    /// undo the scale and offset, or match a menu label. Ranged formats are
+    /// not inverted — they are rare and not uniquely invertible — so they fall
+    /// back to the plain scale.
+    pub(crate) fn to_native(&self, shown: f32, catalog: &Catalog) -> f32 {
+        if let Some(target) = self.alias.as_deref().and_then(|a| catalog.display(a)) {
+            return target.to_native(shown, catalog);
+        }
+        (shown - self.offset.unwrap_or(0.0)) / self.scale.unwrap_or(1.0)
+    }
+
+    /// The index of a menu label, for parameters displayed as a word.
+    pub(crate) fn label_index(&self, text: &str, catalog: &Catalog) -> Option<f32> {
+        if let Some(target) = self.alias.as_deref().and_then(|a| catalog.display(a)) {
+            return target.label_index(text, catalog);
+        }
+        match &self.format {
+            Some(Pattern::Labels(labels)) => labels
+                .iter()
+                .position(|l| l.eq_ignore_ascii_case(text))
+                .map(|i| i as f32),
+            _ => None,
+        }
+    }
+}
+
+impl Display {
+    /// The menu this parameter offers, if it is one you pick from a list.
+    pub(crate) fn choices<'a>(&'a self, catalog: &'a Catalog) -> Option<&'a [String]> {
+        if let Some(target) = self.alias.as_deref().and_then(|a| catalog.display(a)) {
+            return target.choices(catalog);
+        }
+        match &self.format {
+            Some(Pattern::Labels(labels)) => Some(labels),
+            _ => None,
+        }
+    }
+}
+
+/// Fallback for parameters with no display entry at all.
+pub(crate) fn plain(param: &Param, value: f32) -> String {
+    match param.kind {
+        Kind::Switch => if value >= 0.5 { "On" } else { "Off" }.to_string(),
+        Kind::Enum => format!("{}", value.round() as i64),
+        _ => trim(value),
+    }
+}
+
+/// A number without trailing noise: `1` not `1.0000`, `0.78` not `0.7800001`.
+fn trim(v: f32) -> String {
+    if (v - v.round()).abs() < 1e-4 {
+        format!("{}", v.round() as i64)
+    } else {
+        let s = format!("{v:.2}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
+/// The sliver of printf the catalog actually uses: `%[+][.N]f`, `%d`, `%%`.
+///
+/// Writing this out is less work than taking on a formatting dependency, and
+/// the catalog only ever needs one substitution per pattern.
+fn printf(pattern: &str, value: f32) -> String {
+    let mut out = String::with_capacity(pattern.len() + 8);
+    let mut chars = pattern.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        if chars.peek() == Some(&'%') {
+            chars.next();
+            out.push('%');
+            continue;
+        }
+
+        let plus = chars.next_if_eq(&'+').is_some();
+        let precision = chars
+            .next_if_eq(&'.')
+            .and_then(|_| chars.next())
+            .and_then(|d| d.to_digit(10))
+            .unwrap_or(0) as usize;
+
+        match chars.next() {
+            Some('f') => {
+                let formatted = format!("{value:.precision$}");
+                if plus && value >= 0.0 {
+                    out.push('+');
+                }
+                out.push_str(&formatted);
+            }
+            Some('d') => {
+                if plus && value >= 0.0 {
+                    out.push('+');
+                }
+                out.push_str(&format!("{}", value.round() as i64));
+            }
+            // Anything else is a pattern we have not seen; show the number
+            // rather than dropping it.
+            Some(other) => {
+                out.push_str(&trim(value));
+                out.push(other);
+            }
+            None => out.push_str(&trim(value)),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn printf_handles_the_patterns_the_catalog_uses() {
+        assert_eq!(printf("%.0f %%", 78.0), "78 %");
+        assert_eq!(printf("%+.1f dB", -0.1), "-0.1 dB");
+        assert_eq!(printf("%+.1f dB", 3.0), "+3.0 dB");
+        assert_eq!(printf("%.1f Hz", 4.25), "4.2 Hz");
+        assert_eq!(printf("%.2f \"", 0.5), "0.50 \"");
+    }
+
+    #[test]
+    fn trims_pointless_decimals() {
+        assert_eq!(trim(1.0), "1");
+        assert_eq!(trim(0.78), "0.78");
+        assert_eq!(trim(-54.0), "-54");
+    }
+
+    #[test]
+    fn formats_real_parameters_like_hx_edit() {
+        let Some(catalog) = crate::tests::catalog() else {
+            return;
+        };
+        let comp = catalog.model("HD2_CompressorLAStudioComp").unwrap();
+
+        let mix = comp.params.iter().find(|p| p.name == "Mix").unwrap();
+        assert_eq!(catalog.format(mix, 1.0), "100 %");
+
+        let level = comp.params.iter().find(|p| p.name == "Level").unwrap();
+        assert_eq!(catalog.format(level, 0.0), "+0.0 dB");
+
+        // A switch renders as its label, not as a number.
+        let ty = comp.params.iter().find(|p| p.name == "Type").unwrap();
+        assert_eq!(catalog.format(ty, 1.0), "Limit");
+        assert_eq!(catalog.format(ty, 0.0), "Compress");
+    }
+}

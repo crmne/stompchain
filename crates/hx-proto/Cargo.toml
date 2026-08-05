@@ -1,0 +1,13 @@
+[package]
+name = "hx-proto"
+description = "Wire protocol for Line 6 HX-family devices: framing, channels and MessagePack RPC"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# Deliberately dependency-free: this crate is pure codec with no I/O, so it can
+# be reused from a desktop transport, an Android JNI shim, or a test harness
+# without dragging anything along.
+[dependencies]

@@ -1,0 +1,5 @@
+/target
+# Compiled probe binaries; the sources next to them are what matter.
+/tools/hxsniff/click
+/tools/midiprobe/midiprobe
+/tools/usbprobe/usbprobe

@@ -1,0 +1,127 @@
+# hxsniff attached pid=47382
+[0] +0.424356 OPEN 0e41:4246 rc=0
+[1] +0.424493 CLAIM interface=0 rc=0 (LIBUSB_SUCCESS / LIBUSB_TRANSFER_COMPLETED)
+[2] +0.424501 RELEASE interface=0
+[3] +0.424603 OPEN 0e41:4246 rc=0
+[4] +0.424734 CLAIM interface=0 rc=0 (LIBUSB_SUCCESS / LIBUSB_TRANSFER_COMPLETED)
+[5] +0.659873 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[6] +0.660100 ASYNC-IN-DONE ep=0x81 len=16 status=0 actual=16
+	0000  08 00 00 18 ef 03 01 10  00 54 00 08 11 02 00 00 |.........T......|
+[7] +0.660131 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[8] +0.660251 ASYNC-IN-DONE ep=0x81 len=16 status=0 actual=16
+	0000  08 00 00 18 ef 03 01 10  00 55 00 08 11 02 00 00 |.........U......|
+[9] +0.660271 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[10] +0.660375 ASYNC-IN-DONE ep=0x81 len=16 status=0 actual=16
+	0000  08 00 00 18 ef 03 01 10  00 56 00 08 11 02 00 00 |.........V......|
+[11] +0.660392 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[12] +0.660489 ASYNC-IN-DONE ep=0x81 len=48 status=0 actual=48
+	0000  08 00 00 18 ef 03 01 10  00 57 00 08 11 02 00 00 |.........W......|
+	0010  08 00 00 18 ef 03 01 10  00 58 00 08 11 02 00 00 |.........X......|
+	0020  08 00 00 18 ef 03 01 10  00 59 00 08 11 02 00 00 |.........Y......|
+[13] +0.660517 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[14] +0.660617 ASYNC-IN-DONE ep=0x81 len=16 status=0 actual=16
+	0000  08 00 00 18 ef 03 01 10  00 5a 00 08 11 02 00 00 |.........Z......|
+[15] +0.660633 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[16] +0.745755 ASYNC-IN-DONE ep=0x81 len=16 status=0 actual=16
+	0000  08 00 00 18 ef 03 01 10  00 5b 00 08 11 02 00 00 |.........[......|
+[17] +0.745785 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[18] +0.847075 ASYNC-IN-DONE ep=0x81 len=0 status=2 actual=0
+[19] +0.847167 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[20] +0.946587 ASYNC-IN-DONE ep=0x81 len=16 status=0 actual=16
+	0000  08 00 00 18 ef 03 01 10  00 5c 00 08 11 02 00 00 |.........\......|
+[21] +0.946709 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[22] +1.059140 ASYNC-IN-DONE ep=0x81 len=0 status=2 actual=0
+[23] +1.059233 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[24] +1.147119 ASYNC-IN-DONE ep=0x81 len=16 status=0 actual=16
+	0000  08 00 00 18 ef 03 01 10  00 5d 00 08 11 02 00 00 |.........]......|
+[25] +1.147261 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[26] +1.247797 ASYNC-IN-DONE ep=0x81 len=0 status=2 actual=0
+[27] +1.247846 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[28] +1.347472 ASYNC-IN-DONE ep=0x81 len=16 status=0 actual=16
+	0000  08 00 00 18 ef 03 01 10  00 5e 00 08 11 02 00 00 |.........^......|
+[29] +1.347530 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[30] +1.460306 ASYNC-IN-DONE ep=0x81 len=0 status=2 actual=0
+[31] +1.460382 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[32] +1.548662 ASYNC-IN-DONE ep=0x81 len=16 status=0 actual=16
+	0000  08 00 00 18 ef 03 01 10  00 5f 00 08 11 02 00 00 |........._......|
+[33] +1.548762 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[34] +1.654125 ASYNC-IN-DONE ep=0x81 len=0 status=2 actual=0
+[35] +1.654211 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[36] +1.749249 ASYNC-IN-DONE ep=0x81 len=16 status=0 actual=16
+	0000  08 00 00 18 ef 03 01 10  00 60 00 08 11 02 00 00 |.........`......|
+[37] +1.749384 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[38] +1.753475 ASYNC-OUT ep=0x01 len=20 type=BULK 
+	0000  0c 00 00 28 01 10 ef 03  00 00 00 02 00 01 00 21 |...(...........!|
+	0010  00 10 00 00                                      |....|
+[39] +1.753725 ASYNC-OUT-DONE ep=0x01 len=0 status=0 actual=20
+[40] +1.859173 ASYNC-IN-DONE ep=0x81 len=0 status=2 actual=0
+[41] +1.859251 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[42] +1.949574 ASYNC-IN-DONE ep=0x81 len=16 status=0 actual=16
+	0000  08 00 00 18 ef 03 01 10  00 61 00 08 11 02 00 00 |.........a......|
+[43] +1.949692 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[44] +2.061319 ASYNC-IN-DONE ep=0x81 len=0 status=2 actual=0
+[45] +2.061404 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[46] +2.131618 ASYNC-IN-DONE ep=0x81 len=0 status=3 actual=0
+[47] +3.392381 RELEASE interface=0
+[48] +3.905111 OPEN 0e41:4246 rc=0
+[49] +3.905819 CLAIM interface=0 rc=0 (LIBUSB_SUCCESS / LIBUSB_TRANSFER_COMPLETED)
+[50] +3.905855 RELEASE interface=0
+[51] +3.906309 OPEN 0e41:4246 rc=0
+[52] +3.906656 CLAIM interface=0 rc=0 (LIBUSB_SUCCESS / LIBUSB_TRANSFER_COMPLETED)
+[53] +4.138623 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[54] +4.138888 ASYNC-IN-DONE ep=0x81 len=16 status=0 actual=16
+	0000  08 00 00 18 ef 03 01 10  00 62 00 08 11 02 00 00 |.........b......|
+[55] +4.138919 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[56] +4.139029 ASYNC-IN-DONE ep=0x81 len=16 status=0 actual=16
+	0000  08 00 00 18 ef 03 01 10  00 63 00 08 11 02 00 00 |.........c......|
+[57] +4.139056 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[58] +4.139150 ASYNC-IN-DONE ep=0x81 len=16 status=0 actual=16
+	0000  08 00 00 18 ef 03 01 10  00 64 00 08 11 02 00 00 |.........d......|
+[59] +4.139171 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[60] +4.139260 ASYNC-IN-DONE ep=0x81 len=48 status=0 actual=48
+	0000  08 00 00 18 ef 03 01 10  00 65 00 08 11 02 00 00 |.........e......|
+	0010  08 00 00 18 ef 03 01 10  00 66 00 08 11 02 00 00 |.........f......|
+	0020  08 00 00 18 ef 03 01 10  00 67 00 08 11 02 00 00 |.........g......|
+[61] +4.139297 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[62] +4.139457 ASYNC-IN-DONE ep=0x81 len=16 status=0 actual=16
+	0000  08 00 00 18 ef 03 01 10  00 68 00 08 11 02 00 00 |.........h......|
+[63] +4.139477 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[64] +4.156895 ASYNC-IN-DONE ep=0x81 len=16 status=0 actual=16
+	0000  08 00 00 18 ef 03 01 10  00 69 00 08 11 02 00 00 |.........i......|
+[65] +4.156981 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[66] +4.269815 ASYNC-IN-DONE ep=0x81 len=0 status=2 actual=0
+[67] +4.269880 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[68] +4.357786 ASYNC-IN-DONE ep=0x81 len=16 status=0 actual=16
+	0000  08 00 00 18 ef 03 01 10  00 6a 00 08 11 02 00 00 |.........j......|
+[69] +4.357870 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[70] +4.467609 ASYNC-IN-DONE ep=0x81 len=0 status=2 actual=0
+[71] +4.467686 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[72] +4.558261 ASYNC-IN-DONE ep=0x81 len=16 status=0 actual=16
+	0000  08 00 00 18 ef 03 01 10  00 6b 00 08 11 02 00 00 |.........k......|
+[73] +4.558356 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[74] +4.671184 ASYNC-IN-DONE ep=0x81 len=0 status=2 actual=0
+[75] +4.671284 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[76] +4.759398 ASYNC-IN-DONE ep=0x81 len=16 status=0 actual=16
+	0000  08 00 00 18 ef 03 01 10  00 6c 00 08 11 02 00 00 |.........l......|
+[77] +4.759483 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[78] +4.872310 ASYNC-IN-DONE ep=0x81 len=0 status=2 actual=0
+[79] +4.872357 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[80] +4.959752 ASYNC-IN-DONE ep=0x81 len=16 status=0 actual=16
+	0000  08 00 00 18 ef 03 01 10  00 6d 00 08 11 02 00 00 |.........m......|
+[81] +4.959881 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[82] +5.072729 ASYNC-IN-DONE ep=0x81 len=0 status=2 actual=0
+[83] +5.072773 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[84] +5.160344 ASYNC-IN-DONE ep=0x81 len=16 status=0 actual=16
+	0000  08 00 00 18 ef 03 01 10  00 6e 00 08 11 02 00 00 |.........n......|
+[85] +5.160463 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[86] +5.221587 ASYNC-OUT ep=0x01 len=20 type=BULK 
+	0000  0c 00 00 28 01 10 ef 03  00 00 00 02 00 01 00 21 |...(...........!|
+	0010  00 10 00 00                                      |....|
+[87] +5.221953 ASYNC-OUT-DONE ep=0x01 len=0 status=0 actual=20
+[88] +5.272443 ASYNC-IN-DONE ep=0x81 len=0 status=2 actual=0
+[89] +5.272479 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[90] +5.361493 ASYNC-IN-DONE ep=0x81 len=16 status=0 actual=16
+	0000  08 00 00 18 ef 03 01 10  00 6f 00 08 11 02 00 00 |.........o......|
+[91] +5.361581 ASYNC-IN-SUBMIT ep=0x81 len=0 type=BULK (in, awaiting data)
+[92] +5.435416 ASYNC-IN-DONE ep=0x81 len=0 status=3 actual=0
+[93] +6.703133 RELEASE interface=0
