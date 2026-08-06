@@ -227,16 +227,32 @@ impl Session {
         )
     }
 
-    /// Write a whole preset document back to the device.
+    /// Write a whole preset document back to the device, and do not return
+    /// until it has demonstrably landed.
     ///
     /// Several operations — reordering blocks, switching snapshots, pasting a
     /// preset — have no dedicated opcode. This is how HX Edit performs its
     /// undo, and it is the general mechanism for anything the opcode table does
     /// not cover.
     ///
-    /// Untested against hardware: our captures only ever show the device's own
-    /// documents being written back, never a modified one.
+    /// The commit is verified by reading the chain back, because acceptance is
+    /// not landing: the completion notification is sometimes missed, and the
+    /// device answers other questions happily while the commit is still in
+    /// flight. A session that closes in that window — any one-shot CLI
+    /// command — leaves the device holding a half-committed document, and it
+    /// resolves that by wiping the edit buffer. Verified against the
+    /// hardware; the read-back loop is what makes a write safe to be the
+    /// last thing a process does.
     pub fn write_preset(&mut self, preset: &Preset) -> Result<()> {
+        // An empty branch must go out the way the device itself would keep
+        // it — attach points zeroed — or the document contradicts itself in a
+        // way the device settles by wiping the edit buffer. Normalised here,
+        // at the one place every document leaves through.
+        let mut settled = Preset::parse(&preset.encode())
+            .ok_or_else(|| Error::Protocol("the document to write does not re-parse".into()))?;
+        settled.settle_branches();
+        let preset = &settled;
+
         // Deferred: the device accepts the document and then commits it. The
         // next operation must wait for the completion notification, or the
         // commits pile up and the device eventually stops taking writes.
@@ -244,7 +260,27 @@ impl Session {
             ChannelId::DATA,
             rpc::op::WRITE_PRESET,
             hx_proto::msgmap! { rpc::key::DOCUMENT => Value::Bin(preset.encode(), 2) },
-        )
+        )?;
+
+        // What the chain should look like once the document lands. Kinds and
+        // models rather than bytes, in case the device re-serialises.
+        let fingerprint =
+            |p: &Preset| -> Vec<_> { p.slots.iter().map(|s| (s.kind, s.model)).collect() };
+        let want = fingerprint(preset);
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            if let Ok(back) = self.read_preset() {
+                if fingerprint(&back) == want {
+                    return Ok(());
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(Error::Protocol(
+                    "the device accepted a document and never showed it back".into(),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
     }
 
     /// Commit the edit buffer to a preset slot.

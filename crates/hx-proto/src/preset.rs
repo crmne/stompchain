@@ -389,6 +389,31 @@ impl Preset {
         self.swap_slots(from, target)
     }
 
+    /// Put every empty branch's bookkeeping back the way the device keeps it:
+    /// attach points at zero.
+    ///
+    /// The device stores whatever attach points a document carries — but a
+    /// document that says "the fork is at slot 1" over a branch with nothing
+    /// on it is a contradiction it settles, eventually, by wiping the whole
+    /// edit buffer. Its own operations always zero the attach points when a
+    /// branch empties; an edit of ours that empties one has to do the same.
+    /// Found the hard way, against the hardware, by a block move that
+    /// destroyed the working preset.
+    pub fn settle_branches(&mut self) {
+        let layout = self.layout();
+        for path in &layout.paths {
+            let (Some(split), Some(join)) = (path.split, path.join) else {
+                continue;
+            };
+            let vacant = (split + 1..join)
+                .all(|s| self.slots.get(s).is_none_or(|slot| slot.model.is_none()));
+            if vacant {
+                self.set_attach(split, 0);
+                self.set_attach(join, 0);
+            }
+        }
+    }
+
     /// Re-attach a split or join: the fork or merge moves to sit just before
     /// `before` in the main line.
     ///
@@ -1110,6 +1135,36 @@ mod tests {
         assert_eq!(preset.slots[1].kind, Kind::Empty, "it left the main line");
         assert_eq!(preset.slots[4].kind, Kind::Block, "landed in the gap");
         assert_eq!(preset.slots[5].kind, Kind::Block, "the occupant slid along");
+    }
+
+    /// An emptied branch goes back to the device's own bookkeeping — attach
+    /// points at zero. Leaving them said "the fork is at slot 1" over
+    /// nothing, and the device wipes the edit buffer over exactly that.
+    #[test]
+    fn settling_zeroes_the_attach_points_of_an_empty_branch() {
+        let mut preset = shaped_at(&[IN, BLOCK, OUT, SPLIT, EMPTY, JOIN], 1, 2);
+        preset.settle_branches();
+        let layout = Preset::parse(&preset.encode()).unwrap().layout();
+        assert!(layout.paths[0].lanes.is_empty(), "still one line");
+        assert_eq!(
+            preset.attach(3, key::SPLIT_BODY),
+            Some(0),
+            "the fork let go"
+        );
+        assert_eq!(
+            preset.attach(5, key::JOIN_BODY),
+            Some(0),
+            "so did the merge"
+        );
+    }
+
+    /// A branch with something on it keeps its attach points exactly.
+    #[test]
+    fn settling_leaves_an_occupied_branch_alone() {
+        let mut preset = shaped_at(&[IN, BLOCK, OUT, SPLIT, BLOCK, JOIN], 1, 2);
+        preset.settle_branches();
+        assert_eq!(preset.attach(3, key::SPLIT_BODY), Some(1));
+        assert_eq!(preset.attach(5, key::JOIN_BODY), Some(2));
     }
 
     /// Re-attaching the split moves the fork, and the layout reads it back.
