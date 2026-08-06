@@ -65,18 +65,18 @@ pub struct App {
     loading: bool,
     /// When taps were registered, for working out a tapped tempo.
     taps: Vec<std::time::Instant>,
-    /// The slot being dragged along the chain, and the slot it would land on.
+    /// The slot being dragged along the chain.
     dragging: Option<usize>,
-    drop_on: Option<usize>,
     /// A fork or merge being dragged along the main line: its slot, and
     /// whether it is the split.
     dragging_junction: Option<(usize, bool)>,
-    /// Where each gap in the main line sits this frame, by the slot it
-    /// inserts before — the positions a dragged fork or merge can land on.
+    /// Where each gap in the chain sits this frame, by the slot it inserts
+    /// before — where a dragged block or junction can land. Rebuilt every
+    /// frame; resolving a drop from a stale frame moved blocks nobody asked
+    /// to move.
     gap_rects: Vec<(usize, egui::Rect)>,
-    /// Whether gaps being drawn right now belong to the main line. Branch
-    /// rows draw the same gaps, but a fork cannot attach there.
-    record_gaps: bool,
+    /// Where each block sits this frame, for dropping one onto another.
+    block_rects: Vec<(usize, egui::Rect)>,
     /// Whether the edit buffer has changes the preset does not.
     ///
     /// The device edits a scratch copy: a changed parameter is audible at once
@@ -165,10 +165,9 @@ impl App {
             loading: false,
             taps: Vec::new(),
             dragging: None,
-            drop_on: None,
             dragging_junction: None,
             gap_rects: Vec::new(),
-            record_gaps: false,
+            block_rects: Vec::new(),
             selected: 0,
             browsing: None,
             reveal_preset: false,
@@ -1120,6 +1119,8 @@ impl App {
                 egui::ScrollArea::both()
                     .drag_to_scroll(false)
                     .show(ui, |ui| {
+                        self.gap_rects.clear();
+                        self.block_rects.clear();
                         let paths = self.layout.paths.clone();
                         ui.vertical(|ui| {
                             for (n, path) in paths.iter().enumerate() {
@@ -1133,9 +1134,9 @@ impl App {
                                 pick = self.path_row(ui, path).or(pick);
                             }
                         });
+                        self.block_drag(ui);
                     });
 
-                self.finish_drag(ctx);
                 if let Some(i) = pick {
                     // Purely a local view change. Mirroring the selection onto
                     // the device's own screen meant every click was a round
@@ -1173,8 +1174,6 @@ impl App {
 
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-            self.gap_rects.clear();
-            self.record_gaps = true;
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 ui.add_space(6.0);
@@ -1215,7 +1214,6 @@ impl App {
                     output_left = Some(rect.left());
                 }
             });
-            self.record_gaps = false;
 
             // The branches, aligned column for column under the stretch they
             // parallel.
@@ -1338,29 +1336,6 @@ impl App {
         });
     }
 
-    /// Follow a drag along the chain, and mark where it would land.
-    ///
-    /// Dragging is how people reorder a chain. Within a lane the drop slides
-    /// the block in — marked by a caret at the edge it lands on — while
-    /// dropping onto the other branch trades places with what is there,
-    /// marked by outlining the whole block.
-    fn track_drag(&mut self, ui: &mut egui::Ui, hit: &egui::Response, slot: usize) {
-        if hit.drag_started() {
-            self.dragging = Some(slot);
-        }
-        let Some(from) = self.dragging.filter(|from| *from != slot) else {
-            return;
-        };
-        if hit.contains_pointer() {
-            self.drop_on = Some(slot);
-            if self.same_lane(from, slot) {
-                theme::drop_marker(ui, hit.rect, from > slot);
-            } else {
-                theme::swap_marker(ui, hit.rect);
-            }
-        }
-    }
-
     /// Whether two positions sit in the same lane — the main line between the
     /// input and the output, or the same branch of the same split.
     fn same_lane(&self, a: usize, b: usize) -> bool {
@@ -1375,18 +1350,91 @@ impl App {
         })
     }
 
-    /// Finish a drag: move the block if it was dropped on another.
-    fn finish_drag(&mut self, ctx: &egui::Context) {
-        if !ctx.input(|i| i.pointer.any_released()) {
+    /// Follow a block being dragged along the chain, resolved fresh from the
+    /// pointer every frame — never from what was hovered some frames ago,
+    /// which is how a release over nothing came to move a block anyway.
+    ///
+    /// A ghost of the block rides the pointer. Every gap shows a dot;
+    /// dropping into the nearest one slides the block in there, marked by a
+    /// bar filling the gap. Dropping onto a block in *another* lane trades
+    /// places with it, marked by outlining that block — the lanes are not
+    /// contiguous, so between them a move is a trade. Escape lets go.
+    fn block_drag(&mut self, ui: &mut egui::Ui) {
+        let Some(from) = self.dragging else {
+            return;
+        };
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.dragging = None;
             return;
         }
-        if let (Some(from), Some(to)) = (self.dragging, self.drop_on) {
-            if from != to {
-                self.edit(Cmd::MoveBlock { from, to });
+        let Some(pointer) = ui.input(|i| i.pointer.interact_pos()) else {
+            return;
+        };
+
+        // A drop means either trading with a block in the other lane under
+        // the pointer, or sliding into the nearest gap within reach.
+        let swap = self
+            .block_rects
+            .iter()
+            .find(|(slot, rect)| {
+                *slot != from && rect.contains(pointer) && !self.same_lane(from, *slot)
+            })
+            .map(|(slot, rect)| (*slot, *rect));
+        let gap = if swap.is_some() {
+            None
+        } else {
+            self.gap_rects
+                .iter()
+                // The gaps either side of the block itself go nowhere.
+                .filter(|(before, _)| *before != from && *before != from + 1)
+                // Within reach: a row's height vertically, a column
+                // horizontally. A drop far from any gap should mean nothing,
+                // not snap to whatever is least far.
+                .filter(|(_, rect)| {
+                    (pointer.y - rect.center().y).abs() < theme::LANE_HEIGHT * 0.75
+                        && (pointer.x - rect.center().x).abs() < theme::COLUMN
+                })
+                .min_by(|a, b| {
+                    let da = (a.1.center().x - pointer.x).abs();
+                    let db = (b.1.center().x - pointer.x).abs();
+                    da.total_cmp(&db)
+                })
+                .map(|(before, rect)| (*before, *rect))
+        };
+
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        for (before, rect) in &self.gap_rects {
+            if *before == from || *before == from + 1 {
+                continue;
+            }
+            let hot = gap.is_some_and(|(g, _)| g == *before);
+            if hot {
+                theme::insert_marker(ui, *rect);
+            } else {
+                theme::attach_marker(ui, rect.center(), false);
             }
         }
-        self.dragging = None;
-        self.drop_on = None;
+        if let Some((_, rect)) = swap {
+            theme::swap_marker(ui, rect);
+        }
+        if let Some(i) = self.index_of(from) {
+            let block = &self.chain[i];
+            theme::drag_ghost(
+                ui.ctx(),
+                pointer,
+                &self.slot_label(block),
+                self.block_colour(block),
+            );
+        }
+
+        if ui.input(|i| i.pointer.any_released()) {
+            if let Some((slot, _)) = swap {
+                self.edit(Cmd::MoveBlock { from, to: slot });
+            } else if let Some((before, _)) = gap {
+                self.edit(Cmd::MoveBlockBefore { from, before });
+            }
+            self.dragging = None;
+        }
     }
 
     /// A gap you can add a block to, at `before`.
@@ -1398,9 +1446,7 @@ impl App {
     fn insert_point(&mut self, ui: &mut egui::Ui, before: usize) {
         let response =
             theme::insert_point(ui, theme::BLOCK_HEIGHT).on_hover_text("add a block here");
-        if self.record_gaps {
-            self.gap_rects.push((before, response.rect));
-        }
+        self.gap_rects.push((before, response.rect));
         if response.clicked() {
             self.inserting_at = Some(before);
             // Anchored under the gap, so the choosing happens where the
@@ -1420,7 +1466,7 @@ impl App {
         (split + 1..join).find(|p| !self.chain.iter().any(|b| b.position == *p as i64))
     }
 
-    /// One block in the line.
+    /// One block in the line: clickable to edit, draggable to move.
     fn block_at(&mut self, ui: &mut egui::Ui, slot: usize) -> Option<usize> {
         let i = self.index_of(slot)?;
         let block = self.chain[i].clone();
@@ -1434,9 +1480,11 @@ impl App {
             block.enabled,
             colour,
         );
-        let pick = hit.clicked().then_some(i);
-        self.track_drag(ui, &hit, slot);
-        pick
+        self.block_rects.push((slot, hit.rect));
+        if hit.drag_started() {
+            self.dragging = Some(slot);
+        }
+        hit.clicked().then_some(i)
     }
 
     /// One lane of the divided stretch: a gap before every block, one after
@@ -2478,11 +2526,9 @@ mod tests {
         assert_eq!(attach_range(&straight, true), None, "no lanes, no drag");
     }
 
-    /// The whole drag, without a screen: draw the chain once so the gaps are
-    /// known, put the merge in hand, release the pointer over the gap before
-    /// the drive — and the worker must be asked to re-attach the join there.
-    #[test]
-    fn releasing_a_dragged_merge_reattaches_it_at_the_nearest_gap() {
+    /// An app holding a branched chain — a drive on the main line, a delay on
+    /// the branch — for tests that drive the chain panel with a pointer.
+    fn branched_app() -> (App, mpsc::Receiver<Cmd>) {
         use hx_proto::preset::{Kind, Lane, Layout, Path};
         let (mut app, events, cmds) = app();
 
@@ -2537,33 +2583,47 @@ mod tests {
             })
             .unwrap();
         app.drain_events();
+        (app, cmds)
+    }
 
+    /// Draw the chain once so the frame's gap and block rects are recorded,
+    /// then release the pointer at `at` and draw again.
+    fn draw_then_release_at(app: &mut App, at: impl FnOnce(&App) -> egui::Pos2) -> egui::Context {
         let ctx = egui::Context::default();
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 600.0));
         let mut input = egui::RawInput {
             screen_rect: Some(screen),
             ..Default::default()
         };
-
-        // One frame to lay the chain out and record where the gaps are.
         let _ = ctx.run(input.clone(), |ctx| app.signal_chain(ctx));
-        let target = app
-            .gap_rects
-            .iter()
-            .find(|(before, _)| *before == 1)
-            .map(|(_, rect)| rect.center())
-            .expect("the main line has a gap before the drive");
-
-        // The merge is in hand, and the pointer lets go over that gap.
-        app.dragging_junction = Some((19, false));
-        input.events.push(egui::Event::PointerMoved(target));
+        let pos = at(app);
+        input.events.push(egui::Event::PointerMoved(pos));
         input.events.push(egui::Event::PointerButton {
-            pos: target,
+            pos,
             button: egui::PointerButton::Primary,
             pressed: false,
             modifiers: egui::Modifiers::NONE,
         });
         let _ = ctx.run(input, |ctx| app.signal_chain(ctx));
+        ctx
+    }
+
+    fn gap_centre(app: &App, before: usize) -> egui::Pos2 {
+        app.gap_rects
+            .iter()
+            .find(|(b, _)| *b == before)
+            .map(|(_, rect)| rect.center())
+            .unwrap_or_else(|| panic!("no gap before slot {before}"))
+    }
+
+    /// The whole drag, without a screen: draw the chain once so the gaps are
+    /// known, put the merge in hand, release the pointer over the gap before
+    /// the drive — and the worker must be asked to re-attach the join there.
+    #[test]
+    fn releasing_a_dragged_merge_reattaches_it_at_the_nearest_gap() {
+        let (mut app, cmds) = branched_app();
+        app.dragging_junction = Some((19, false));
+        draw_then_release_at(&mut app, |app| gap_centre(app, 1));
 
         assert!(app.dragging_junction.is_none(), "the drag ended");
         assert!(
@@ -2575,6 +2635,64 @@ mod tests {
                 }
             )),
             "the worker was asked to re-attach the join before slot 1"
+        );
+    }
+
+    /// Dropping a block into a gap slides it in there — the branch's delay
+    /// released over the main line's leading gap moves before the drive.
+    #[test]
+    fn dropping_a_block_into_a_gap_moves_it_before_that_slot() {
+        let (mut app, cmds) = branched_app();
+        app.dragging = Some(11);
+        draw_then_release_at(&mut app, |app| gap_centre(app, 1));
+
+        assert!(app.dragging.is_none(), "the drag ended");
+        assert!(
+            cmds.try_iter().any(|c| matches!(
+                c,
+                Cmd::MoveBlockBefore {
+                    from: 11,
+                    before: 1
+                }
+            )),
+            "the delay was asked into the gap before the drive"
+        );
+    }
+
+    /// Dropping a block onto a block in the other lane trades their places.
+    #[test]
+    fn dropping_a_block_onto_the_other_lane_trades_places() {
+        let (mut app, cmds) = branched_app();
+        app.dragging = Some(1);
+        draw_then_release_at(&mut app, |app| {
+            app.block_rects
+                .iter()
+                .find(|(slot, _)| *slot == 11)
+                .map(|(_, rect)| rect.center())
+                .expect("the branch block was drawn")
+        });
+
+        assert!(
+            cmds.try_iter()
+                .any(|c| matches!(c, Cmd::MoveBlock { from: 1, to: 11 })),
+            "the two blocks were asked to trade places"
+        );
+    }
+
+    /// A release over nothing lets go without moving anything — the drop is
+    /// resolved from where the pointer is, never from what it once crossed.
+    #[test]
+    fn releasing_over_nothing_moves_nothing() {
+        let (mut app, cmds) = branched_app();
+        app.dragging = Some(1);
+        draw_then_release_at(&mut app, |_| egui::pos2(1200.0, 550.0));
+
+        assert!(app.dragging.is_none(), "the drag ended");
+        assert!(
+            !cmds
+                .try_iter()
+                .any(|c| matches!(c, Cmd::MoveBlock { .. } | Cmd::MoveBlockBefore { .. })),
+            "nothing moved"
         );
     }
 

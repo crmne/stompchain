@@ -20,6 +20,12 @@ pub enum Cmd {
         from: usize,
         to: usize,
     },
+    /// Move a block into the gap just before `before`, shifting the blocks
+    /// between to close ranks — what dropping it there means.
+    MoveBlockBefore {
+        from: usize,
+        before: usize,
+    },
     ListIrs,
     SetTempo(f32),
     RenameSnapshot {
@@ -185,6 +191,8 @@ pub fn spawn() -> (Sender<Cmd>, Receiver<Evt>) {
             future: Vec::new(),
             snapshot_taken: false,
             dirty: false,
+            shown: (-1, String::new()),
+            stumbles: 0,
         }
         .run()
     });
@@ -213,6 +221,14 @@ struct Worker {
     /// rather than in the UI because only the worker knows which reloads are
     /// fresh presets and which are edits taking effect.
     dirty: bool,
+    /// The loaded preset's slot and name, as last read from the device — so a
+    /// view built from a document we hold does not need a round trip to say
+    /// which preset it is.
+    shown: (i64, String),
+    /// Keepalives missed in a row. The device goes quiet while it commits a
+    /// document write, and dropping the session on the first missed beat is
+    /// how a drag came to end in a disconnect.
+    stumbles: u32,
 }
 
 impl Worker {
@@ -318,12 +334,8 @@ impl Worker {
                 // the model. Reloading in between lands a third round trip
                 // while the device is still committing the write, which is
                 // enough to jam it.
-                let Some(device) = self.device.as_mut() else {
+                let Some(mut preset) = self.read_settled() else {
                     return;
-                };
-                let mut preset = match device.read_preset() {
-                    Ok(p) => p,
-                    Err(e) => return self.send(Evt::Failed(e.to_string())),
                 };
                 let original = preset.encode();
 
@@ -487,6 +499,13 @@ impl Worker {
                     p.move_slot(from, to)
                         .then_some(())
                         .ok_or("that block cannot move there")
+                });
+            }
+            Cmd::MoveBlockBefore { from, before } => {
+                self.edit_document(|p| {
+                    p.insert_slot(from, before)
+                        .then_some(())
+                        .ok_or("there is no room for it there")
                 });
             }
             Cmd::MoveJunction { junction, before } => {
@@ -671,7 +690,7 @@ impl Worker {
             self.dirty = true;
             self.send(Evt::Activity(if back { "undone" } else { "redone" }.into()));
             self.report_history();
-            self.reload();
+            self.present(&preset);
         }
     }
 
@@ -684,12 +703,10 @@ impl Worker {
     where
         F: FnOnce(&mut hx_proto::Preset) -> Result<(), &'static str>,
     {
-        let Some(device) = self.device.as_mut() else {
+        // Settled: this read may land while the previous edit's write is
+        // still committing, and a quick second drag deserves patience too.
+        let Some(mut preset) = self.read_settled() else {
             return;
-        };
-        let mut preset = match device.read_preset() {
-            Ok(p) => p,
-            Err(e) => return self.send(Evt::Failed(e.to_string())),
         };
         let original = preset.encode();
         if let Err(why) = change(&mut preset) {
@@ -705,7 +722,8 @@ impl Worker {
             // A fresh edit is a new branch; anything undone is unreachable now.
             self.future.clear();
             self.report_history();
-            self.reload();
+            // What was written is what there is — no read-back to race.
+            self.present(&preset);
         }
     }
 
@@ -745,29 +763,58 @@ impl Worker {
         let recorded = self.record_history();
         if self.run_on_device(|d| d.write_preset(&preset)) {
             self.dirty = true;
-            self.reload();
+            self.present(&preset);
         } else if recorded {
             self.history.pop();
             self.report_history();
         }
     }
 
+    /// Read the preset back from the device and show it.
     fn reload(&mut self) {
-        let Some(device) = self.device.as_mut() else {
+        let Some(preset) = self.read_settled() else {
             return;
         };
-        let preset = match device.read_preset() {
-            Ok(p) => p,
-            // A failed read means the link is not healthy. Keeping the session
-            // open and continuing to poll it only adds load to a device that is
-            // already struggling, so drop it.
-            Err(e) => {
-                self.send(Evt::Failed(e.to_string()));
-                self.device = None;
-                self.send(Evt::Disconnected);
-                return;
+        if let Some(info) = self.device.as_mut().and_then(|d| d.preset_info().ok()) {
+            let (_, index, name) = info;
+            self.shown = (index, name);
+        }
+        self.present(&preset);
+    }
+
+    /// Read the preset, giving the device time to settle first if it must.
+    ///
+    /// A document write takes the device a moment to commit, and a read that
+    /// lands inside that moment fails. That is a busy device, not a dead one:
+    /// only when it stays unreachable is the session dropped.
+    fn read_settled(&mut self) -> Option<hx_proto::Preset> {
+        let device = self.device.as_mut()?;
+        let mut last = None;
+        for attempt in 0..3 {
+            if attempt > 0 {
+                std::thread::sleep(Duration::from_millis(300));
             }
-        };
+            match device.read_preset() {
+                Ok(preset) => return Some(preset),
+                Err(e) => last = Some(e),
+            }
+        }
+        if let Some(e) = last {
+            self.send(Evt::Failed(e.to_string()));
+        }
+        self.device = None;
+        self.send(Evt::Disconnected);
+        None
+    }
+
+    /// Show a preset document the worker already holds.
+    ///
+    /// Every edit used to be followed by a read-back, and the device commits
+    /// writes slowly enough that the read could return the *old* document —
+    /// a drag that "didn't take" — or fail outright and drop the session.
+    /// For our own writes the written bytes are the truth, so the view is
+    /// built from them and the wire stays quiet.
+    fn present(&mut self, preset: &hx_proto::Preset) {
         let firmware = preset.firmware().unwrap_or_default();
         // Everything the signal passes through, not just the effects: HX Edit
         // draws the input, output and any split/join, and a chain without them
@@ -788,22 +835,15 @@ impl Worker {
                 paired_values: slot.paired_values.clone(),
             })
             .collect();
-        let layout = preset.layout();
-        let tempo = preset.tempo();
-        let snapshots = preset.snapshots();
-        let (index, name) = device
-            .preset_info()
-            .map(|(_, i, n)| (i, n))
-            .unwrap_or((-1, String::new()));
         self.snapshot_taken = false;
         self.send(Evt::Loaded {
-            index,
-            name,
+            index: self.shown.0,
+            name: self.shown.1.clone(),
             firmware,
-            tempo,
-            snapshots,
+            tempo: preset.tempo(),
+            snapshots: preset.snapshots(),
             chain,
-            layout,
+            layout: preset.layout(),
             dirty: self.dirty,
         });
     }
@@ -817,10 +857,18 @@ impl Worker {
                 .events
                 .send(Evt::Activity(format!("event {event}: {args:?}")));
         }
-        if let Err(e) = device.keepalive() {
-            self.send(Evt::Failed(e.to_string()));
-            self.device = None;
-            self.send(Evt::Disconnected);
+        // The device goes quiet while committing a write; one missed beat is
+        // patience, not a dead link.
+        match device.keepalive() {
+            Ok(()) => self.stumbles = 0,
+            Err(e) => {
+                self.stumbles += 1;
+                if self.stumbles >= 3 {
+                    self.send(Evt::Failed(e.to_string()));
+                    self.device = None;
+                    self.send(Evt::Disconnected);
+                }
+            }
         }
     }
 

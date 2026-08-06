@@ -128,12 +128,37 @@ pub fn status_dot(ui: &mut Ui, colour: Color32) -> Response {
     response
 }
 
-/// Mark where a dragged block would land.
-pub fn drop_marker(ui: &Ui, rect: egui::Rect, before: bool) {
-    let x = if before { rect.left() } else { rect.right() };
-    ui.painter().line_segment(
-        [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
-        Stroke::new(3.0_f32, ACCENT),
+/// The gap a dragged block would land in, filled so there is no mistaking
+/// it: a bar the height of the blocks either side, in the accent.
+pub fn insert_marker(ui: &Ui, rect: egui::Rect) {
+    let bar = egui::Rect::from_center_size(rect.center(), Vec2::new(5.0, BLOCK_HEIGHT * 0.9));
+    ui.painter().rect_filled(bar, Rounding::same(2.5), ACCENT);
+}
+
+/// The dragged block, riding along under the pointer so the hand knows what
+/// it is holding. A plain tile — name and category colour — floating above
+/// everything on its own layer.
+pub fn drag_ghost(ctx: &egui::Context, at: egui::Pos2, name: &str, colour: Color32) {
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Tooltip,
+        egui::Id::new("drag-ghost"),
+    ));
+    let rect = egui::Rect::from_center_size(
+        at + Vec2::new(6.0, -14.0),
+        Vec2::new(BLOCK_WIDTH * 0.8, BLOCK_HEIGHT * 0.55),
+    );
+    painter.rect_filled(
+        rect,
+        Rounding::same(5.0),
+        Color32::from_rgba_unmultiplied(0x2a, 0x2e, 0x36, 230),
+    );
+    painter.rect_stroke(rect, Rounding::same(5.0), Stroke::new(2.0_f32, colour));
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        elide(name, 13),
+        egui::FontId::proportional(11.0),
+        TEXT,
     );
 }
 

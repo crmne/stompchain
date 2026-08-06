@@ -336,6 +336,59 @@ impl Preset {
         true
     }
 
+    /// Move a block into the gap just before `before`, the way dropping it
+    /// there reads: the block leaves its slot and the others close ranks.
+    ///
+    /// Within a lane this is [`move_slot`](Self::move_slot) with the index
+    /// adjusted — landing in the gap before `before` means landing *at*
+    /// `before - 1` when the block comes from the left, because everything
+    /// between shifts back one. Into another lane, the gap's own slot is
+    /// freed first and the block trades into it.
+    pub fn insert_slot(&mut self, from: usize, before: usize) -> bool {
+        if !self.holds_blocks(from) {
+            return false;
+        }
+        // The gap before an endpoint or junction means "the end of the lane
+        // that finishes here" — the same convention as inserting a new block.
+        let anchor = if self.holds_blocks(before) {
+            before
+        } else {
+            before.saturating_sub(1)
+        };
+        let same_lane = match (self.lane_bounds(from), self.lane_bounds(anchor)) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        };
+        if same_lane {
+            let to = if from < before { before - 1 } else { before };
+            // Dropping a block into the gap beside itself is already done.
+            return from == to || self.move_slot(from, to);
+        }
+
+        // Into another lane: land on the gap's own slot, freeing it if
+        // something lives there; at a lane's end, on its first free slot.
+        let Some(bounds) = self.lane_bounds(anchor) else {
+            return false;
+        };
+        let target = if self.holds_blocks(before) {
+            before
+        } else {
+            match bounds
+                .clone()
+                .find(|p| self.slots.get(*p).is_some_and(|s| s.model.is_none()))
+            {
+                Some(free) => free,
+                None => return false,
+            }
+        };
+        if self.slots.get(target).is_some_and(|s| s.model.is_some())
+            && !self.make_room(target, bounds)
+        {
+            return false;
+        }
+        self.swap_slots(from, target)
+    }
+
     /// Re-attach a split or join: the fork or merge moves to sit just before
     /// `before` in the main line.
     ///
@@ -1010,6 +1063,53 @@ mod tests {
         assert_eq!(preset.slots[1].kind, Kind::Empty);
         assert_eq!(preset.slots[4].kind, Kind::Block);
         assert_eq!(preset.slots[2].kind, Kind::Output, "the output stayed put");
+    }
+
+    /// Dropping into a gap lands the block in that gap, whichever side it
+    /// came from: the index shifts by one when the block leaves from the
+    /// left, because everything between closes ranks.
+    #[test]
+    fn dropping_into_a_gap_lands_in_that_gap() {
+        // Rightward: block 1 into the gap before 3 lands between 2 and 3.
+        let mut preset = shaped(&[IN, BLOCK, EMPTY, BLOCK, OUT]);
+        assert!(preset.insert_slot(1, 3));
+        assert_eq!(preset.slots[1].kind, Kind::Empty);
+        assert_eq!(preset.slots[2].kind, Kind::Block, "landed before slot 3");
+
+        // Leftward: block 3 into the gap before 1 lands at slot 1, and the
+        // slots in between shift right to make way.
+        let mut preset = shaped(&[IN, EMPTY, BLOCK, BLOCK, OUT]);
+        assert!(preset.insert_slot(3, 1));
+        assert_eq!(preset.slots[1].kind, Kind::Block, "landed at slot 1");
+        assert_eq!(preset.slots[2].kind, Kind::Empty, "the hole shifted along");
+        assert_eq!(preset.slots[3].kind, Kind::Block);
+
+        // The gap beside the block itself is where it already is.
+        let mut preset = shaped(&[IN, BLOCK, BLOCK, OUT]);
+        let untouched = preset.encode();
+        assert!(preset.insert_slot(1, 2), "a no-op, not an error");
+        assert_eq!(preset.encode(), untouched);
+    }
+
+    /// The gap before the output means the end of the line.
+    #[test]
+    fn dropping_before_the_output_moves_the_block_to_the_end() {
+        let mut preset = shaped(&[IN, BLOCK, BLOCK, EMPTY, OUT]);
+        assert!(preset.insert_slot(1, 4));
+        assert_eq!(preset.slots[1].kind, Kind::Block, "slot 2 shifted back");
+        assert_eq!(preset.slots[3].kind, Kind::Block, "the mover took the end");
+        assert_eq!(preset.slots[2].kind, Kind::Empty);
+    }
+
+    /// A drop into the other lane's gap frees the landing slot first, rather
+    /// than trading with whatever happened to sit beyond the gap.
+    #[test]
+    fn dropping_into_the_other_lane_makes_room() {
+        let mut preset = shaped_at(&[IN, BLOCK, OUT, SPLIT, BLOCK, EMPTY, JOIN], 1, 2);
+        assert!(preset.insert_slot(1, 4), "main block into the branch's gap");
+        assert_eq!(preset.slots[1].kind, Kind::Empty, "it left the main line");
+        assert_eq!(preset.slots[4].kind, Kind::Block, "landed in the gap");
+        assert_eq!(preset.slots[5].kind, Kind::Block, "the occupant slid along");
     }
 
     /// Re-attaching the split moves the fork, and the layout reads it back.
