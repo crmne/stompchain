@@ -3,7 +3,7 @@
 [![CI](https://github.com/crmne/stompchain/actions/workflows/ci.yml/badge.svg)](https://github.com/crmne/stompchain/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-An open-source editor for Line 6 HX-family devices — a cross-platform GUI, a
+An open-source editor for Line 6 HX-family devices: a cross-platform GUI, a
 scriptable CLI, and the reverse-engineered protocol documentation behind both.
 Built and tested against an HX Stomp on firmware 3.80.
 
@@ -11,8 +11,8 @@ Built and tested against an HX Stomp on firmware 3.80.
 
 Nothing here is derived from Line 6 source code. The protocol was reconstructed
 by observing USB traffic; see [PROTOCOL.md](PROTOCOL.md) for the write-up,
-[docs/opcodes.md](docs/opcodes.md) for the operation dictionary, and
-[docs/model-catalog.md](docs/model-catalog.md) for the data formats HX Edit
+[docs/_reference/opcodes.md](docs/_reference/opcodes.md) for the operation dictionary, and
+[docs/_reference/model-catalog.md](docs/_reference/model-catalog.md) for the data formats HX Edit
 ships.
 
 ## What it does
@@ -20,36 +20,36 @@ ships.
 Everything HX Edit does on an HX Stomp, verified operation by operation against
 the hardware:
 
-- **The signal chain, drawn as it is wired** — splits branch the line and joins
+- **The signal chain, drawn as it is wired.** Splits branch the line and joins
   merge it, one lane per branch, with the endpoints showing where they are
   routed. Drag the fork or merge along the line to move where the path
   divides. Devices with two DSP paths get up to four lanes.
-- **Editing** — swap any block's model from a searchable thumbnail browser, turn
+- **Editing.** Swap any block's model from a searchable thumbnail browser, turn
   knobs with values formatted exactly as HX Edit formats them, bypass blocks,
   reorder the chain, clear slots.
-- **Presets** — select, rename, **save**, copy, paste, import, export, and back
+- **Presets.** Select, rename, **save**, copy, paste, import, export, and back
   up a whole setlist to a directory. A preset travels as the device's own
   document byte for byte, so nothing is lost in translation; re-encoding is
   verified byte-exact against a captured preset on every test run.
-- **Editing the document** — copy a block over another slot, copy a snapshot's
+- **Editing the document.** Copy a block over another slot, copy a snapshot's
   settings while keeping its name, reorder, clear, and undo. The preset carries
   a directory of byte offsets into itself, so these were impossible until that
   table was decoded and could be recomputed.
-- **Snapshots, setlists, tempo** — switch, rename, and edit them.
-- **Device settings** — the global namespace HX Edit's preferences write to,
+- **Snapshots, setlists, tempo.** Switch, rename, and edit them.
+- **Device settings.** The global namespace HX Edit's preferences write to,
   readable and writable by id (`stompchain setting`, `set-setting`).
-- **Impulse responses** — drop a WAV on the window; upload, list and clear
+- **Impulse responses.** Drop a WAV on the window; upload, list and clear
   verified end to end, including the checksum.
-- **`.hlx` files** — applied as ordinary parameter edits with a `--dry-run`
+- **`.hlx` files.** Applied as ordinary parameter edits with a `--dry-run`
   preview, so a bad file costs one parameter, not the preset.
-- **Live activity** — the editor follows what you do on the front panel.
+- **Live activity.** The editor follows what you do on the front panel.
 
 Two things often assumed missing are not HX Edit features on an HX Stomp: the
 tuner lives on the hardware, and Command Center is inert on a three-switch
 device.
 
 Every question the protocol write-up opened has an answer in it now, down to
-the flag that turned out to mean "the tempo is not mine to set" — identified by
+the flag that turned out to mean "the tempo is not mine to set", identified by
 patching its reply in flight and watching HX Edit's own display change. The
 [PROTOCOL.md](PROTOCOL.md) write-up has the reasoning, the dead ends, and the
 methods; what remains marked open needs a Helix Floor or LT on the bench, since
@@ -58,14 +58,14 @@ those opcodes are inert on an HX Stomp.
 ## Installing
 
 Grab a binary from the [releases page](https://github.com/crmne/stompchain/releases)
-— macOS, Windows and Linux, x86-64 and arm64 — or build from source:
+for macOS, Windows and Linux, x86-64 and arm64, or build from source:
 
 ```sh
 ./install.sh
 ```
 
-That builds everything, puts `stompchain` on your PATH, and installs the editor
-— a double-clickable app on macOS, a desktop entry on Linux.
+That builds everything, puts `stompchain` on your PATH, and installs the editor:
+a double-clickable app on macOS, a desktop entry on Linux.
 `./install.sh --cli-only` skips the GUI, `--uninstall` removes it all again.
 
 On Linux it also installs a udev rule, because without one a normal user cannot
@@ -73,7 +73,7 @@ open a USB device and the resulting permission error looks like a bug in this
 program. Replug the device afterwards.
 
 Building needs [Rust](https://rustup.rs). On Linux the GUI additionally needs
-the X11/Wayland development packages any egui application does — on Debian or
+the X11/Wayland development packages any egui application does. On Debian or
 Ubuntu: `libxkbcommon-dev libwayland-dev libgl1-mesa-dev`.
 
 ### Model names and pictures
@@ -88,13 +88,13 @@ extractor at the installer you download from
 tools/hxresources/extract.sh HX_Edit_3.82.dmg   # or the .exe
 ```
 
-Everything degrades gracefully without this — the device still works, you just
+Everything degrades gracefully without this: the device still works, you just
 see model numbers instead of names and no pictures.
 
 ## Using it
 
 **Quit HX Edit first.** It claims the vendor USB interface exclusively, and so
-does this — only one editor can talk to the device at a time.
+does this; only one editor can talk to the device at a time.
 
 ```sh
 stompchain list             # find attached devices
@@ -107,7 +107,7 @@ stompchain set 4 Drive 5.0  # set a parameter by name, in displayed units
 stompchain enable 4 off     # bypass a block
 stompchain snapshot 2       # switch snapshot
 stompchain move 4 5         # reorder blocks
-stompchain save             # commit the edit buffer — without this, edits are lost
+stompchain save             # commit the edit buffer; without this, edits are lost
 stompchain backup tone.bin  # the loaded preset, byte for byte
 stompchain restore tone.bin # and back again
 stompchain backup-all dir/  # every preset in the setlist, one file each
@@ -124,8 +124,8 @@ stompchain-gui              # the editor
 ```
 
 Preset indices are zero-based within a setlist: index 7 is `03B`. Parameter
-values are typed in the units HX Edit displays — `5.0` on a knob shown 0..10,
-`100` on a percentage, `Limit` on a switch — and converted for you.
+values are typed in the units HX Edit displays (`5.0` on a knob shown 0..10,
+`100` on a percentage, `Limit` on a switch) and converted for you.
 
 The CLI also decodes captured USB logs with no hardware attached:
 
@@ -137,13 +137,13 @@ stompchain decode captures/01-connect-and-sync.log
 
 | Crate | What it is |
 |---|---|
-| `crates/hx-proto` | Pure codec — framing, channels, MessagePack RPC, preset documents. No I/O, no dependencies. |
+| `crates/hx-proto` | Pure codec: framing, channels, MessagePack RPC, preset documents. No I/O, no dependencies. |
 | `crates/hx-catalog` | Reads HX Edit's model catalog for names, ranges and value formatting. |
 | `crates/hx-usb` | USB transport built on [`nusb`](https://crates.io/crates/nusb). Owns the session and its bookkeeping. |
 | `crates/hx-cli` | The `stompchain` command-line tool. |
 | `crates/hx-gui` | The editor, on egui/eframe. |
 
-The `hx-` prefix is descriptive — the protocol layer *for HX devices* — the way
+The `hx-` prefix is descriptive, the protocol layer *for HX devices*, the way
 `rust-openssl` describes what it talks to. `hx-proto` has no dependencies at
 all, which keeps it usable from a test, a capture decoder, or an Android shim
 without dragging a transport along.
@@ -152,11 +152,11 @@ without dragging a transport along.
 |---|---|
 | macOS, Linux, Windows | Works. `nusb` is pure Rust, so there is no libusb to build. |
 | Android | Reachable but not wired up: the USB Host API hands over a file descriptor, which `nusb` can adopt, and the GUI already runs on eframe. |
-| iOS | Not possible. The protocol lives on a vendor USB interface, and iOS gives third-party apps no raw USB access — none of it is reachable over class-compliant MIDI either. |
+| iOS | Not possible. The protocol lives on a vendor USB interface, and iOS gives third-party apps no raw USB access, and none of it is reachable over class-compliant MIDI either. |
 
 ## Handle with care
 
-These devices can lock up hard enough to need their **9V adapter pulled** — a
+These devices can lock up hard enough to need their **9V adapter pulled**; a
 USB replug is not enough, because the unit is externally powered and keeps its
 session across re-enumeration. When it happens, HX Edit cannot connect either.
 
@@ -164,7 +164,7 @@ Every lock-up during development traced back to the client, not the hardware,
 and each cause is now understood, avoided, and pinned by a regression test: the
 big one was leaving the device nowhere to put the notifications it streams
 unasked, which silently backs up its queues until writes time out. Never call
-USB reset either — the device leaves the bus and does not come back.
+USB reset either: the device leaves the bus and does not come back.
 [PROTOCOL.md](PROTOCOL.md) has the full post-mortem, including how to tell a
 wedged device from a stale host-side backlog that looks identical.
 
@@ -175,9 +175,9 @@ do:
 cargo test -p hx-usb -- --ignored --test-threads=1
 ```
 
-They drive the device the way the editor does — reading in a loop, sweeping a
+They drive the device the way the editor does (reading in a loop, sweeping a
 knob, clicking through blocks, switching presets and snapshots, IR round trips,
-writing preset documents back — each ending by asserting the device still
+writing preset documents back), each ending by asserting the device still
 answers on both channels, and some by reconnecting from scratch.
 `--test-threads=1` is not optional: the device serves one session at a time.
 
@@ -211,10 +211,10 @@ used only to describe the hardware it talks to.
 
 ## Prior art
 
-- [`kempline/helix_usb`](https://github.com/kempline/helix_usb) — Python; the
+- [`kempline/helix_usb`](https://github.com/kempline/helix_usb): Python; the
   deepest previous effort, and the first to find the multi-channel structure.
-- [`allansomensi/openhx`](https://github.com/allansomensi/openhx) — Rust; lists
+- [`allansomensi/openhx`](https://github.com/allansomensi/openhx): Rust; lists
   and selects presets.
 - [`AntonyCorbett/HelixBackupFiles`](https://github.com/AntonyCorbett/HelixBackupFiles)
-  and [`frankdeath/hx-tools`](https://github.com/frankdeath/hx-tools) — file
+  and [`frankdeath/hx-tools`](https://github.com/frankdeath/hx-tools): file
   formats.

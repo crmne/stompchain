@@ -3,3 +3,7 @@
 /tools/hxsniff/click
 /tools/midiprobe/midiprobe
 /tools/usbprobe/usbprobe
+docs/_site
+docs/.jekyll-cache
+docs/.bundle
+docs/vendor

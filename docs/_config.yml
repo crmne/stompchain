@@ -1,0 +1,182 @@
+title: stompchain
+description: The open-source editor for Line 6 HX pedals.
+lang: en-US
+timezone: Europe/Berlin
+url: https://stompchain.rocks
+baseurl: ""
+logo: /assets/images/logo.svg
+image: /screenshot.png
+
+markdown: kramdown
+kramdown:
+  input: GFM
+
+permalink: pretty
+theme: jekyll-vitepress-theme
+
+collections:
+  guide:
+    output: true
+    permalink: "/:name/"
+  reference:
+    output: true
+    permalink: "/:name/"
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
+      image: /screenshot.png
+      topics:
+        - Line 6
+        - HX Stomp
+        - Helix
+        - guitar effects
+        - preset editor
+  - scope:
+      type: guide
+    values:
+      layout: default
+  - scope:
+      type: reference
+    values:
+      layout: default
+
+jekyll_vitepress:
+  branding:
+    site_title: stompchain
+    logo:
+      default: /assets/images/logo.svg
+      alt: stompchain
+  syntax:
+    light_theme: github
+    dark_theme: github.dark
+  footer:
+    enabled: true
+    show_on_docs: false
+    message: >-
+      Brought to you by <a href="https://paolino.me" target="_blank" rel="noreferrer">Carmine Paolino</a>, maker of
+    copyright: >-
+      <span class="footer-brand-links"><a href="https://chatwithwork.com" class="footer-chatwithwork-link" target="_blank" rel="noreferrer"><img class="footer-chatwithwork-logo theme-image light" src="https://chatwithwork.com/logotype.svg" alt="Chat with Work"><img class="footer-chatwithwork-logo theme-image dark" src="https://chatwithwork.com/logotype-dark.svg" alt="Chat with Work"></a><a href="https://rubyllm.com" class="footer-rubyllm-link" target="_blank" rel="noreferrer"><img class="footer-rubyllm-logo theme-image light" src="https://rubyllm.com/assets/images/logotype.svg" alt="RubyLLM"><img class="footer-rubyllm-logo theme-image dark" src="https://rubyllm.com/assets/images/logotype_dark.svg" alt="RubyLLM"></a></span><br><span class="footer-built-with">Docs built with <a href="https://jekyll-vitepress.dev" target="_blank" rel="noreferrer">Jekyll VitePress</a>. "Line 6", "Helix" and "HX Stomp" are trademarks of Yamaha Guitar Group; this project is not affiliated with or endorsed by them.</span>
+  doc_footer:
+    enabled: true
+    previous_label: Previous page
+    next_label: Next page
+  last_updated:
+    enabled: true
+    text: Last updated
+    format: "%Y-%m-%d %H:%M"
+  edit_link:
+    enabled: true
+    pattern: "https://github.com/crmne/stompchain/edit/main/docs/:path"
+    text: Edit this page on GitHub
+  github_star:
+    enabled: true
+    repository: crmne/stompchain
+    text: Star
+    show_count: true
+  github_sponsor:
+    enabled: true
+    user: crmne
+    text: Sponsor
+
+plugins:
+  - jekyll-vitepress-theme
+  - jekyll-redirect-from
+  - jekyll-ai-visible-content
+  - jekyll-sitemap
+
+ai_visible_content:
+  enabled: true
+  entity:
+    type: Organization
+    id_slug: stompchain
+    name: stompchain
+    alternate_names:
+      - stompchain editor
+      - HX Stomp editor
+    description: >-
+      an open-source editor for Line 6 HX-family devices, with a
+      cross-platform GUI, a scriptable CLI, and reverse-engineered protocol
+      documentation.
+    image: /assets/images/logo.svg
+    knows_about:
+      - Line 6 HX Stomp
+      - Line 6 Helix
+      - guitar effects
+      - guitar presets
+      - signal chains
+      - impulse responses
+      - USB protocols
+      - reverse engineering
+    same_as:
+      - https://github.com/crmne/stompchain
+  json_ld:
+    auto_inject: true
+    include_website_schema: true
+    include_breadcrumbs: true
+    include_blog_posting: true
+    include_faq: true
+    include_how_to: true
+    article_body: excerpt
+    compact: true
+  crawlers:
+    allow_gptbot: true
+    allow_perplexitybot: true
+    allow_claudebot: true
+    allow_googlebot: true
+    allow_bingbot: true
+    generate_robots_txt: true
+    custom_rules:
+      - user_agent: OAI-SearchBot
+        directive: Allow
+        path: /
+      - user_agent: ChatGPT-User
+        directive: Allow
+        path: /
+      - user_agent: Claude-SearchBot
+        directive: Allow
+        path: /
+      - user_agent: Claude-User
+        directive: Allow
+        path: /
+      - user_agent: Perplexity-User
+        directive: Allow
+        path: /
+  llms_txt:
+    enabled: false
+  linking:
+    enable_entity_links: false
+    apply_to_metadata: false
+    max_links_per_entity_per_post: 1
+    enable_related_posts: true
+    related_posts_limit: 3
+    entity_definitions:
+      stompchain:
+        name: stompchain
+        url: https://stompchain.rocks/
+        description: The open-source editor for Line 6 HX pedals.
+      carmine-paolino:
+        name: Carmine Paolino
+        url: https://paolino.me/
+        description: Creator of stompchain.
+  validation:
+    warn_name_inconsistency: true
+    warn_missing_same_as: true
+    warn_missing_dates: true
+    warn_orphan_pages: true
+    warn_missing_descriptions: true
+    fail_build_on_error: false
+    content_only: true
+    verbose: false
+    max_examples: 5
+
+exclude:
+  - _site
+  - .jekyll-cache
+  - .sass-cache
+  - .bundle
+  - vendor
+  - Gemfile
+  - Gemfile.lock

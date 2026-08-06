@@ -219,7 +219,7 @@ def records(path):
 def inventory(paths):
     """Opcode and notification inventory across several captures.
 
-    This is what `docs/opcodes.md` is generated from: for each opcode, every
+    This is what `docs/_reference/opcodes.md` is generated from: for each opcode, every
     distinct argument/result *shape* with one real example and the marks that
     produced it; for each notification, the (82, 68, 121) tag tuple it carries.
     """

@@ -1,4 +1,8 @@
-# HX model catalog and preset format
+---
+title: Model Catalog Format
+description: The data formats HX Edit ships for models, parameters, artwork, and presets, reconstructed by inspection.
+nav_order: 1
+---
 
 Format notes for the data files shipped inside HX Edit, reconstructed by inspection
 of a locally installed copy. Nothing here is derived from Line 6 source code.
