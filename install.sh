@@ -91,7 +91,14 @@ install_udev_rule() {
         say "udev rule already present"
         return
     fi
-    local rule="SUBSYSTEM==\"usb\", ATTR{idVendor}==\"$LINE6_VENDOR\", MODE=\"0666\", TAG+=\"uaccess\""
+    # The canonical rule ships in packaging/, where distro packages take it
+    # from; the inline fallback keeps a bare checkout working.
+    local rule
+    if [ -f "packaging/udev/70-line6-hx.rules" ]; then
+        rule="$(grep -v '^#' packaging/udev/70-line6-hx.rules)"
+    else
+        rule="SUBSYSTEM==\"usb\", ATTR{idVendor}==\"$LINE6_VENDOR\", MODE=\"0666\", TAG+=\"uaccess\""
+    fi
 
     if [ "$(id -u)" = 0 ]; then
         printf '%s\n' "$rule" >"$UDEV_RULE"

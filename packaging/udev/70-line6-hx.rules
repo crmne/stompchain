@@ -1,0 +1,3 @@
+# Grant users access to Line 6 HX devices over USB. Without this, opening the
+# device fails with a permission error that looks like an application bug.
+SUBSYSTEM=="usb", ATTR{idVendor}=="0e41", MODE="0666", TAG+="uaccess"

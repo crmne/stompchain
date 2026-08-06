@@ -89,14 +89,42 @@ jobs:
             dist/*.zip
           if-no-files-found: error
 
+  vendor:
+    name: vendored dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Source-based distro builds must not fetch crates from the network.
+      # This archive plus `cargo build --offline` is the whole story; see
+      # PACKAGING.md.
+      - name: Vendor
+        run: |
+          name="stompchain-${GITHUB_REF_NAME}-vendor"
+          cargo vendor "$name/vendor" > vendor-config.toml
+          mkdir -p "$name/.cargo"
+          cp vendor-config.toml "$name/.cargo/config.toml"
+          cp Cargo.lock "$name/Cargo.lock"
+          mkdir -p dist
+          tar cJf "dist/$name.tar.xz" "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vendor
+          path: dist/*.tar.xz
+          if-no-files-found: error
+
   release:
-    needs: build
+    needs: [build, vendor]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > checksums.txt
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
