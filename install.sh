@@ -47,6 +47,11 @@ uninstall() {
         rm -f "$LINUX_APPS/$APP_NAME.desktop"
         say "removed $LINUX_APPS/$APP_NAME.desktop"
     }
+    local icon="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps/$APP_NAME.svg"
+    [ -f "$icon" ] && {
+        rm -f "$icon"
+        say "removed $icon"
+    }
     if [ -f "$UDEV_RULE" ]; then
         warn "left $UDEV_RULE in place; remove it with sudo if you want it gone"
     fi
@@ -110,17 +115,28 @@ install_udev_rule() {
 
 make_desktop_entry() {
     local gui="$1"
-    mkdir -p "$LINUX_APPS"
+    local icons="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
+    mkdir -p "$LINUX_APPS" "$icons"
+    # The Exec path is written absolute: desktop launchers do not share the
+    # shell's PATH, and a bare command name quietly fails there.
     cat >"$LINUX_APPS/$APP_NAME.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
+Version=1.0
 Name=stompchain
+GenericName=HX Signal Chain Editor
 Comment=Editor for Line 6 HX hardware
 Exec=$gui
 Terminal=false
 Categories=AudioVideo;Audio;
+Keywords=Line 6;HX;Helix;stomp;pedal;guitar;preset;tone;
+Icon=$APP_NAME
+StartupNotify=false
 DESKTOP
+    [ -f "packaging/icons/$APP_NAME.svg" ] &&
+        install -m 644 "packaging/icons/$APP_NAME.svg" "$icons/$APP_NAME.svg"
     update-desktop-database "$LINUX_APPS" >/dev/null 2>&1 || true
+    gtk-update-icon-cache "${icons%/hicolor*}/hicolor" >/dev/null 2>&1 || true
     echo "$LINUX_APPS/$APP_NAME.desktop"
 }
 

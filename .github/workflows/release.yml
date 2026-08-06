@@ -65,6 +65,10 @@ jobs:
             cp "target/${{ matrix.target }}/release/stompchain-gui" "dist/$name/"
           fi
           cp README.md PROTOCOL.md LICENSE "dist/$name/"
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            # Desktop integration for package builds and hand-installs.
+            cp -r packaging "dist/$name/"
+          fi
           cd dist
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a "$name.zip" "$name"
