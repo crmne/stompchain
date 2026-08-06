@@ -118,6 +118,9 @@ pub struct App {
     setlist: i64,
     /// Editable tempo, so typing does not fight the device's value.
     tempo_draft: Option<String>,
+    /// A parameter value being typed, by block position and parameter index,
+    /// with the text so far. One at a time, like every other draft here.
+    param_draft: Option<(i64, i64, String)>,
     /// Snapshot being renamed, with its draft name.
     snapshot_draft: Option<(usize, String)>,
     /// Which MIDI CC the "assign bypass" control offers.
@@ -198,6 +201,7 @@ impl App {
             setlists: Vec::new(),
             setlist: 0,
             tempo_draft: None,
+            param_draft: None,
             snapshot_draft: None,
             assign_cc: 1,
             renaming: None,
@@ -2458,6 +2462,8 @@ impl App {
             .clamp(1, 8)
             .min(values.len().max(1));
         let indent = ((ui.available_width() - columns as f32 * pitch) / 2.0).max(0.0);
+        let draft = self.param_draft.clone();
+        let mut set_draft: Option<Option<(i64, i64, String)>> = None;
         for row in values
             .iter()
             .enumerate()
@@ -2475,22 +2481,118 @@ impl App {
 
                     ui.allocate_ui(cell, |ui| {
                         ui.vertical_centered(|ui| {
-                            let changed = match param.kind {
+                            let mut changed = false;
+                            match param.kind {
                                 Kind::Switch => {
                                     let mut on = current >= 0.5;
-                                    let hit = ui.add(theme::switch(&mut on)).changed();
+                                    changed = ui.add(theme::switch(&mut on)).changed();
                                     current = on as u8 as f32;
-                                    hit
+                                    ui.label(
+                                        RichText::new(catalog.format(param, current))
+                                            .monospace()
+                                            .color(theme::ACCENT),
+                                    );
                                 }
-                                _ => theme::knob(ui, &mut current, param.min..=param.max).changed(),
-                            };
-                            ui.label(
-                                RichText::new(catalog.format(param, current))
-                                    .monospace()
-                                    .color(theme::ACCENT),
-                            );
-                            let name =
-                                ui.label(RichText::new(&param.name).small().color(theme::DIM));
+                                // A menu is a menu: a knob that snaps between
+                                // named choices only pretended, arc and all.
+                                Kind::Enum => {
+                                    let choice = current.round().max(0.0) as usize;
+                                    ui.add_space(11.0);
+                                    egui::ComboBox::from_id_salt((
+                                        "param", position, index, paired,
+                                    ))
+                                    .width(cell.x)
+                                    .selected_text(
+                                        RichText::new(catalog.format(param, current))
+                                            .monospace()
+                                            .color(theme::ACCENT),
+                                    )
+                                    .show_ui(ui, |ui| {
+                                        if let Some(choices) = catalog.choices(param) {
+                                            for (n, label) in choices.iter().enumerate() {
+                                                if ui
+                                                    .selectable_label(n == choice, label)
+                                                    .clicked()
+                                                    && n != choice
+                                                {
+                                                    current = n as f32;
+                                                    changed = true;
+                                                }
+                                            }
+                                        }
+                                    });
+                                    ui.add_space(11.0);
+                                }
+                                _ => {
+                                    let hit =
+                                        theme::knob(ui, &mut current, param.min..=param.max);
+                                    changed = hit.changed();
+                                    // Double-click puts the factory default
+                                    // back, the way every DAW knob does.
+                                    if hit.double_clicked() {
+                                        current = param.default;
+                                        changed = true;
+                                    }
+                                    hit.on_hover_text(
+                                        "drag to turn; double-click to reset\nclick the value to type it",
+                                    );
+                                    match &draft {
+                                        Some((block, i, text))
+                                            if *block == position && *i == index as i64 =>
+                                        {
+                                            let mut text = text.clone();
+                                            let field = ui.add(
+                                                egui::TextEdit::singleline(&mut text)
+                                                    .desired_width(64.0)
+                                                    .font(egui::TextStyle::Monospace),
+                                            );
+                                            if !field.has_focus() && !field.lost_focus() {
+                                                field.request_focus();
+                                            }
+                                            if field.lost_focus() {
+                                                if ui.input(|inp| {
+                                                    inp.key_pressed(egui::Key::Enter)
+                                                }) {
+                                                    if let Some(typed) =
+                                                        catalog.parse(param, &text)
+                                                    {
+                                                        current = typed
+                                                            .clamp(param.min, param.max);
+                                                        changed = true;
+                                                    }
+                                                }
+                                                set_draft = Some(None);
+                                            } else {
+                                                set_draft =
+                                                    Some(Some((position, index as i64, text)));
+                                            }
+                                        }
+                                        _ => {
+                                            let shown = ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(
+                                                        catalog.format(param, current),
+                                                    )
+                                                    .monospace()
+                                                    .color(theme::ACCENT),
+                                                )
+                                                .sense(egui::Sense::click()),
+                                            );
+                                            if shown
+                                                .on_hover_text("click to type a value")
+                                                .clicked()
+                                            {
+                                                set_draft = Some(Some((
+                                                    position,
+                                                    index as i64,
+                                                    catalog.format(param, current),
+                                                )));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            let name = ui.label(RichText::new(&param.name).color(theme::DIM));
                             // Right-click to put the knob under a pedal or
                             // switch, which is where you are already looking
                             // when you decide you want to sweep it with your
@@ -2515,6 +2617,9 @@ impl App {
                     });
                 }
             });
+        }
+        if let Some(update) = set_draft {
+            self.param_draft = update;
         }
 
         if let Some((param, source)) = assign {
