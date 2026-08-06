@@ -63,6 +63,10 @@ pub struct App {
     /// Set while the device is fetching a preset. Loading one takes about a
     /// second, and a window that does not change for a second looks broken.
     loading: bool,
+    /// When the worker started its current device conversation, if it is in
+    /// one. Edits take real round trips; past a moment, the title bar says
+    /// so with a spinner rather than letting the window look stuck.
+    busy_since: Option<std::time::Instant>,
     /// When taps were registered, for working out a tapped tempo.
     taps: Vec<std::time::Instant>,
     /// The slot being dragged along the chain.
@@ -77,6 +81,10 @@ pub struct App {
     gap_rects: Vec<(usize, egui::Rect)>,
     /// Where each block sits this frame, for dropping one onto another.
     block_rects: Vec<(usize, egui::Rect)>,
+    /// The offered branch this frame — the slot a drop on it takes, and
+    /// where it was drawn. Dragging a block onto the ghost is how a hand
+    /// says "run this one in parallel".
+    ghost_target: Option<(usize, egui::Rect)>,
     /// Whether the edit buffer has changes the preset does not.
     ///
     /// The device edits a scratch copy: a changed parameter is audible at once
@@ -163,11 +171,13 @@ impl App {
             insert_pos: None,
             insert_opened: None,
             loading: false,
+            busy_since: None,
             taps: Vec::new(),
             dragging: None,
             dragging_junction: None,
             gap_rects: Vec::new(),
             block_rects: Vec::new(),
+            ghost_target: None,
             selected: 0,
             browsing: None,
             reveal_preset: false,
@@ -260,6 +270,13 @@ impl App {
                     self.snapshot_draft = None;
                 }
                 Ok(Evt::Saved) => self.dirty = false,
+                Ok(Evt::Busy(on)) => {
+                    self.busy_since = if on {
+                        self.busy_since.or(Some(std::time::Instant::now()))
+                    } else {
+                        None
+                    };
+                }
                 Ok(Evt::History { undo, redo }) => {
                     self.undo_depth = undo;
                     self.redo_depth = redo;
@@ -667,6 +684,13 @@ impl App {
         }
         if self.loading {
             ui.spinner();
+        } else if self
+            .busy_since
+            .is_some_and(|since| since.elapsed() > Duration::from_millis(150))
+        {
+            // An edit is on its way to the pedal. Only conversations that
+            // last are worth announcing — a flicker per knob tick is noise.
+            ui.spinner().on_hover_text("writing to the pedal…");
         }
         ui.label(
             RichText::new(hx_proto::rpc::slot_label(self.preset_index))
@@ -1121,6 +1145,7 @@ impl App {
                     .show(ui, |ui| {
                         self.gap_rects.clear();
                         self.block_rects.clear();
+                        self.ghost_target = None;
                         let paths = self.layout.paths.clone();
                         ui.vertical(|ui| {
                             for (n, path) in paths.iter().enumerate() {
@@ -1325,7 +1350,8 @@ impl App {
             let indent = input.right() - ui.cursor().min.x;
             ui.add_space(indent.max(0.0));
             let hit = theme::ghost_branch(ui, (right - input.right()).max(90.0), input.center().y)
-                .on_hover_text("add a block on a parallel branch");
+                .on_hover_text("add a block on a parallel branch\nor drag one down here");
+            self.ghost_target = Some((at, hit.rect));
             if hit.clicked() {
                 self.inserting_at = Some(at);
                 self.insert_pos = Some(hit.rect.center_bottom() + egui::vec2(-260.0, 8.0));
@@ -1371,33 +1397,48 @@ impl App {
             return;
         };
 
-        // A drop means either trading with a block in the other lane under
-        // the pointer, or sliding into the nearest gap within reach.
-        let swap = self
-            .block_rects
-            .iter()
-            .find(|(slot, rect)| {
-                *slot != from && rect.contains(pointer) && !self.same_lane(from, *slot)
-            })
-            .map(|(slot, rect)| (*slot, *rect));
-        let gap = if swap.is_some() {
+        // A drop means one of three things: onto the offered branch to run
+        // the block in parallel, onto a block in the other lane to trade
+        // places with it, or into the nearest gap within reach to slide in.
+        let ghost = self
+            .ghost_target
+            .filter(|(_, rect)| rect.expand(6.0).contains(pointer));
+        let swap = if ghost.is_some() {
             None
         } else {
-            self.gap_rects
+            self.block_rects
+                .iter()
+                .find(|(slot, rect)| {
+                    *slot != from && rect.contains(pointer) && !self.same_lane(from, *slot)
+                })
+                .map(|(slot, rect)| (*slot, *rect))
+        };
+        let gap = if ghost.is_some() || swap.is_some() {
+            None
+        } else {
+            let candidates = self
+                .gap_rects
                 .iter()
                 // The gaps either side of the block itself go nowhere.
-                .filter(|(before, _)| *before != from && *before != from + 1)
-                // Within reach: a row's height vertically, a column
-                // horizontally. A drop far from any gap should mean nothing,
-                // not snap to whatever is least far.
-                .filter(|(_, rect)| {
-                    (pointer.y - rect.center().y).abs() < theme::LANE_HEIGHT * 0.75
-                        && (pointer.x - rect.center().x).abs() < theme::COLUMN
-                })
-                .min_by(|a, b| {
-                    let da = (a.1.center().x - pointer.x).abs();
-                    let db = (b.1.center().x - pointer.x).abs();
-                    da.total_cmp(&db)
+                .filter(|(before, _)| *before != from && *before != from + 1);
+            // A gap under the pointer wins outright; otherwise the nearest
+            // one within reach — half a row vertically, so the main line and
+            // a branch never compete for a drop between them, and a column
+            // horizontally, so a drop far from any gap means nothing.
+            candidates
+                .clone()
+                .find(|(_, rect)| rect.contains(pointer))
+                .or_else(|| {
+                    candidates
+                        .filter(|(_, rect)| {
+                            (pointer.y - rect.center().y).abs() < theme::LANE_HEIGHT * 0.5
+                                && (pointer.x - rect.center().x).abs() < theme::COLUMN
+                        })
+                        .min_by(|a, b| {
+                            let da = (a.1.center().x - pointer.x).abs();
+                            let db = (b.1.center().x - pointer.x).abs();
+                            da.total_cmp(&db)
+                        })
                 })
                 .map(|(before, rect)| (*before, *rect))
         };
@@ -1417,6 +1458,10 @@ impl App {
         if let Some((_, rect)) = swap {
             theme::swap_marker(ui, rect);
         }
+        if let Some((_, rect)) = ghost {
+            // The branch lights the way the + does when it is the drop.
+            theme::attach_marker(ui, egui::pos2(rect.center().x, rect.bottom() - 12.0), true);
+        }
         if let Some(i) = self.index_of(from) {
             let block = &self.chain[i];
             theme::drag_ghost(
@@ -1428,7 +1473,9 @@ impl App {
         }
 
         if ui.input(|i| i.pointer.any_released()) {
-            if let Some((slot, _)) = swap {
+            if let Some((before, _)) = ghost {
+                self.edit(Cmd::MoveBlockBefore { from, before });
+            } else if let Some((slot, _)) = swap {
                 self.edit(Cmd::MoveBlock { from, to: slot });
             } else if let Some((before, _)) = gap {
                 self.edit(Cmd::MoveBlockBefore { from, before });
@@ -2092,58 +2139,73 @@ impl App {
         // using it directly shifted every knob by one.
         let params = catalog.ordered_params(model);
 
-        // Knobs wrap onto as many rows as the width allows, like a pedal's
-        // face, and sit under it rather than off to one side.
-        let row_width = (params.len().min(8) as f32) * 88.0;
-        let indent = ((ui.available_width() - row_width) / 2.0).max(0.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.add_space(indent);
-            for (index, value) in values.iter().enumerate() {
-                let Some(param) = params.get(index).copied() else {
-                    continue;
-                };
-                let mut current = *value;
+        // Knobs sit in rows under the pedal like the face of one, every row
+        // starting at the same left edge so the columns line up — a wrapped
+        // row that started at the margin made twelve knobs look scattered.
+        let cell = egui::vec2(84.0, 100.0);
+        let pitch = cell.x + ui.spacing().item_spacing.x;
+        let columns = ((ui.available_width() / pitch).floor() as usize)
+            .clamp(1, 8)
+            .min(values.len().max(1));
+        let indent = ((ui.available_width() - columns as f32 * pitch) / 2.0).max(0.0);
+        for row in values
+            .iter()
+            .enumerate()
+            .collect::<Vec<_>>()
+            .chunks(columns)
+        {
+            ui.horizontal(|ui| {
+                ui.add_space(indent);
+                for (index, value) in row {
+                    let index = *index;
+                    let Some(param) = params.get(index).copied() else {
+                        continue;
+                    };
+                    let mut current = **value;
 
-                ui.allocate_ui(egui::vec2(84.0, 100.0), |ui| {
-                    ui.vertical_centered(|ui| {
-                        let changed = match param.kind {
-                            Kind::Switch => {
-                                let mut on = current >= 0.5;
-                                let hit = ui.add(theme::switch(&mut on)).changed();
-                                current = on as u8 as f32;
-                                hit
-                            }
-                            _ => theme::knob(ui, &mut current, param.min..=param.max).changed(),
-                        };
-                        ui.label(
-                            RichText::new(catalog.format(param, current))
-                                .monospace()
-                                .color(theme::ACCENT),
-                        );
-                        let name = ui.label(RichText::new(&param.name).small().color(theme::DIM));
-                        // Right-click to put the knob under a pedal or switch,
-                        // which is where you are already looking when you
-                        // decide you want to sweep it with your foot.
-                        name.context_menu(|ui| {
-                            ui.label(
-                                RichText::new(format!("Control {} with", param.name))
-                                    .small()
-                                    .color(theme::DIM),
-                            );
-                            for source in hx_proto::rpc::Source::all() {
-                                if ui.button(source.label()).clicked() {
-                                    assign = Some((index as i64, source));
-                                    ui.close_menu();
+                    ui.allocate_ui(cell, |ui| {
+                        ui.vertical_centered(|ui| {
+                            let changed = match param.kind {
+                                Kind::Switch => {
+                                    let mut on = current >= 0.5;
+                                    let hit = ui.add(theme::switch(&mut on)).changed();
+                                    current = on as u8 as f32;
+                                    hit
                                 }
+                                _ => theme::knob(ui, &mut current, param.min..=param.max).changed(),
+                            };
+                            ui.label(
+                                RichText::new(catalog.format(param, current))
+                                    .monospace()
+                                    .color(theme::ACCENT),
+                            );
+                            let name =
+                                ui.label(RichText::new(&param.name).small().color(theme::DIM));
+                            // Right-click to put the knob under a pedal or
+                            // switch, which is where you are already looking
+                            // when you decide you want to sweep it with your
+                            // foot.
+                            name.context_menu(|ui| {
+                                ui.label(
+                                    RichText::new(format!("Control {} with", param.name))
+                                        .small()
+                                        .color(theme::DIM),
+                                );
+                                for source in hx_proto::rpc::Source::all() {
+                                    if ui.button(source.label()).clicked() {
+                                        assign = Some((index as i64, source));
+                                        ui.close_menu();
+                                    }
+                                }
+                            });
+                            if changed {
+                                edit = Some((index as i64, current, param.kind == Kind::Switch));
                             }
                         });
-                        if changed {
-                            edit = Some((index as i64, current, param.kind == Kind::Switch));
-                        }
                     });
-                });
-            }
-        });
+                }
+            });
+        }
 
         if let Some((param, source)) = assign {
             self.edit(Cmd::AssignParameter {
@@ -2676,6 +2738,72 @@ mod tests {
             cmds.try_iter()
                 .any(|c| matches!(c, Cmd::MoveBlock { from: 1, to: 11 })),
             "the two blocks were asked to trade places"
+        );
+    }
+
+    /// Dragging a block down onto the offered branch moves it there — the
+    /// gesture HX Edit taught everyone for "run this one in parallel".
+    #[test]
+    fn dropping_a_block_onto_the_offered_branch_moves_it_there() {
+        use hx_proto::preset::{Kind, Layout, Path};
+        let (mut app, events, cmds) = app();
+        let slot = |position: i64, kind| session::Block {
+            position,
+            routing: None,
+            kind,
+            model: 0,
+            enabled: true,
+            values: vec![],
+            paired: None,
+            paired_values: vec![],
+        };
+        events
+            .send(Evt::Loaded {
+                index: 0,
+                name: "Test".into(),
+                firmware: String::new(),
+                tempo: None,
+                snapshots: vec![],
+                chain: vec![
+                    slot(0, Kind::Input),
+                    slot(1, Kind::Block),
+                    slot(2, Kind::Block),
+                    slot(9, Kind::Output),
+                    slot(10, Kind::Split),
+                    slot(19, Kind::Join),
+                ],
+                layout: Layout {
+                    paths: vec![Path {
+                        input: Some(0),
+                        output: Some(9),
+                        split: Some(10),
+                        join: Some(19),
+                        head: vec![1, 2],
+                        lanes: vec![],
+                        tail: vec![],
+                    }],
+                },
+                dirty: true,
+            })
+            .unwrap();
+        app.drain_events();
+
+        app.dragging = Some(2);
+        draw_then_release_at(&mut app, |app| {
+            app.ghost_target
+                .map(|(_, rect)| rect.center())
+                .expect("a branch was on offer")
+        });
+
+        assert!(
+            cmds.try_iter().any(|c| matches!(
+                c,
+                Cmd::MoveBlockBefore {
+                    from: 2,
+                    before: 11
+                }
+            )),
+            "the block was asked onto the branch's first free slot"
         );
     }
 

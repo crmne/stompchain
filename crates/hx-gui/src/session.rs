@@ -142,6 +142,10 @@ pub enum Evt {
     },
     /// The edit buffer has been committed to the preset.
     Saved,
+    /// Whether the worker is in the middle of a device conversation. Edits
+    /// take real round trips — a document write near a second — and a window
+    /// that does nothing for a second looks broken.
+    Busy(bool),
     /// How many steps can be undone and redone.
     History {
         undo: usize,
@@ -236,7 +240,13 @@ impl Worker {
         let mut last_poll = Instant::now();
         loop {
             match self.cmds.recv_timeout(Duration::from_millis(120)) {
-                Ok(cmd) => self.handle(cmd),
+                Ok(cmd) => {
+                    // Bracket the work so the UI can say the device is being
+                    // spoken to; it only shows the state when it lasts.
+                    self.send(Evt::Busy(true));
+                    self.handle(cmd);
+                    self.send(Evt::Busy(false));
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
             }
@@ -503,6 +513,26 @@ impl Worker {
             }
             Cmd::MoveBlockBefore { from, before } => {
                 self.edit_document(|p| {
+                    // A block dropped onto an empty branch claims the whole
+                    // line, the same as adding one there — and because this is
+                    // a document move rather than a model change, the claim
+                    // rides in the same write with nothing to reset it.
+                    let layout = p.layout();
+                    if let Some(path) = layout.paths.iter().find(|path| {
+                        path.split
+                            .zip(path.join)
+                            .is_some_and(|(s, j)| (s + 1..j).contains(&before))
+                    }) {
+                        let (split, join) = (path.split.unwrap(), path.join.unwrap());
+                        let vacant = (split + 1..join)
+                            .all(|s| p.slots.get(s).is_none_or(|x| x.model.is_none()));
+                        if vacant {
+                            if let (Some(input), Some(output)) = (path.input, path.output) {
+                                p.set_attach(split, input + 1);
+                                p.set_attach(join, output);
+                            }
+                        }
+                    }
                     p.insert_slot(from, before)
                         .then_some(())
                         .ok_or("there is no room for it there")

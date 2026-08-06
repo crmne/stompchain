@@ -138,15 +138,15 @@ pub fn insert_marker(ui: &Ui, rect: egui::Rect) {
 /// The dragged block, riding along under the pointer so the hand knows what
 /// it is holding. A plain tile — name and category colour — floating above
 /// everything on its own layer.
+///
+/// Centred on the pointer, deliberately: the tile is what the eye aims with,
+/// and an offset tile meant a drop that looked right landed one gap over.
 pub fn drag_ghost(ctx: &egui::Context, at: egui::Pos2, name: &str, colour: Color32) {
     let painter = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Tooltip,
         egui::Id::new("drag-ghost"),
     ));
-    let rect = egui::Rect::from_center_size(
-        at + Vec2::new(6.0, -14.0),
-        Vec2::new(BLOCK_WIDTH * 0.8, BLOCK_HEIGHT * 0.55),
-    );
+    let rect = egui::Rect::from_center_size(at, Vec2::new(BLOCK_WIDTH * 0.8, BLOCK_HEIGHT * 0.55));
     painter.rect_filled(
         rect,
         Rounding::same(5.0),
