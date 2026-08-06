@@ -155,23 +155,30 @@ fn sweeping_a_parameter_is_safe() {
     assert_healthy(&mut session, "a twenty-step parameter sweep");
 }
 
+/// A hand riding the preset list: two dozen selects back to back, no reads
+/// between. Four polite switches never caught what this does — racing
+/// deferred commits jammed a real unit's transfer state machine after
+/// roughly a dozen, hard enough to need its power pulled. The fix serialises
+/// each select on the device reporting the requested preset as loaded; this
+/// storm is the regression trap.
 #[test]
 #[ignore = "needs an HX device"]
 fn switching_presets_repeatedly_is_safe() {
     let Some(mut session) = device() else { return };
     let (_, started_at, _) = session.preset_info().expect("current preset");
 
-    for index in [0, 3, 7, 1] {
+    for index in 0..25 {
         session
             .select_preset(0, index)
             .unwrap_or_else(|e| panic!("selecting preset {index} failed: {e}"));
-        session.read_preset().expect("reading after a switch");
     }
+    session.read_preset().expect("reading after the storm");
     session
         .select_preset(0, started_at)
         .expect("restoring the original preset");
 
-    assert_healthy(&mut session, "four preset switches");
+    assert_healthy(&mut session, "a twenty-five preset browse");
+    assert_control_healthy(&mut session, "a twenty-five preset browse");
 }
 
 #[test]

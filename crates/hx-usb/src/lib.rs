@@ -770,7 +770,16 @@ impl Session {
         Ok(())
     }
 
-    /// Load a preset by setlist and zero-based index within it.
+    /// Load a preset by setlist and zero-based index within it, and do not
+    /// return until the device says that preset is the one loaded.
+    ///
+    /// A select is deferred and frequently completes unannounced, and the
+    /// device answers ordinary questions while the switch is still in
+    /// flight — so "it answers again" is not "it finished". Starting the
+    /// next select inside that window stacks racing commits, and the device
+    /// jams for good after roughly a dozen; browsing quickly through a
+    /// setlist wedged a unit exactly that way. The one honest completion
+    /// signal is the device reporting the requested index as current.
     pub fn select_preset(&mut self, setlist: i64, index: i64) -> Result<()> {
         self.command_deferred(
             ChannelId::DATA,
@@ -779,7 +788,30 @@ impl Session {
                 rpc::key::SETLIST => Value::Int(setlist),
                 rpc::key::PRESET_INDEX => Value::Int(index),
             },
-        )
+        )?;
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            // Every switch streams notifications, and a browse through a
+            // setlist streams a flood of them; drained here, they cannot
+            // back the control channel up. The keepalive feeds the channels
+            // the storm is not using, because the device drops quiet ones.
+            let _ = self.poll_notifications();
+            let _ = self.keepalive();
+            // A busy device may refuse the question; that is patience, not
+            // failure, until the deadline says otherwise.
+            if let Ok((_, current, _)) = self.preset_info() {
+                if current == index {
+                    return Ok(());
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(Error::Protocol(format!(
+                    "the device did not finish switching to preset {index}"
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        }
     }
 
     /// Read the preset currently loaded, as a parsed document.

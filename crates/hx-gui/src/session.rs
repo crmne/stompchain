@@ -240,11 +240,30 @@ impl Worker {
         let mut last_poll = Instant::now();
         loop {
             match self.cmds.recv_timeout(Duration::from_millis(120)) {
-                Ok(cmd) => {
+                Ok(mut cmd) => {
+                    // Someone riding the preset list queues a select per
+                    // click, and only the last one is where they meant to
+                    // land. Collapsing the run spares the device a switch
+                    // per click; a dozen switches stacked up is precisely
+                    // the load that wedges it.
+                    let mut follow_up = None;
+                    if matches!(cmd, Cmd::SelectPreset(_)) {
+                        while let Ok(next) = self.cmds.try_recv() {
+                            if matches!(next, Cmd::SelectPreset(_)) {
+                                cmd = next;
+                            } else {
+                                follow_up = Some(next);
+                                break;
+                            }
+                        }
+                    }
                     // Bracket the work so the UI can say the device is being
                     // spoken to; it only shows the state when it lasts.
                     self.send(Evt::Busy(true));
                     self.handle(cmd);
+                    if let Some(next) = follow_up {
+                        self.handle(next);
+                    }
                     self.send(Evt::Busy(false));
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
