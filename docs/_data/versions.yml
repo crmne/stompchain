@@ -1,7 +1,7 @@
-current: v0.2.0
+current: v0.2.1
 items:
-  - id: v0.2.0
-    title: v0.2.0 (latest)
+  - id: v0.2.1
+    title: v0.2.1 (latest)
     url: /download/
   - title: All releases
     url: https://github.com/crmne/stompchain/releases
