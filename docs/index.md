@@ -1,16 +1,16 @@
 ---
 layout: home
 title: stompchain
-description: The open-source editor for Line 6 HX pedals. Cross-platform GUI, scriptable CLI, and the protocol documentation behind both.
+description: The open-source editor for Line 6 Helix and HX pedals. Fast, scriptable, and on every OS.
 permalink: /
 hero:
   name: stompchain
-  text: Your HX Stomp, on every desktop
-  tagline: An open-source editor for Line 6 HX pedals. Edit the signal chain, drag blocks into parallel branches, and script everything from the command line. Linux, macOS, and Windows.
+  text: Your Helix gear, on every OS
+  tagline: The open-source editor for Line 6 Helix and HX pedals. A tiny download that opens fast, connects fast, and runs on Linux, macOS, and Windows.
   actions:
     - theme: brand
-      text: Get stompchain
-      link: /getting-started/
+      text: Download
+      link: /download/
     - theme: alt
       text: What is stompchain?
       link: /what-is-stompchain/
@@ -24,26 +24,26 @@ hero:
     height: 1306
 
 features:
-  - icon: 🎸
-    title: The chain, drawn as it is wired
-    details: The main line never bends. A parallel branch hangs below it between a draggable fork and merge. Drag a block down to run it in parallel, and choose how the split divides.
+  - icon: 🎛️
+    title: Your whole rig at a glance
+    details: Blocks, branches, and knobs laid out like the pedalboard they are. Drag a pedal below the line to run it in parallel, and move the fork wherever you want it.
   - icon: 🐧
-    title: Every desktop, including Linux
-    details: HX Edit runs on macOS and Windows. stompchain runs there too, and on the Linux machine already sitting next to your pedalboard.
-  - icon: 🔍
-    title: Nothing lost in translation
-    details: Presets travel as the device's own document, byte for byte. Copy, paste, import, export, and setlist backups carry everything, including what the editor does not model.
-  - icon: ⌨️
-    title: A CLI for everything
-    details: Select presets, set parameters by name, back up setlists, upload impulse responses, and watch front-panel activity from scripts.
-  - icon: 📖
-    title: An open protocol
-    details: The whole wire protocol is reverse-engineered and documented, with the reasoning and the dead ends. This editor is not the only thing that can ever be built on it.
+    title: Every OS, including Linux
+    details: HX Edit covers macOS and Windows. stompchain covers those and the Linux machine already sitting next to your pedalboard.
+  - icon: ⚡
+    title: Small and quick
+    details: A few megabytes, opens in a blink, connects in a moment. No launcher, no installer ceremony, no waiting.
+  - icon: 🔓
+    title: Improving in the open
+    details: HX Edit has not seen an update in a long while. stompchain is open source and moving, and the USB protocol behind it is documented for anyone to build on.
     link: https://github.com/crmne/stompchain/blob/main/PROTOCOL.md
-    link_text: Read PROTOCOL.md
-  - icon: 🔬
-    title: Verified against the hardware
-    details: Every operation was checked against a real HX Stomp, down to byte-exact re-encoding of captured presets on every test run.
+    link_text: Read the protocol
+  - icon: ⌨️
+    title: Script everything
+    details: A full command-line tool for backups, preset changes, and parameter tweaks. Automate your rig like the computer it secretly is.
+  - icon: 🛡️
+    title: Safe with your presets
+    details: Presets travel as the device's own data, byte for byte, and every operation was verified against real hardware. What you save is exactly what was there.
 ---
 
 <style>
@@ -73,3 +73,14 @@ features:
     }
   }
 </style>
+
+<div style="max-width: 960px; margin: 3rem auto 0; text-align: center;">
+  <h2 style="font-size: 1.5rem; font-weight: 600; margin-bottom: 0.75rem;">Next up: a home for tones</h2>
+  <p style="color: var(--vp-c-text-2); max-width: 640px; margin: 0 auto;">
+    A community tone library is coming to stompchain: browse tones other
+    players share, load one onto your pedal in a click, and publish your own
+    straight from the editor. Star the
+    <a href="https://github.com/crmne/stompchain">GitHub repository</a> to
+    follow along.
+  </p>
+</div>

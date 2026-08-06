@@ -10,8 +10,8 @@ Each tagged release publishes:
 
 - `stompchain-v<version>-x86_64-unknown-linux-gnu.tar.gz`
 - `stompchain-v<version>-aarch64-unknown-linux-gnu.tar.gz`
-- `stompchain-v<version>-x86_64-apple-darwin.tar.gz`
-- `stompchain-v<version>-aarch64-apple-darwin.tar.gz`
+- `stompchain-v<version>-macos-universal.dmg` (the app, drag to Applications, plus the CLI binary)
+- `stompchain-v<version>-macos-universal.tar.gz` (bare universal binaries, for Homebrew and scripts)
 - `stompchain-v<version>-x86_64-pc-windows-msvc.zip`
 - `stompchain-v<version>-aarch64-pc-windows-msvc.zip`
 - `stompchain-v<version>-vendor.tar.xz`
@@ -23,11 +23,22 @@ The Linux binary archives contain:
 - `stompchain`
 - `stompchain-gui`
 - `README.md`
-- `PROTOCOL.md`
 - `LICENSE`
 - `packaging/applications/stompchain.desktop`
 - `packaging/icons/stompchain.svg`
 - `packaging/udev/70-line6-hx.rules`
+
+## macOS Signing and Notarization
+
+The macOS job signs and notarizes the DMG when these repository secrets
+exist; without them it ships the same DMG unsigned:
+
+- `APPLE_CERTIFICATE_P12`: a Developer ID Application certificate with its
+  key, exported as .p12 and base64-encoded
+- `APPLE_CERTIFICATE_PASSWORD`: the .p12 password
+- `APPLE_SIGNING_IDENTITY`: e.g. `Developer ID Application: Name (TEAMID)`
+- `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`: notarytool credentials;
+  the password is an app-specific password from appleid.apple.com
 
 ## Dependencies
 

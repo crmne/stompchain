@@ -20,7 +20,7 @@ ships.
 Everything HX Edit does on an HX Stomp, verified operation by operation against
 the hardware:
 
-- **The signal chain, drawn as it is wired.** Splits branch the line and joins
+- **The signal chain, laid out like your pedalboard.** Splits branch the line and joins
   merge it, one lane per branch, with the endpoints showing where they are
   routed. Drag the fork or merge along the line to move where the path
   divides. Devices with two DSP paths get up to four lanes.

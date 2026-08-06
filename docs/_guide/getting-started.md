@@ -1,12 +1,12 @@
 ---
 title: Getting Started
 description: Install stompchain, set up USB access and model artwork, and connect your HX Stomp.
-nav_order: 1
+nav_order: 2
 ---
 
 ## Install
 
-Grab a binary from the [releases page](https://github.com/crmne/stompchain/releases) for macOS, Windows, and Linux, x86-64 and arm64. Unpack it and the two binaries inside are ready to run: `stompchain` is the CLI, `stompchain-gui` is the editor.
+The [Download page](/download/) has the right file for every OS, with instructions: a drag-to-Applications app for macOS, zips for Windows, archives and AUR packages for Linux. `stompchain` is the CLI, `stompchain-gui` is the editor.
 
 Or build from source, which also installs desktop integration:
 

@@ -18,10 +18,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
-            target: aarch64-apple-darwin
-          - os: macos-latest
-            target: x86_64-apple-darwin
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
           # A native arm64 runner, so the GUI's system libraries need no
@@ -69,10 +65,11 @@ jobs:
             cp "target/${{ matrix.target }}/release/stompchain" "dist/$name/"
             cp "target/${{ matrix.target }}/release/stompchain-gui" "dist/$name/"
           fi
-          cp README.md PROTOCOL.md LICENSE "dist/$name/"
+          cp README.md LICENSE "dist/$name/"
           if [ "${{ runner.os }}" = "Linux" ]; then
             # Desktop integration for package builds and hand-installs.
             cp -r packaging "dist/$name/"
+            rm -rf "dist/$name/packaging/macos"
           fi
           cd dist
           if [ "${{ runner.os }}" = "Windows" ]; then
@@ -87,6 +84,110 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.zip
+          if-no-files-found: error
+
+  macos:
+    name: macOS universal app
+    runs-on: macos-latest
+    env:
+      # Signing and notarization run only when the Apple credentials exist as
+      # repository secrets; without them the DMG ships unsigned and the
+      # download page explains the right-click dance.
+      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-universal
+
+      - name: Build both architectures
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+
+      - name: Universal binaries
+        run: |
+          mkdir -p universal
+          lipo -create \
+            target/aarch64-apple-darwin/release/stompchain \
+            target/x86_64-apple-darwin/release/stompchain \
+            -output universal/stompchain
+          lipo -create \
+            target/aarch64-apple-darwin/release/stompchain-gui \
+            target/x86_64-apple-darwin/release/stompchain-gui \
+            -output universal/stompchain-gui
+
+      - name: App bundle
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          bash packaging/macos/bundle.sh universal/stompchain-gui stompchain.app "$version"
+
+      - name: Import signing certificate
+        if: env.APPLE_CERTIFICATE_P12 != ''
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p ci "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p ci "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k ci "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain
+
+      - name: Sign
+        if: env.APPLE_CERTIFICATE_P12 != ''
+        run: |
+          codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" universal/stompchain
+          codesign --force --deep --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" stompchain.app
+
+      - name: DMG
+        run: |
+          name="stompchain-${GITHUB_REF_NAME}-macos-universal"
+          stage="$RUNNER_TEMP/dmg"
+          mkdir -p "$stage"
+          cp -R stompchain.app "$stage/"
+          cp universal/stompchain "$stage/stompchain"
+          cp README.md LICENSE "$stage/"
+          ln -s /Applications "$stage/Applications"
+          mkdir -p dist
+          hdiutil create -volname stompchain -srcfolder "$stage" -ov \
+            -format UDZO "dist/$name.dmg"
+
+      - name: Notarize
+        if: env.APPLE_CERTIFICATE_P12 != ''
+        run: |
+          name="stompchain-${GITHUB_REF_NAME}-macos-universal"
+          xcrun notarytool submit "dist/$name.dmg" --wait \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD"
+          xcrun stapler staple "dist/$name.dmg"
+
+      - name: Universal tarball
+        run: |
+          name="stompchain-${GITHUB_REF_NAME}-macos-universal"
+          mkdir -p "dist/$name"
+          cp universal/stompchain universal/stompchain-gui README.md LICENSE "dist/$name/"
+          tar czf "dist/$name.tar.gz" -C dist "$name"
+          rm -r "dist/$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal
+          path: |
+            dist/*.dmg
+            dist/*.tar.gz
           if-no-files-found: error
 
   vendor:
@@ -114,7 +215,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [build, vendor]
+    needs: [build, macos, vendor]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

@@ -1069,7 +1069,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hx-catalog"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1078,7 +1078,7 @@ dependencies = [
 
 [[package]]
 name = "hx-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1090,7 +1090,7 @@ dependencies = [
 
 [[package]]
 name = "hx-gui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "eframe",
  "egui",
@@ -1104,11 +1104,11 @@ dependencies = [
 
 [[package]]
 name = "hx-proto"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "hx-usb"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hx-proto",
  "nusb",

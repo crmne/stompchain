@@ -73,7 +73,7 @@ make_app_bundle() {
     <key>CFBundleIdentifier</key><string>me.paolino.stompchain</string>
     <key>CFBundleExecutable</key><string>$APP_NAME</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleShortVersionString</key><string>0.1.1</string>
     <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>

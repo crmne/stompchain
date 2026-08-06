@@ -1,0 +1,8 @@
+current: v0.1.1
+items:
+  - id: v0.1.1
+    title: v0.1.1 (latest)
+    url: /download/
+  - title: All releases
+    url: https://github.com/crmne/stompchain/releases
+    external: true

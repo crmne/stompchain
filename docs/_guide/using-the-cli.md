@@ -1,7 +1,7 @@
 ---
 title: Using the CLI
 description: Script your HX Stomp from the command line, from preset backups to parameter changes.
-nav_order: 2
+nav_order: 3
 ---
 
 The `stompchain` command does everything the editor does, plus a few things only a command line makes convenient: bulk backups, scripted parameter changes, and protocol work.

@@ -16,7 +16,7 @@ stompchain is an open-source editor for HX-family devices. It talks the same USB
 
 Everything HX Edit does on an HX Stomp, verified operation by operation against the hardware:
 
-- **The signal chain, drawn as it is wired.** The main line never bends. A parallel branch hangs below it between a draggable fork and merge. Drag a block onto the offered branch to run it in parallel, drag the fork and merge to move where the path divides, and choose how the split divides: Y, A/B, crossover, or dynamic.
+- **Your whole rig at a glance.** Blocks, branches, and knobs laid out like the pedalboard they are. Drag a block below the line to run it in parallel, drag the fork and merge to move where the path splits, and choose how it splits: Y, A/B, crossover, or dynamic.
 - **Editing.** Swap models from a searchable thumbnail browser with HX Edit's own artwork, turn knobs with values formatted exactly as HX Edit formats them, drag to reorder, undo and redo with the keyboard.
 - **Presets.** Select, rename, save, copy, paste, import, export, and back up a whole setlist. A preset travels as the device's own document, byte for byte, so nothing is lost in translation.
 - **Snapshots, setlists, tempo, impulse responses, device settings.** Switch, rename, edit, upload, and clear, each verified end to end.
@@ -31,6 +31,10 @@ This is a young project, and it says so:
 - Model names, ranges, and artwork come from HX Edit's own data files, which are Line 6's and are not redistributed. A small extractor pulls them from the installer you download from Line 6. Without them everything still works, just with numbers where names would be.
 
 If something misbehaves, [an issue](https://github.com/crmne/stompchain/issues) with the `stompchain chain` output and what you expected instead is gold.
+
+## Where this is going
+
+The next big thing is a community tone library: browse tones other players share, load one onto your pedal in a click, and publish your own straight from the editor. The editor you are reading about is the foundation for it.
 
 ## Prior art
 
