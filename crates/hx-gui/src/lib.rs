@@ -67,6 +67,11 @@ pub struct App {
     /// one. Edits take real round trips; past a moment, the title bar says
     /// so with a spinner rather than letting the window look stuck.
     busy_since: Option<std::time::Instant>,
+    /// A resource extraction running in the background, and the last thing
+    /// worth telling the user about one. Extracting reads a whole installer,
+    /// which is far too slow for the UI thread.
+    extracting: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
+    onboarding_status: Option<String>,
     /// When taps were registered, for working out a tapped tempo.
     taps: Vec<std::time::Instant>,
     /// The slot being dragged along the chain.
@@ -172,6 +177,8 @@ impl App {
             insert_opened: None,
             loading: false,
             busy_since: None,
+            extracting: None,
+            onboarding_status: None,
             taps: Vec::new(),
             dragging: None,
             dragging_junction: None,
@@ -421,6 +428,7 @@ impl eframe::App for App {
         ctx.request_repaint_after(Duration::from_millis(150));
 
         self.shortcuts(ctx);
+        self.finish_extraction();
         self.dropped_files(ctx);
         self.top_bar(ctx);
         self.status_bar(ctx);
@@ -521,6 +529,32 @@ impl App {
                             }
                         }
                         ui.label(RichText::new(&self.status).small().color(theme::DIM));
+
+                        ui.separator();
+                        if ui
+                            .small_button(RichText::new("♥ Sponsor").small())
+                            .on_hover_text("support stompchain's development")
+                            .clicked()
+                        {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(
+                                "https://github.com/sponsors/crmne",
+                            ));
+                        }
+                        if ui
+                            .add(
+                                egui::Label::new(
+                                    RichText::new("made with ♥ by Carmine Paolino")
+                                        .small()
+                                        .color(theme::DIM),
+                                )
+                                .sense(egui::Sense::click()),
+                            )
+                            .on_hover_text("paolino.me")
+                            .clicked()
+                        {
+                            ui.ctx()
+                                .open_url(egui::OpenUrl::new_tab("https://paolino.me"));
+                        }
                     });
                 });
             });
@@ -1039,6 +1073,50 @@ impl App {
         });
     }
 
+    /// Start pulling model data out of an HX Edit installer, off the UI
+    /// thread, and say so.
+    fn extract_resources(&mut self, installer: std::path::PathBuf) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.onboarding_status = Some(format!(
+            "reading {}…",
+            installer
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        ));
+        self.extracting = Some(rx);
+        std::thread::spawn(move || {
+            let _ = tx.send(hx_catalog::extract::from_installer(&installer));
+        });
+    }
+
+    /// Collect a finished extraction and put the catalog straight to work:
+    /// no restart, the names and artwork simply appear.
+    fn finish_extraction(&mut self) {
+        let Some(rx) = &self.extracting else { return };
+        match rx.try_recv() {
+            Ok(Ok(count)) => {
+                self.extracting = None;
+                self.catalog = Catalog::load().ok();
+                self.onboarding_status = if self.catalog.is_some() {
+                    self.note(format!("extracted {count} resource files"));
+                    None
+                } else {
+                    Some("extracted files, but the catalog would not load".into())
+                };
+            }
+            Ok(Err(why)) => {
+                self.extracting = None;
+                self.onboarding_status = Some(why);
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.extracting = None;
+                self.onboarding_status = Some("extraction stopped unexpectedly".into());
+            }
+        }
+    }
+
     fn dropped_files(&mut self, ctx: &egui::Context) {
         let dropped: Vec<_> = ctx.input(|i| {
             i.raw
@@ -1048,10 +1126,17 @@ impl App {
                 .collect()
         });
         for path in dropped {
-            // A preset and an impulse response are both "a file you drop on the
-            // window", so the extension decides which one you meant.
+            // A preset, an impulse response and an HX Edit installer are all
+            // "a file you drop on the window"; the extension decides.
             if path.extension().is_some_and(|e| e == "hxpreset") {
                 self.import(&path);
+                continue;
+            }
+            if path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("dmg") || e.eq_ignore_ascii_case("exe"))
+            {
+                self.extract_resources(path);
                 continue;
             }
             let free =
@@ -1644,6 +1729,12 @@ impl App {
     /// own beside this one.
     fn editor(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
+            // Until the model data exists there is nothing worth drawing here
+            // that beats explaining how to get it.
+            if self.catalog.is_none() {
+                self.onboarding(ui);
+                return;
+            }
             let Some(block) = self.chain.get(self.selected).cloned() else {
                 ui.centered_and_justified(|ui| {
                     ui.label(RichText::new("Connect a device to begin").color(theme::DIM));
@@ -1704,6 +1795,106 @@ impl App {
                         );
                     }
                 });
+        });
+    }
+
+    /// The first-run welcome: how to give the pedals their names and faces.
+    ///
+    /// The model names, values, and artwork are Line 6's and cannot ship
+    /// inside this app, so the one-time step is the user supplying HX Edit's
+    /// own installer. Everything stays on their machine, and the moment the
+    /// extraction finishes the catalog loads in place: no restart.
+    fn onboarding(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(36.0);
+        ui.vertical_centered(|ui| {
+            ui.set_max_width(560.0);
+            ui.heading("Welcome to stompchain");
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new("One quick step, and every pedal gets its name and its face.")
+                    .color(theme::ACCENT),
+            );
+            ui.add_space(14.0);
+            ui.label(
+                "stompchain is free and open source. The model names, knob ranges, and \
+                 artwork belong to Line 6, so they cannot ship inside this app; they live \
+                 in the HX Edit installer, which you download yourself from Line 6. \
+                 Nothing leaves your machine.",
+            );
+            ui.add_space(16.0);
+
+            if ui
+                .button("1.  Get HX Edit from line6.com")
+                .on_hover_text("free, but a Line 6 account is required")
+                .clicked()
+            {
+                ui.ctx()
+                    .open_url(egui::OpenUrl::new_tab("https://line6.com/software/"));
+            }
+            ui.add_space(10.0);
+
+            // The drop target. The whole window accepts the drop; this is the
+            // spot that says so.
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(480.0, 100.0), egui::Sense::hover());
+            let painter = ui.painter();
+            let corners = [
+                (rect.left_top(), rect.right_top()),
+                (rect.right_top(), rect.right_bottom()),
+                (rect.right_bottom(), rect.left_bottom()),
+                (rect.left_bottom(), rect.left_top()),
+            ];
+            for (a, b) in corners {
+                painter.extend(egui::Shape::dashed_line(
+                    &[a, b],
+                    egui::Stroke::new(1.5_f32, theme::DIM),
+                    6.0,
+                    6.0,
+                ));
+            }
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "2.  Drop the HX Edit .dmg or .exe anywhere in this window",
+                egui::FontId::proportional(14.0),
+                theme::TEXT,
+            );
+            ui.add_space(10.0);
+
+            if ui
+                .button("3.  …or check my Downloads folder")
+                .on_hover_text("looks for an HX Edit installer you already downloaded")
+                .clicked()
+            {
+                match hx_catalog::extract::installer_in_downloads() {
+                    Some(installer) => self.extract_resources(installer),
+                    None => {
+                        self.onboarding_status =
+                            Some("no HX Edit installer in your Downloads folder yet".into())
+                    }
+                }
+            }
+
+            ui.add_space(14.0);
+            if self.extracting.is_some() {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    if let Some(status) = &self.onboarding_status {
+                        ui.label(RichText::new(status).color(theme::DIM));
+                    }
+                });
+            } else if let Some(status) = &self.onboarding_status {
+                ui.label(RichText::new(status).color(theme::ACCENT));
+            }
+
+            ui.add_space(22.0);
+            ui.label(
+                RichText::new(
+                    "Everything works without this step too; you would just see numbers \
+                     where names belong.",
+                )
+                .small()
+                .color(theme::DIM),
+            );
         });
     }
 
