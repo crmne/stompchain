@@ -22,7 +22,10 @@ egui_extras = { version = "0.29", features = ["image", "file"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 # Native file dialogs, so import and export use the system picker rather than a
 # path typed into a text box.
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+# The async-std flavour runs its own reactor, which the synchronous dialog
+# calls need; the tokio flavour panics with "no reactor running" the moment
+# any dialog opens outside a tokio runtime, which is everywhere in this app.
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
 
 [lib]
 name = "hx_gui"

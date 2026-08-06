@@ -79,10 +79,14 @@ Ubuntu: `libxkbcommon-dev libwayland-dev libgl1-mesa-dev`.
 ### Model names and pictures
 
 Names, parameter ranges, value formatting and artwork come from HX Edit's own
-data files, which are Line 6's and are **not** redistributed here. The
-installer finds an installed HX Edit automatically; without one, point the
-extractor at the installer you download from
-[line6.com/software](https://line6.com/software/):
+data files, which are Line 6's and are **not** redistributed here. The editor
+walks you through this on first launch: it copies from an installed HX Edit
+automatically, and otherwise takes the HX Edit installer you download from
+[line6.com/software](https://line6.com/software/), either the Mac .dmg or the
+Windows .exe. Reading an installer needs 7-Zip on Linux and Windows
+(`p7zip` on most distros); macOS uses its own hdiutil and pkgutil.
+
+The same extraction exists as a script, for scripted setups:
 
 ```sh
 tools/hxresources/extract.sh HX_Edit_3.82.dmg   # or the .exe

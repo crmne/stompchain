@@ -72,6 +72,11 @@ pub struct App {
     /// which is far too slow for the UI thread.
     extracting: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
     onboarding_status: Option<String>,
+    /// Whether the welcome window is up. It opens on first launch without
+    /// the model data and closes itself the moment extraction succeeds. It
+    /// does not dismiss: without the model data there are no names, no knob
+    /// ranges, and no pictures, so there is nothing honest to dismiss *to*.
+    show_onboarding: bool,
     /// When taps were registered, for working out a tapped tempo.
     taps: Vec<std::time::Instant>,
     /// The slot being dragged along the chain.
@@ -179,6 +184,7 @@ impl App {
             busy_since: None,
             extracting: None,
             onboarding_status: None,
+            show_onboarding: false,
             taps: Vec::new(),
             dragging: None,
             dragging_junction: None,
@@ -200,6 +206,14 @@ impl App {
             status: "Looking for a device…".into(),
             current_snapshot: 0,
         };
+        // Without the model data there is nothing to edit with, so the
+        // welcome window opens immediately and stays until the data exists.
+        app.show_onboarding = app.catalog.is_none();
+        // Machines that already have HX Edit need no ceremony at all: lift
+        // the data from the installation while the welcome says so.
+        if app.show_onboarding && hx_catalog::extract::installed_resources().is_some() {
+            app.extract_installed();
+        }
         // Connect straight away. Anyone opening this has a pedal plugged in;
         // making them press a button first is ceremony.
         let _ = app.to_device.send(Cmd::Connect);
@@ -441,6 +455,8 @@ impl eframe::App for App {
         self.editor(ctx);
         self.insert_picker(ctx);
         self.device_window(ctx);
+        // Over everything: the one step the app cannot work without.
+        self.onboarding_modal(ctx);
     }
 }
 
@@ -1090,6 +1106,18 @@ impl App {
         });
     }
 
+    /// Copy the model data from an HX Edit installed on this machine,
+    /// off the UI thread.
+    fn extract_installed(&mut self) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.onboarding_status =
+            Some("found HX Edit installed on this machine; copying its data…".into());
+        self.extracting = Some(rx);
+        std::thread::spawn(move || {
+            let _ = tx.send(hx_catalog::extract::from_installed());
+        });
+    }
+
     /// Collect a finished extraction and put the catalog straight to work:
     /// no restart, the names and artwork simply appear.
     fn finish_extraction(&mut self) {
@@ -1099,6 +1127,7 @@ impl App {
                 self.extracting = None;
                 self.catalog = Catalog::load().ok();
                 self.onboarding_status = if self.catalog.is_some() {
+                    self.show_onboarding = false;
                     self.note(format!("extracted {count} resource files"));
                     None
                 } else {
@@ -1729,12 +1758,6 @@ impl App {
     /// own beside this one.
     fn editor(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            // Until the model data exists there is nothing worth drawing here
-            // that beats explaining how to get it.
-            if self.catalog.is_none() {
-                self.onboarding(ui);
-                return;
-            }
             let Some(block) = self.chain.get(self.selected).cloned() else {
                 ui.centered_and_justified(|ui| {
                     ui.label(RichText::new("Connect a device to begin").color(theme::DIM));
@@ -1798,104 +1821,200 @@ impl App {
         });
     }
 
-    /// The first-run welcome: how to give the pedals their names and faces.
+    /// The first-run welcome, as a modal over everything: how to give the
+    /// pedals their names and faces.
     ///
-    /// The model names, values, and artwork are Line 6's and cannot ship
-    /// inside this app, so the one-time step is the user supplying HX Edit's
-    /// own installer. Everything stays on their machine, and the moment the
-    /// extraction finishes the catalog loads in place: no restart.
-    fn onboarding(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(36.0);
-        ui.vertical_centered(|ui| {
-            ui.set_max_width(560.0);
-            ui.heading("Welcome to stompchain");
-            ui.add_space(6.0);
-            ui.label(
-                RichText::new("One quick step, and every pedal gets its name and its face.")
-                    .color(theme::ACCENT),
-            );
-            ui.add_space(14.0);
-            ui.label(
-                "stompchain is free and open source. The model names, knob ranges, and \
-                 artwork belong to Line 6, so they cannot ship inside this app; they live \
-                 in the HX Edit installer, which you download yourself from Line 6. \
-                 Nothing leaves your machine.",
-            );
-            ui.add_space(16.0);
+    /// The model names, knob ranges, and artwork are Line 6's and cannot
+    /// ship inside this app, so the one-time step is the user supplying HX
+    /// Edit's own installer. It does not dismiss — without that data there
+    /// are no names, no ranges, and no pictures, so there is nothing to
+    /// edit with — and the moment extraction finishes it closes itself and
+    /// the catalog loads in place: no restart.
+    fn onboarding_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_onboarding {
+            return;
+        }
+        let screen = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("onboarding-modal"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
+                // The veil: dims the app and swallows every click, so the
+                // step in front is unmistakably the only step.
+                let (veil, _) =
+                    ui.allocate_exact_size(screen.size(), egui::Sense::click_and_drag());
+                ui.painter()
+                    .rect_filled(veil, 0.0, egui::Color32::from_black_alpha(170));
 
-            if ui
-                .button("1.  Get HX Edit from line6.com")
-                .on_hover_text("free, but a Line 6 account is required")
-                .clicked()
-            {
-                ui.ctx()
-                    .open_url(egui::OpenUrl::new_tab("https://line6.com/software/"));
-            }
-            ui.add_space(10.0);
+                let card = egui::Rect::from_center_size(
+                    screen.center(),
+                    egui::vec2(560.0_f32.min(screen.width() - 24.0), 560.0),
+                );
+                let mut card_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(card)
+                        .layout(egui::Layout::top_down(egui::Align::Min)),
+                );
+                egui::Frame::popup(&ctx.style())
+                    .inner_margin(28.0)
+                    .show(&mut card_ui, |ui| {
+                        ui.set_width(card.width() - 56.0);
+                        ui.vertical_centered(|ui| {
+                            ui.label(RichText::new("🎸").size(30.0));
+                            ui.add_space(2.0);
+                            ui.heading("Welcome to stompchain");
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new(
+                                    "Thanks for downloading! One quick step, and you only \
+                                     ever do it once.",
+                                )
+                                .color(theme::ACCENT),
+                            );
+                            ui.add_space(14.0);
+                            ui.label(
+                                "stompchain needs HX Edit's data files: every model's name, \
+                                 knob ranges, and artwork.",
+                            );
+                        });
+                        ui.add_space(12.0);
 
-            // The drop target. The whole window accepts the drop; this is the
-            // spot that says so.
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(480.0, 100.0), egui::Sense::hover());
-            let painter = ui.painter();
-            let corners = [
-                (rect.left_top(), rect.right_top()),
-                (rect.right_top(), rect.right_bottom()),
-                (rect.right_bottom(), rect.left_bottom()),
-                (rect.left_bottom(), rect.left_top()),
-            ];
-            for (a, b) in corners {
-                painter.extend(egui::Shape::dashed_line(
-                    &[a, b],
-                    egui::Stroke::new(1.5_f32, theme::DIM),
-                    6.0,
-                    6.0,
-                ));
-            }
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "2.  Drop the HX Edit .dmg or .exe anywhere in this window",
-                egui::FontId::proportional(14.0),
-                theme::TEXT,
-            );
-            ui.add_space(10.0);
+                        // Skimmable, not a wall: one emoji-led line each.
+                        let bullets = [
+                            (
+                                "⚖",
+                                "They are Line 6's files, so they cannot ship in this app.",
+                            ),
+                            (
+                                "💻",
+                                "Either installer works: the Mac .dmg or the Windows .exe.",
+                            ),
+                            (
+                                "🔒",
+                                "Extraction happens here; nothing leaves your machine.",
+                            ),
+                        ];
+                        let block = ((ui.available_width() - 440.0) / 2.0).max(0.0);
+                        for (icon, line) in bullets {
+                            ui.horizontal(|ui| {
+                                ui.add_space(block);
+                                ui.label(RichText::new(icon).size(16.0));
+                                ui.label(RichText::new(line).color(theme::TEXT));
+                            });
+                            ui.add_space(4.0);
+                        }
+                        ui.add_space(12.0);
 
-            if ui
-                .button("3.  …or check my Downloads folder")
-                .on_hover_text("looks for an HX Edit installer you already downloaded")
-                .clicked()
-            {
-                match hx_catalog::extract::installer_in_downloads() {
-                    Some(installer) => self.extract_resources(installer),
-                    None => {
-                        self.onboarding_status =
-                            Some("no HX Edit installer in your Downloads folder yet".into())
-                    }
-                }
-            }
+                        ui.vertical_centered(|ui| {
+                            if ui
+                                .button(RichText::new("Download HX Edit from line6.com").strong())
+                                .on_hover_text("free, but a Line 6 account is required")
+                                .clicked()
+                            {
+                                ui.ctx().open_url(egui::OpenUrl::new_tab(
+                                    "https://line6.com/software/",
+                                ));
+                            }
+                            ui.add_space(10.0);
+                            ui.label(
+                                RichText::new("then, once it is downloaded:").color(theme::DIM),
+                            );
+                            ui.add_space(8.0);
+                            let row = button_width(ui, "Check my Downloads folder")
+                                + button_width(ui, "Browse…")
+                                + ui.spacing().item_spacing.x;
+                            ui.horizontal(|ui| {
+                                center_row(ui, row, |ui| {
+                                    if ui
+                                        .button("Check my Downloads folder")
+                                        .on_hover_text(
+                                            "looks for an HX Edit installer you already downloaded",
+                                        )
+                                        .clicked()
+                                    {
+                                        match hx_catalog::extract::installer_in_downloads() {
+                                            Some(installer) => self.extract_resources(installer),
+                                            None => self.onboarding_status = Some(
+                                                "no HX Edit installer in your Downloads folder yet"
+                                                    .into(),
+                                            ),
+                                        }
+                                    }
+                                    if ui
+                                        .button("Browse…")
+                                        .on_hover_text("pick the installer wherever it landed")
+                                        .clicked()
+                                    {
+                                        if let Some(installer) = rfd::FileDialog::new()
+                                            .add_filter("HX Edit installer", &["dmg", "exe"])
+                                            .pick_file()
+                                        {
+                                            self.extract_resources(installer);
+                                        }
+                                    }
+                                });
+                            });
+                            // Wayland cannot deliver a file drop to this
+                            // window (a windowing-library gap), so the hint
+                            // only appears where dropping actually works.
+                            if std::env::var_os("WAYLAND_DISPLAY").is_none() {
+                                ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new("…or drop the installer anywhere on this window")
+                                        .small()
+                                        .color(theme::DIM),
+                                );
+                            }
 
-            ui.add_space(14.0);
-            if self.extracting.is_some() {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    if let Some(status) = &self.onboarding_status {
-                        ui.label(RichText::new(status).color(theme::DIM));
-                    }
-                });
-            } else if let Some(status) = &self.onboarding_status {
-                ui.label(RichText::new(status).color(theme::ACCENT));
-            }
+                            ui.add_space(10.0);
+                            if self.extracting.is_some() {
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    if let Some(status) = &self.onboarding_status {
+                                        ui.label(RichText::new(status).color(theme::DIM));
+                                    }
+                                });
+                            } else if let Some(status) = &self.onboarding_status {
+                                ui.label(RichText::new(status).color(theme::ACCENT));
+                            }
+                        });
 
-            ui.add_space(22.0);
-            ui.label(
-                RichText::new(
-                    "Everything works without this step too; you would just see numbers \
-                     where names belong.",
-                )
-                .small()
-                .color(theme::DIM),
-            );
-        });
+                        ui.add_space(14.0);
+                        ui.separator();
+                        ui.add_space(6.0);
+                        ui.vertical_centered(|ui| {
+                            ui.label(
+                                RichText::new(
+                                    "Free and open source, MIT licensed. Not affiliated with \
+                                     Yamaha Guitar Group.",
+                                )
+                                .small()
+                                .color(theme::DIM),
+                            );
+                            ui.horizontal(|ui| {
+                                center_row(ui, credits_width(ui), |ui| {
+                                    ui.label(
+                                        RichText::new("made with ♥ by").small().color(theme::DIM),
+                                    );
+                                    ui.hyperlink_to(
+                                        RichText::new("Carmine Paolino").small(),
+                                        "https://paolino.me",
+                                    );
+                                    ui.label(RichText::new("·").small().color(theme::DIM));
+                                    ui.hyperlink_to(
+                                        RichText::new("follow updates").small(),
+                                        "https://x.com/paolino",
+                                    );
+                                    ui.label(RichText::new("·").small().color(theme::DIM));
+                                    ui.hyperlink_to(
+                                        RichText::new("♥ sponsor").small(),
+                                        "https://github.com/sponsors/crmne",
+                                    );
+                                });
+                            });
+                        });
+                    });
+            });
     }
 
     /// The pedal's name and the things you do to the block itself.
@@ -2436,6 +2555,47 @@ impl App {
             });
         }
     }
+}
+
+/// Centre a fixed-width row of widgets inside a horizontal `ui`.
+///
+/// egui lays a row out left to right with no idea how wide its content will
+/// end up, so centring means telling it: pad by half of what is left over.
+fn center_row(ui: &mut egui::Ui, content_width: f32, add: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(((ui.available_width() - content_width) / 2.0).max(0.0));
+    add(ui);
+}
+
+/// What a button with this label will measure, for centring rows of them.
+fn button_width(ui: &egui::Ui, text: &str) -> f32 {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let galley = ui.fonts(|fonts| fonts.layout_no_wrap(text.to_owned(), font, theme::TEXT));
+    galley.size().x + 2.0 * ui.spacing().button_padding.x
+}
+
+/// The measured width of the credits line, so it can be centred exactly.
+fn credits_width(ui: &egui::Ui) -> f32 {
+    let font = egui::TextStyle::Small.resolve(ui.style());
+    let pieces = [
+        "made with ♥ by",
+        "Carmine Paolino",
+        "·",
+        "follow updates",
+        "·",
+        "♥ sponsor",
+    ];
+    let text: f32 = ui.fonts(|fonts| {
+        pieces
+            .iter()
+            .map(|piece| {
+                fonts
+                    .layout_no_wrap((*piece).to_owned(), font.clone(), theme::DIM)
+                    .size()
+                    .x
+            })
+            .sum()
+    });
+    text + ui.spacing().item_spacing.x * (pieces.len() - 1) as f32
 }
 
 /// One line on what a split type does with the signal, for its chip's hover.

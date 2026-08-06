@@ -48,10 +48,14 @@ Runtime:
 - the GUI loads the display stack at runtime: libGL, libxkbcommon, and
   Wayland or X11 client libraries, all present on any desktop install
 - model names, parameter ranges, and artwork come from HX Edit's own data
-  files, which are Line 6's and are not redistributable. Users extract them
-  once with `tools/hxresources/extract.sh` from an HX Edit installer they
-  download themselves. Packages must not bundle them. Everything degrades
-  gracefully without them.
+  files, which are Line 6's and are not redistributable. The app walks the
+  user through extracting them on first launch; packages must not bundle
+  them.
+- reading an HX Edit installer in-app needs 7-Zip (`7z`, `7za`, or `7zz` on
+  PATH): package it as an optional dependency on Linux (`p7zip`) and
+  Windows. macOS needs nothing extra; it uses hdiutil and pkgutil. A machine
+  with HX Edit already installed needs no extraction at all: the app copies
+  from the installation by itself.
 
 Build time:
 

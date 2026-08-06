@@ -66,7 +66,8 @@ sudo install -m644 packaging/udev/70-line6-hx.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
-Then replug the pedal once.
+Then replug the pedal once. For the first-launch extraction of HX Edit's
+model data, install `p7zip` too; the AUR package already suggests it.
 
 ## Build from source
 

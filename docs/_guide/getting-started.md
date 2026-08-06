@@ -36,13 +36,9 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 ### Model names and pictures
 
-Names, parameter ranges, value formatting, and artwork come from HX Edit's own data files, which are Line 6's and are **not** redistributed here. The installer finds an installed HX Edit automatically. Without one, point the extractor at the installer you download from [line6.com/software](https://line6.com/software/):
+Names, parameter ranges, value formatting, and artwork come from HX Edit's own data files, which are Line 6's and are **not** redistributed here. The editor walks you through this the first time it opens: if HX Edit is installed on the machine it copies the data by itself, and otherwise it takes the HX Edit installer you download from [line6.com/software](https://line6.com/software/), either the Mac .dmg or the Windows .exe, on any OS.
 
-```sh
-tools/hxresources/extract.sh HX_Edit_3.82.dmg   # or the .exe
-```
-
-Everything degrades gracefully without this: the device still works, you just see model numbers instead of names and no pictures.
+Reading an installer needs 7-Zip on Linux and Windows; on most distros that is the `p7zip` package, and the AUR package already suggests it. macOS needs nothing extra.
 
 ## Connect
 
