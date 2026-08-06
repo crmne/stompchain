@@ -18,10 +18,10 @@ hero:
       text: GitHub
       link: https://github.com/crmne/stompchain
   image:
-    src: /assets/images/logo.svg
-    alt: stompchain
-    width: 320
-    height: 320
+    src: /screenshot.png
+    alt: "stompchain editing a preset on an HX Stomp: a drive, amp and cab on the main line with a delay and reverb on a parallel branch"
+    width: 2000
+    height: 1306
 
 features:
   - icon: 🎸
@@ -46,8 +46,30 @@ features:
     details: Every operation was checked against a real HX Stomp, down to byte-exact re-encoding of captured presets on every test run.
 ---
 
-<div style="max-width: 1080px; margin: 3rem auto 0;">
-  <a href="/what-is-stompchain/">
-    <img src="/screenshot.png" alt="stompchain editing a preset on an HX Stomp: a drive, amp and cab on the main line with a delay and reverb on a parallel branch" style="width: 100%; border-radius: 12px; box-shadow: 0 8px 40px rgba(0,0,0,0.5);">
-  </a>
-</div>
+<style>
+  /* The hero image slot is sized for a square logo; the screenshot needs the
+     room. Page-scoped overrides, so the theme stays untouched. */
+  .VPHero .image-container {
+    width: 100% !important;
+    height: auto !important;
+    transform: none !important;
+  }
+  .VPHero .image-src {
+    position: relative !important;
+    top: auto !important;
+    left: auto !important;
+    transform: none !important;
+    width: 100% !important;
+    height: auto !important;
+    max-width: 100% !important;
+    max-height: none !important;
+    padding: 0 !important;
+    border-radius: 12px;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.45);
+  }
+  @media (max-width: 959px) {
+    .VPHero .image {
+      margin: 0 0 24px !important;
+    }
+  }
+</style>
