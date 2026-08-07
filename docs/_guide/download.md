@@ -29,8 +29,8 @@ Open it and drag **stompchain** to Applications. The DMG also carries the
 Homebrew users can instead run:
 
 ```sh
-brew install --cask crmne/stompchain/stompchain-app   # the app
-brew install crmne/stompchain/stompchain              # the CLI
+brew install --cask crmne/tap/stompchain-app   # the app
+brew install crmne/tap/stompchain              # the CLI
 ```
 
 ## Windows
