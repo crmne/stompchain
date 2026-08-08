@@ -9,6 +9,7 @@ use egui::RichText;
 use hx_catalog::{Catalog, Kind};
 
 mod config;
+mod library;
 mod session;
 mod theme;
 mod wav;
@@ -28,6 +29,8 @@ struct Preview {
     load: LoadKind,
     /// Which preset Load writes into. Defaults to the one open now.
     dest: i64,
+    /// The file this preview came from, so Keep knows what to copy.
+    source: std::path::PathBuf,
 }
 
 /// How a previewed tone reaches the pedal: a byte-exact document is written
@@ -149,6 +152,9 @@ pub struct App {
     /// Draw the chain without its editing affordances: no insert gaps, no
     /// ghost branch, no drags. The preview runs the renderer this way.
     display_only: bool,
+    /// The kept tones on disk, shown under the preset list when open.
+    show_library: bool,
+    library: Vec<std::path::PathBuf>,
     /// Editable tempo, so typing does not fight the device's value.
     tempo_draft: Option<String>,
     /// A parameter value being typed, by block position and parameter index,
@@ -237,6 +243,8 @@ impl App {
             show_favorites_only: false,
             preview: None,
             display_only: false,
+            show_library: false,
+            library: Vec::new(),
             tempo_draft: None,
             param_draft: None,
             snapshot_draft: None,
@@ -970,6 +978,8 @@ impl App {
                 });
                 ui.separator();
 
+                self.library_shelf(ui);
+
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
@@ -1046,6 +1056,69 @@ impl App {
                             self.send(Cmd::SelectPreset(index));
                         }
                     });
+            });
+    }
+
+    /// The kept tones, under the preset list: files, not slots, so they
+    /// outlive any pedal. Closed it is one quiet line; open it lists the
+    /// library, and a click opens the tone's preview.
+    fn library_shelf(&mut self, ui: &mut egui::Ui) {
+        egui::TopBottomPanel::bottom("library")
+            .resizable(false)
+            .show_inside(ui, |ui| {
+                ui.add_space(2.0);
+                let title = if self.show_library || self.library.is_empty() {
+                    "LIBRARY".to_owned()
+                } else {
+                    format!("LIBRARY ({})", self.library.len())
+                };
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new(title).small().color(theme::DIM))
+                            .frame(false),
+                    )
+                    .on_hover_text("tones kept on this computer")
+                    .clicked()
+                {
+                    self.show_library = !self.show_library;
+                    if self.show_library {
+                        self.library = library::entries();
+                    }
+                }
+                if self.show_library {
+                    let mut opened = None;
+                    egui::ScrollArea::vertical()
+                        .id_salt("library-shelf")
+                        .max_height(180.0)
+                        .show(ui, |ui| {
+                            for path in &self.library {
+                                let name = path
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("tone");
+                                if ui
+                                    .selectable_label(false, name)
+                                    .on_hover_text("open this tone")
+                                    .clicked()
+                                {
+                                    opened = Some(path.clone());
+                                }
+                            }
+                            if self.library.is_empty() {
+                                ui.label(
+                                    RichText::new(
+                                        "Nothing kept yet. Keep a tone from its preview.",
+                                    )
+                                    .small()
+                                    .color(theme::DIM),
+                                );
+                            }
+                        });
+                    if let Some(path) = opened {
+                        self.open_tone_file(&path);
+                    }
+                }
+                ui.add_space(2.0);
             });
     }
 
@@ -1408,6 +1481,7 @@ impl App {
             skipped,
             load: LoadKind::Steps(blocks),
             dest: self.preset_index.max(0),
+            source: path.to_owned(),
         });
     }
 
@@ -1448,6 +1522,7 @@ impl App {
             skipped: tone.skipped,
             load: LoadKind::Document(bytes),
             dest: self.preset_index.max(0),
+            source: path.to_owned(),
         });
     }
 
@@ -1567,6 +1642,23 @@ impl App {
                     }
                     if ui.button("Cancel").clicked() {
                         cancel = true;
+                    }
+                    // A tone worth keeping goes into the library, unless it
+                    // is already there.
+                    if !library::holds(&preview.source)
+                        && ui
+                            .button("Keep")
+                            .on_hover_text("copy this file into your library")
+                            .clicked()
+                    {
+                        match library::keep(&preview.source) {
+                            Ok(kept) => {
+                                preview.source = kept;
+                                self.library = library::entries();
+                                self.note(format!("kept {}", preview.name));
+                            }
+                            Err(why) => self.note(why),
+                        }
                     }
                 });
             });
