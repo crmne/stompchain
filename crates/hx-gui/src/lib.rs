@@ -974,14 +974,24 @@ impl App {
                             let selected = index == self.preset_index;
                             let label = format!("{}  {}", hx_proto::rpc::slot_label(index), name);
                             ui.horizontal(|ui| {
+                                // The star leads the row, clear of the scrollbar
+                                // that overlaps the right edge and eats the click.
+                                let mark = if fav { "★" } else { "☆" };
+                                let color = if fav { theme::ACCENT } else { theme::DIM };
+                                if ui
+                                    .add(egui::Button::new(RichText::new(mark).color(color)).frame(false))
+                                    .on_hover_text(if fav { "Remove favorite" } else { "Favorite" })
+                                    .clicked()
+                                {
+                                    toggle = Some(index);
+                                }
                                 let text = if selected {
                                     RichText::new(&label).color(theme::ACCENT).strong()
                                 } else {
                                     RichText::new(&label)
                                 };
-                                // The name renders at its natural, left-aligned
-                                // size, exactly as before. Forcing a SelectableLabel
-                                // to a width makes it center its text, so we do not.
+                                // A plain, content-sized label: left-aligned as
+                                // before, and never centered (no forced width).
                                 let row = ui.selectable_label(selected, text);
                                 if row.clicked() {
                                     load = Some(index);
@@ -992,28 +1002,6 @@ impl App {
                                     row.scroll_to_me(Some(egui::Align::Center));
                                     self.reveal_preset = false;
                                 }
-                                // The star is pinned to the right edge of the row.
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        let mark = if fav { "★" } else { "☆" };
-                                        let color = if fav { theme::ACCENT } else { theme::DIM };
-                                        if ui
-                                            .add(
-                                                egui::Button::new(RichText::new(mark).color(color))
-                                                    .frame(false),
-                                            )
-                                            .on_hover_text(if fav {
-                                                "Remove favorite"
-                                            } else {
-                                                "Favorite"
-                                            })
-                                            .clicked()
-                                        {
-                                            toggle = Some(index);
-                                        }
-                                    },
-                                );
                             });
                         }
                         if self.show_favorites_only && !shown_any {
