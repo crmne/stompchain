@@ -150,6 +150,9 @@ enum Cmd {
         input: std::path::PathBuf,
         output: std::path::PathBuf,
     },
+    /// Report a WAV impulse response and whether the device will accept it,
+    /// touching no hardware.
+    IrInfo { file: std::path::PathBuf },
     /// Rename a preset, by front-panel label (`03B`) or zero-based index (`7`).
     Rename {
         index: String,
@@ -185,6 +188,7 @@ fn main() -> Result<()> {
         } => show_import(&file),
         Cmd::Inspect { file } => inspect_hlx(&file),
         Cmd::ExportHlx { input, output } => export_hlx(&input, &output),
+        Cmd::IrInfo { file } => ir_info(&file),
         Cmd::List => list_devices(),
         // Reject a malformed preset address before opening anything: failing
         // after a five-second connect to say "that is not a preset" is rude.
@@ -401,6 +405,7 @@ fn on_device(cmd: Cmd) -> Result<()> {
         Cmd::Models { category, model } => browse_models(category, model),
         Cmd::Inspect { file } => inspect_hlx(&file),
         Cmd::ExportHlx { input, output } => export_hlx(&input, &output),
+        Cmd::IrInfo { file } => ir_info(&file),
     }
 }
 
@@ -983,6 +988,23 @@ fn export_hlx(input: &std::path::Path, output: &std::path::Path) -> Result<()> {
     for skipped in &written.skipped {
         eprintln!("  skipped: {skipped}");
     }
+    Ok(())
+}
+
+/// Report a WAV impulse response and whether the device will accept it. The
+/// device stores at most 2048 mono samples and wedges hard on anything longer,
+/// so this catches a bad file before an upload ever reaches the pedal.
+fn ir_info(file: &std::path::Path) -> Result<()> {
+    let wav = wav::read(file)?;
+    let samples = wav.samples.len();
+    println!("{}", file.display());
+    println!("  {} Hz, mono, {samples} samples", wav.sample_rate);
+    let verdict = match samples {
+        0 => "will not load: it is empty".to_string(),
+        1..=2048 => "the device will accept it".to_string(),
+        n => format!("will not load: {n} samples, the device stores at most 2048"),
+    };
+    println!("  {verdict}");
     Ok(())
 }
 
