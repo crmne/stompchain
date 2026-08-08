@@ -11,6 +11,10 @@ rust-version.workspace = true
 hx-proto.workspace = true
 hx-usb.workspace = true
 hx-catalog.workspace = true
+# Persist favorites (and, later, rig profiles and preferences) as one small
+# JSON file the user could open and read.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 # egui renders with wgpu/glow and has no native toolkit dependency, so the same
 # tree builds for macOS, Windows, Linux and Android.
 eframe = { version = "0.29", default-features = false, features = [

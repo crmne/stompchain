@@ -8,6 +8,7 @@ use std::time::Duration;
 use egui::RichText;
 use hx_catalog::{Catalog, Kind};
 
+mod config;
 mod session;
 mod theme;
 mod wav;
@@ -114,8 +115,12 @@ pub struct App {
     /// Which setlist the preset list is showing. Only reachable through the
     /// picker, which appears when a device has more than one — an HX Stomp has
     /// a single list, so on that hardware this stays at zero.
-    #[allow(dead_code)]
     setlist: i64,
+
+    /// Favorites and other settings that persist across runs.
+    config: config::Config,
+    /// Show only favorited presets in the list.
+    show_favorites_only: bool,
     /// Editable tempo, so typing does not fight the device's value.
     tempo_draft: Option<String>,
     /// A parameter value being typed, by block position and parameter index,
@@ -200,6 +205,8 @@ impl App {
             irs: Vec::new(),
             setlists: Vec::new(),
             setlist: 0,
+            config: config::Config::load(),
+            show_favorites_only: false,
             tempo_draft: None,
             param_draft: None,
             snapshot_draft: None,
@@ -921,6 +928,19 @@ impl App {
                 // looking somewhere else for something that belongs here.
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("PRESETS").small().color(theme::DIM));
+                    let mark = if self.show_favorites_only { "★" } else { "☆" };
+                    let color = if self.show_favorites_only {
+                        theme::ACCENT
+                    } else {
+                        theme::DIM
+                    };
+                    if ui
+                        .add(egui::Button::new(RichText::new(mark).small().color(color)).frame(false))
+                        .on_hover_text("Show favorites only")
+                        .clicked()
+                    {
+                        self.show_favorites_only = !self.show_favorites_only;
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         self.preset_actions(ui);
                     });
@@ -936,8 +956,16 @@ impl App {
                         } else {
                             self.presets.len() as i64
                         };
+                        let setlist = self.setlist;
                         let mut load = None;
+                        let mut toggle = None;
+                        let mut shown_any = false;
                         for index in 0..total {
+                            let fav = self.config.is_favorite(setlist, index);
+                            if self.show_favorites_only && !fav {
+                                continue;
+                            }
+                            shown_any = true;
                             let name = self
                                 .presets
                                 .get(index as usize)
@@ -945,21 +973,59 @@ impl App {
                                 .unwrap_or_default();
                             let selected = index == self.preset_index;
                             let label = format!("{}  {}", hx_proto::rpc::slot_label(index), name);
-                            let text = if selected {
-                                RichText::new(label).color(theme::ACCENT).strong()
-                            } else {
-                                RichText::new(label)
-                            };
-                            let row = ui.selectable_label(selected, text);
-                            if row.clicked() {
-                                load = Some(index);
-                            }
-                            // A preset picked on the pedal itself should be in
-                            // view here too, without fighting manual scrolling.
-                            if selected && self.reveal_preset {
-                                row.scroll_to_me(Some(egui::Align::Center));
-                                self.reveal_preset = false;
-                            }
+                            ui.horizontal(|ui| {
+                                let text = if selected {
+                                    RichText::new(&label).color(theme::ACCENT).strong()
+                                } else {
+                                    RichText::new(&label)
+                                };
+                                // The name renders at its natural, left-aligned
+                                // size, exactly as before. Forcing a SelectableLabel
+                                // to a width makes it center its text, so we do not.
+                                let row = ui.selectable_label(selected, text);
+                                if row.clicked() {
+                                    load = Some(index);
+                                }
+                                // A preset picked on the pedal itself should be in
+                                // view here too, without fighting manual scrolling.
+                                if selected && self.reveal_preset {
+                                    row.scroll_to_me(Some(egui::Align::Center));
+                                    self.reveal_preset = false;
+                                }
+                                // The star is pinned to the right edge of the row.
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        let mark = if fav { "★" } else { "☆" };
+                                        let color = if fav { theme::ACCENT } else { theme::DIM };
+                                        if ui
+                                            .add(
+                                                egui::Button::new(RichText::new(mark).color(color))
+                                                    .frame(false),
+                                            )
+                                            .on_hover_text(if fav {
+                                                "Remove favorite"
+                                            } else {
+                                                "Favorite"
+                                            })
+                                            .clicked()
+                                        {
+                                            toggle = Some(index);
+                                        }
+                                    },
+                                );
+                            });
+                        }
+                        if self.show_favorites_only && !shown_any {
+                            ui.add_space(8.0);
+                            ui.label(
+                                RichText::new("No favorites yet. Tap a star to add one.")
+                                    .small()
+                                    .color(theme::DIM),
+                            );
+                        }
+                        if let Some(index) = toggle {
+                            self.config.toggle_favorite(setlist, index);
                         }
                         if let Some(index) = load {
                             // Loading takes about a second. Say so, or the window

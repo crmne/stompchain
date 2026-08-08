@@ -1235,6 +1235,8 @@ dependencies = [
  "hx-usb",
  "image",
  "rfd",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
