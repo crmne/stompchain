@@ -179,6 +179,8 @@ pub struct App {
 enum CopyTarget {
     Clipboard,
     File(std::path::PathBuf),
+    /// Into the library, as a portable .hlx named after the preset.
+    Library,
 }
 
 #[derive(Debug, PartialEq)]
@@ -363,6 +365,7 @@ impl App {
                             self.clipboard = Some((name.clone(), blob));
                             self.note(format!("copied {name} ({size} bytes)"));
                         }
+                        CopyTarget::Library => self.keep_document(&name, &blob),
                     }
                 }
                 Ok(Evt::Irs(slots)) => self.irs = slots,
@@ -1059,6 +1062,30 @@ impl App {
             });
     }
 
+    /// Keep the loaded preset's document in the library: as portable .hlx
+    /// when the catalog can name its models, as the exact bytes otherwise.
+    fn keep_document(&mut self, name: &str, blob: &[u8]) {
+        let stem = sanitise(name);
+        let kept = match (hx_proto::preset::Preset::parse(blob), self.catalog.as_ref()) {
+            (Some(preset), Some(catalog)) => {
+                let written = hx_catalog::to_hlx(&preset, catalog, name);
+                for skipped in &written.skipped {
+                    self.note(format!("kept without {skipped}"));
+                }
+                library::keep_bytes(&stem, "hlx", written.to_pretty_string().as_bytes())
+            }
+            _ => library::keep_bytes(&stem, "hxpreset", blob),
+        };
+        match kept {
+            Ok(_) => {
+                self.library = library::entries();
+                self.show_library = true;
+                self.note(format!("kept {name} in the library"));
+            }
+            Err(why) => self.note(why),
+        }
+    }
+
     /// The kept tones, under the preset list: files, not slots, so they
     /// outlive any pedal. Closed it is one quiet line; open it lists the
     /// library, and a click opens the tone's preview.
@@ -1072,19 +1099,36 @@ impl App {
                 } else {
                     format!("LIBRARY ({})", self.library.len())
                 };
-                if ui
-                    .add(
-                        egui::Button::new(RichText::new(title).small().color(theme::DIM))
-                            .frame(false),
-                    )
-                    .on_hover_text("tones kept on this computer")
-                    .clicked()
-                {
-                    self.show_library = !self.show_library;
-                    if self.show_library {
-                        self.library = library::entries();
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new(title).small().color(theme::DIM))
+                                .frame(false),
+                        )
+                        .on_hover_text("tones kept on this computer")
+                        .clicked()
+                    {
+                        self.show_library = !self.show_library;
+                        if self.show_library {
+                            self.library = library::entries();
+                        }
                     }
-                }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let live = matches!(self.connection, Connection::Online)
+                            && self.preset_index >= 0;
+                        if ui
+                            .add_enabled(
+                                live,
+                                egui::Button::new(RichText::new("KEEP THIS").small()).frame(false),
+                            )
+                            .on_hover_text("keep the loaded preset in the library")
+                            .clicked()
+                        {
+                            self.pending_copy = CopyTarget::Library;
+                            self.send(Cmd::CopyPreset);
+                        }
+                    });
+                });
                 if self.show_library {
                     let mut opened = None;
                     egui::ScrollArea::vertical()
