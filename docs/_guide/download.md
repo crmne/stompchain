@@ -20,11 +20,24 @@ One download for both Apple Silicon and Intel:
 Open it and drag **stompchain** to Applications. The DMG also carries the
 `stompchain` command-line tool; copy it somewhere on your PATH if you want it.
 
-> **If macOS refuses to open the app**, it is because this build is not yet
-> notarized with Apple. Right-click the app, choose Open, and confirm; macOS
-> remembers the choice. This one-time step disappears once notarized builds
-> ship.
-{: .warning }
+### First open on macOS
+
+This build is not yet notarized with Apple, so macOS blocks it the first time.
+Recent macOS versions (Sequoia and later) no longer let you bypass this with a
+right-click, so you open it once through Privacy & Security instead:
+
+1. Double-click **stompchain** in Applications. macOS says it cannot be opened
+   because Apple cannot check it for malicious software. Click **Done** (do
+   **not** click Move to Trash).
+2. Open **System Settings**, then **Privacy & Security**.
+3. Scroll down to the **Security** section. You will see a line like
+   *"stompchain was blocked to protect your Mac"* with an **Open Anyway**
+   button next to it. Click it.
+4. Authenticate with Touch ID or your password, then click **Open Anyway**
+   once more in the confirmation dialog.
+
+The app opens, and macOS remembers the choice: every launch after this is an
+ordinary double-click. This whole step disappears once notarized builds ship.
 
 Homebrew users can instead run:
 
