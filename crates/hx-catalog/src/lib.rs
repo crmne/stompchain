@@ -15,9 +15,11 @@ use std::path::{Path, PathBuf};
 
 pub mod extract;
 mod format;
+mod inspect;
 mod load;
 
 pub use format::Display;
+pub use inspect::{inspect, ChainContent, OutputTarget, Tone, ToneBlock};
 
 /// Everything HX Edit knows about models and their parameters.
 pub struct Catalog {
@@ -128,6 +130,15 @@ impl Category {
     pub const SPLIT: u32 = 20;
     pub const MERGE: u32 = 21;
     pub const CONNECTED_DEVICES: u32 = 22;
+
+    /// The rig-defining categories: an amp, a preamp, a speaker cab, an impulse
+    /// response. Their presence is what tells one kind of tone from another - an
+    /// amp into a cab is a full rig, the same effects with neither is a
+    /// pedalboard. Used by [`inspect`](crate::inspect) to derive those facts.
+    pub const AMP: u32 = 11;
+    pub const PREAMP: u32 = 12;
+    pub const CAB: u32 = 13;
+    pub const IR: u32 = 14;
 }
 
 #[derive(Debug, thiserror::Error)]

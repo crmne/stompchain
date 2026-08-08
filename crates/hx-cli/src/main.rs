@@ -142,6 +142,9 @@ enum Cmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Read an .hlx and show what the tone is - its blocks and what to play it
+    /// through - touching no hardware.
+    Inspect { file: std::path::PathBuf },
     /// Rename a preset, by front-panel label (`03B`) or zero-based index (`7`).
     Rename {
         index: String,
@@ -175,6 +178,7 @@ fn main() -> Result<()> {
             file,
             dry_run: true,
         } => show_import(&file),
+        Cmd::Inspect { file } => inspect_hlx(&file),
         Cmd::List => list_devices(),
         // Reject a malformed preset address before opening anything: failing
         // after a five-second connect to say "that is not a preset" is rude.
@@ -389,6 +393,7 @@ fn on_device(cmd: Cmd) -> Result<()> {
         Cmd::List => list_devices(),
         Cmd::Decode { log } => decode_capture(&log),
         Cmd::Models { category, model } => browse_models(category, model),
+        Cmd::Inspect { file } => inspect_hlx(&file),
     }
 }
 
@@ -913,6 +918,42 @@ fn load_plan(file: &std::path::Path) -> Result<hlx::Plan> {
     let catalog = hx_catalog::Catalog::load()
         .context("reading an .hlx needs HX Edit's catalog to translate model names")?;
     hlx::read(file, &catalog)
+}
+
+/// Read an .hlx and say what the tone is, touching no hardware.
+fn inspect_hlx(file: &std::path::Path) -> Result<()> {
+    let catalog = hx_catalog::Catalog::load()
+        .context("reading an .hlx needs HX Edit's catalog to translate model names")?;
+    let text = std::fs::read_to_string(file).with_context(|| format!("reading {file:?}"))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&text).with_context(|| format!("parsing {file:?} as JSON"))?;
+    let tone = hx_catalog::inspect(&json, &catalog);
+
+    let content = match tone.chain_content {
+        hx_catalog::ChainContent::FullRig => "Full rig",
+        hx_catalog::ChainContent::AmpAndCab => "Amp and cab",
+        hx_catalog::ChainContent::AmpOnly => "Amp, no cab",
+        hx_catalog::ChainContent::EffectsOnly => "Effects only",
+    };
+    let output = match tone.output_target_guess {
+        hx_catalog::OutputTarget::FrfrPa => "for FRFR or a PA",
+        hx_catalog::OutputTarget::GuitarCabOrDi => "for a real cab or the front of an amp",
+    };
+    println!("{}", tone.name);
+    println!("  {content}, {output}\n");
+
+    for block in &tone.blocks {
+        let path = if block.path == 1 { " (path 2)" } else { "" };
+        let state = if block.enabled { "" } else { "  bypassed" };
+        println!("  {}{}  {}{}", block.position, path, block.model_name, state);
+    }
+    if tone.blocks.is_empty() {
+        println!("  (no blocks)");
+    }
+    for skipped in &tone.skipped {
+        eprintln!("  skipped: {skipped}");
+    }
+    Ok(())
 }
 
 /// Show what a file would change, touching no hardware.
