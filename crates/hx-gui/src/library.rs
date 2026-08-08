@@ -80,6 +80,25 @@ pub fn keep_bytes(stem: &str, ext: &str, contents: &[u8]) -> Result<PathBuf, Str
     Ok(target)
 }
 
+/// Take a tone out of the library - into its `.trash` folder, not gone, so a
+/// slip of the pointer costs nothing.
+pub fn remove(path: &Path) -> Result<(), String> {
+    let dir = dir().ok_or("no library to remove from")?;
+    let trash = dir.join(".trash");
+    std::fs::create_dir_all(&trash).map_err(|e| format!("could not make room: {e}"))?;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("tone");
+    let mut target = trash.join(name);
+    let mut n = 1;
+    while target.exists() {
+        n += 1;
+        target = trash.join(format!("{n}-{name}"));
+    }
+    std::fs::rename(path, &target).map_err(|e| format!("could not remove the tone: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,6 +130,12 @@ mod tests {
             .filter_map(|p| p.file_name().map(|n| n.to_owned()))
             .collect();
         assert_eq!(names.len(), 2);
+
+        // Removing puts the tone in the trash, not out of existence.
+        remove(&first).unwrap();
+        assert_eq!(entries().len(), 1);
+        assert!(dir().unwrap().join(".trash").join("stompchain-keep-test.hlx").exists());
+
         let _ = std::fs::remove_file(source);
     }
 }

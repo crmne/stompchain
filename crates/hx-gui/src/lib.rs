@@ -1094,10 +1094,12 @@ impl App {
             .resizable(false)
             .show_inside(ui, |ui| {
                 ui.add_space(2.0);
-                let title = if self.show_library || self.library.is_empty() {
-                    "LIBRARY".to_owned()
+                // The arrow says this opens; the count says it holds something.
+                let arrow = if self.show_library { "⏷" } else { "⏵" };
+                let title = if self.library.is_empty() {
+                    format!("{arrow} LIBRARY")
                 } else {
-                    format!("LIBRARY ({})", self.library.len())
+                    format!("{arrow} LIBRARY ({})", self.library.len())
                 };
                 ui.horizontal(|ui| {
                     if ui
@@ -1131,6 +1133,7 @@ impl App {
                 });
                 if self.show_library {
                     let mut opened = None;
+                    let mut removed = None;
                     egui::ScrollArea::vertical()
                         .id_salt("library-shelf")
                         .max_height(180.0)
@@ -1140,13 +1143,34 @@ impl App {
                                     .file_stem()
                                     .and_then(|s| s.to_str())
                                     .unwrap_or("tone");
-                                if ui
-                                    .selectable_label(false, name)
-                                    .on_hover_text("open this tone")
-                                    .clicked()
-                                {
-                                    opened = Some(path.clone());
-                                }
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .selectable_label(false, name)
+                                        .on_hover_text("open this tone")
+                                        .clicked()
+                                    {
+                                        opened = Some(path.clone());
+                                    }
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui
+                                                .add(
+                                                    egui::Button::new(
+                                                        RichText::new("✕")
+                                                            .small()
+                                                            .color(theme::DIM),
+                                                    )
+                                                    .frame(false),
+                                                )
+                                                .on_hover_text("remove from the library")
+                                                .clicked()
+                                            {
+                                                removed = Some(path.clone());
+                                            }
+                                        },
+                                    );
+                                });
                             }
                             if self.library.is_empty() {
                                 ui.label(
@@ -1160,6 +1184,18 @@ impl App {
                         });
                     if let Some(path) = opened {
                         self.open_tone_file(&path);
+                    }
+                    if let Some(path) = removed {
+                        let name = path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("tone")
+                            .to_owned();
+                        match library::remove(&path) {
+                            Ok(()) => self.note(format!("removed {name}")),
+                            Err(why) => self.note(why),
+                        }
+                        self.library = library::entries();
                     }
                 }
                 ui.add_space(2.0);
@@ -1699,6 +1735,9 @@ impl App {
                             Ok(kept) => {
                                 preview.source = kept;
                                 self.library = library::entries();
+                                // Show the keep landing, or it looks like
+                                // nothing happened.
+                                self.show_library = true;
                                 self.note(format!("kept {}", preview.name));
                             }
                             Err(why) => self.note(why),
