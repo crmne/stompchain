@@ -53,10 +53,15 @@ fn a_symbolic_tone_loads_into_the_edit_buffer_and_undo_restores() {
         _ => None,
     });
 
+    // Load into a DIFFERENT preset than the one open, so the select-first
+    // branch runs against hardware too. The last preset is as far from
+    // anyone's scratch work as a slot gets; only its edit buffer is touched.
+    let dest = 125.min(index + 1);
+
     // A small tone: a Minotaur into a Scream 808 with its gain set low and
     // the whole 808 bypassed - models, a parameter, and a bypass state.
     tx.send(Cmd::LoadSteps {
-        dest: index,
+        dest,
         name: "Load Test".into(),
         blocks: vec![
             ApplyBlock {
@@ -73,10 +78,11 @@ fn a_symbolic_tone_loads_into_the_edit_buffer_and_undo_restores() {
     })
     .unwrap();
 
-    let loaded = wait_for(&rx, "the rebuilt chain", 60, |evt| match evt {
-        Evt::Loaded { chain, .. } => Some(chain),
+    let (landed_on, loaded) = wait_for(&rx, "the rebuilt chain", 90, |evt| match evt {
+        Evt::Loaded { index, chain, .. } => Some((index, chain)),
         _ => None,
     });
+    assert_eq!(landed_on, dest, "the load landed on the chosen preset");
     let models: Vec<u32> = loaded
         .iter()
         .filter(|b| b.kind == hx_proto::preset::Kind::Block)
@@ -88,16 +94,32 @@ fn a_symbolic_tone_loads_into_the_edit_buffer_and_undo_restores() {
         .find(|b| b.model == 101)
         .expect("the 808 is in the chain");
     assert!(!bypassed.enabled, "the 808 arrived bypassed");
+    // The parameter came back from the device, not from our own send.
+    assert!(
+        bypassed
+            .values
+            .first()
+            .is_some_and(|v| (*v - 0.25).abs() < 1e-3),
+        "the 808's gain reads back as set: {:?}",
+        bypassed.values.first()
+    );
 
-    // One undo puts the whole original chain back: the load is one step.
+    // One undo puts the destination's own chain back: the load is one step.
     tx.send(Cmd::Undo).unwrap();
-    let restored = wait_for(&rx, "the restored chain", 60, |evt| match evt {
+    let _ = wait_for(&rx, "the destination restored", 90, |evt| match evt {
         Evt::Loaded { chain, .. } => Some(chain),
         _ => None,
     });
+
+    // And going home shows the original preset untouched by all of it.
+    tx.send(Cmd::SelectPreset(index)).unwrap();
+    let home = wait_for(&rx, "the original preset", 90, |evt| match evt {
+        Evt::Loaded { index: at, chain, .. } => (at == index).then_some(chain),
+        _ => None,
+    });
     assert_eq!(
-        restored.iter().map(|b| (b.model, b.enabled)).collect::<Vec<_>>(),
-        original.iter().map(|b| (b.model, b.enabled)).collect::<Vec<_>>(),
-        "undo returns the chain the test found"
+        home.iter().map(|b| b.model).collect::<Vec<_>>(),
+        original.iter().map(|b| b.model).collect::<Vec<_>>(),
+        "the preset the test started on still holds its chain"
     );
 }
