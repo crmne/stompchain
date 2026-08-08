@@ -17,9 +17,11 @@ pub mod extract;
 mod format;
 mod inspect;
 mod load;
+mod write;
 
 pub use format::Display;
 pub use inspect::{inspect, ChainContent, OutputTarget, Tone, ToneBlock};
+pub use write::{to_hlx, Written};
 
 /// Everything HX Edit knows about models and their parameters.
 pub struct Catalog {

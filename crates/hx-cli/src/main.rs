@@ -145,6 +145,11 @@ enum Cmd {
     /// Read an .hlx and show what the tone is - its blocks and what to play it
     /// through - touching no hardware.
     Inspect { file: std::path::PathBuf },
+    /// Convert a .hxpreset into a portable .hlx, touching no hardware.
+    ExportHlx {
+        input: std::path::PathBuf,
+        output: std::path::PathBuf,
+    },
     /// Rename a preset, by front-panel label (`03B`) or zero-based index (`7`).
     Rename {
         index: String,
@@ -179,6 +184,7 @@ fn main() -> Result<()> {
             dry_run: true,
         } => show_import(&file),
         Cmd::Inspect { file } => inspect_hlx(&file),
+        Cmd::ExportHlx { input, output } => export_hlx(&input, &output),
         Cmd::List => list_devices(),
         // Reject a malformed preset address before opening anything: failing
         // after a five-second connect to say "that is not a preset" is rude.
@@ -394,6 +400,7 @@ fn on_device(cmd: Cmd) -> Result<()> {
         Cmd::Decode { log } => decode_capture(&log),
         Cmd::Models { category, model } => browse_models(category, model),
         Cmd::Inspect { file } => inspect_hlx(&file),
+        Cmd::ExportHlx { input, output } => export_hlx(&input, &output),
     }
 }
 
@@ -951,6 +958,29 @@ fn inspect_hlx(file: &std::path::Path) -> Result<()> {
         println!("  (no blocks)");
     }
     for skipped in &tone.skipped {
+        eprintln!("  skipped: {skipped}");
+    }
+    Ok(())
+}
+
+/// Convert a .hxpreset file to a portable .hlx, touching no hardware. The name
+/// is not in the device document, so the file's own name stands in.
+fn export_hlx(input: &std::path::Path, output: &std::path::Path) -> Result<()> {
+    let catalog = hx_catalog::Catalog::load()
+        .context("writing an .hlx needs HX Edit's catalog to name models")?;
+    let bytes = std::fs::read(input).with_context(|| format!("reading {input:?}"))?;
+    let preset = hx_proto::preset::Preset::parse(&bytes)
+        .with_context(|| format!("{input:?} is not a readable .hxpreset"))?;
+    let name = input
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Untitled");
+
+    let written = hx_catalog::to_hlx(&preset, &catalog, name);
+    std::fs::write(output, written.to_pretty_string())
+        .with_context(|| format!("writing {output:?}"))?;
+    println!("wrote {}", output.display());
+    for skipped in &written.skipped {
         eprintln!("  skipped: {skipped}");
     }
     Ok(())
