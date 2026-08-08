@@ -1,0 +1,10 @@
+# frozen_string_literal: true
+
+source "https://rubygems.org"
+
+# For standalone builds of this gem (bundle exec rake compile). The Rails app
+# consumes it by path and brings its own bundle.
+gemspec
+
+gem "rake"
+gem "rake-compiler"

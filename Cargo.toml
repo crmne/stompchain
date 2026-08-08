@@ -6,6 +6,7 @@ members = [
     "crates/hx-cli",
     "crates/hx-catalog",
     "crates/hx-gui",
+    "crates/hx-ruby/ext/hx_ruby",
 ]
 
 [workspace.package]

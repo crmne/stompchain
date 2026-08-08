@@ -1,0 +1,13 @@
+# frozen_string_literal: true
+
+require "rake/extensiontask"
+
+GEMSPEC = Gem::Specification.load("hx_ruby.gemspec")
+
+# Builds ext/hx_ruby into lib/hx_ruby/hx_ruby.so via rb_sys/rake-compiler.
+Rake::ExtensionTask.new("hx_ruby", GEMSPEC) do |ext|
+  ext.lib_dir = "lib/hx_ruby"
+  ext.ext_dir = "ext/hx_ruby"
+end
+
+task default: :compile

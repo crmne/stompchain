@@ -1,0 +1,24 @@
+[package]
+name = "hx-ruby"
+description = "Ruby bindings over hx-catalog's preset inspector, so the tone browser reads .hlx files with the same code the desktop uses"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+# The name Ruby dlopen's and the `Init_hx_ruby` entry it calls; keep it in step
+# with the gem's `require "hx_ruby/hx_ruby"`.
+name = "hx_ruby"
+crate-type = ["cdylib"]
+
+[dependencies]
+# The whole point: parse presets with hx-catalog's inspector, never a Ruby
+# reimplementation. hx-proto is the preset model those facts ultimately describe
+# and is kept as a direct dependency so this binding can surface its types
+# without a manifest change.
+hx-catalog.workspace = true
+hx-proto.workspace = true
+magnus = "0.8"
+serde_json = "1"

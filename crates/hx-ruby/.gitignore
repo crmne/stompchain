@@ -1,0 +1,20 @@
+# Native build artifacts for the gem. The Rust sources under ext/ and the Ruby
+# under lib/ are what matter; everything the compile step produces is ignored.
+/tmp/
+/pkg/
+/target/
+/.rb-sys/
+Gemfile.lock
+
+# rake-compiler and extconf output.
+/ext/hx_ruby/target/
+/ext/hx_ruby/Makefile
+/ext/hx_ruby/*.o
+/ext/hx_ruby/*.so
+/ext/hx_ruby/*.bundle
+/ext/hx_ruby/mkmf.log
+
+# The compiled extension, dropped here by the build.
+/lib/hx_ruby/hx_ruby.so
+/lib/hx_ruby/hx_ruby.bundle
+/lib/hx_ruby/[0-9]*/
