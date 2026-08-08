@@ -13,7 +13,29 @@ mod session;
 mod theme;
 mod wav;
 
-pub use session::{spawn, Cmd, Evt};
+pub use session::{spawn, ApplyBlock, Cmd, Evt};
+
+/// A tone file opened for a look before anything touches the pedal. It is
+/// drawn by the same renderer as the loaded chain - one renderer, and the
+/// preview simply runs it in display mode - and it carries what Load needs.
+struct Preview {
+    name: String,
+    /// "Full rig, for FRFR or a PA" - what the tone is, in one line.
+    line: String,
+    chain: Vec<session::Block>,
+    layout: hx_proto::preset::Layout,
+    skipped: Vec<String>,
+    load: LoadKind,
+    /// Which preset Load writes into. Defaults to the one open now.
+    dest: i64,
+}
+
+/// How a previewed tone reaches the pedal: a byte-exact document is written
+/// whole; a symbolic tone clears the chain and builds it back block by block.
+enum LoadKind {
+    Document(Vec<u8>),
+    Steps(Vec<session::ApplyBlock>),
+}
 
 pub struct App {
     to_device: Sender<Cmd>,
@@ -121,6 +143,12 @@ pub struct App {
     config: config::Config,
     /// Show only favorited presets in the list.
     show_favorites_only: bool,
+
+    /// A tone file opened for a look, read and shown without touching the device.
+    preview: Option<Preview>,
+    /// Draw the chain without its editing affordances: no insert gaps, no
+    /// ghost branch, no drags. The preview runs the renderer this way.
+    display_only: bool,
     /// Editable tempo, so typing does not fight the device's value.
     tempo_draft: Option<String>,
     /// A parameter value being typed, by block position and parameter index,
@@ -207,6 +235,8 @@ impl App {
             setlist: 0,
             config: config::Config::load(),
             show_favorites_only: false,
+            preview: None,
+            display_only: false,
             tempo_draft: None,
             param_draft: None,
             snapshot_draft: None,
@@ -466,6 +496,7 @@ impl eframe::App for App {
         self.editor(ctx);
         self.insert_picker(ctx);
         self.device_window(ctx);
+        self.preview_window(ctx);
         // Over everything: the one step the app cannot work without.
         self.onboarding_modal(ctx);
     }
@@ -695,15 +726,18 @@ impl App {
                 self.send(Cmd::CopyPreset);
             }
         }
-        if small(ui, "IMPORT", live)
-            .on_hover_text("load a preset file over this one")
+        // Import always shows the tone first - drawn as its chain - and loads
+        // only when asked. One door for both file kinds; reading needs the
+        // catalog, not a device, so looking works offline too.
+        if small(ui, "IMPORT", self.catalog.is_some())
+            .on_hover_text("open a tone file; you see it before it goes to the pedal")
             .clicked()
         {
             if let Some(path) = rfd::FileDialog::new()
-                .add_filter("HX preset", &["hxpreset"])
+                .add_filter("HX tone", &["hxpreset", "hlx"])
                 .pick_file()
             {
-                self.import(&path);
+                self.open_tone_file(&path);
             }
         }
         if small(ui, "PASTE", live && self.clipboard.is_some())
@@ -724,17 +758,6 @@ impl App {
         {
             self.pending_copy = CopyTarget::Clipboard;
             self.send(Cmd::CopyPreset);
-        }
-    }
-
-    /// Read a preset file and write it over the loaded preset.
-    fn import(&mut self, path: &std::path::Path) {
-        match std::fs::read(path) {
-            Ok(blob) => {
-                self.note(format!("importing {}", path.display()));
-                self.send(Cmd::PastePreset(blob));
-            }
-            Err(e) => self.note(format!("could not read {}: {e}", path.display())),
         }
     }
 
@@ -1215,8 +1238,10 @@ impl App {
         for path in dropped {
             // A preset, an impulse response and an HX Edit installer are all
             // "a file you drop on the window"; the extension decides.
-            if path.extension().is_some_and(|e| e == "hxpreset") {
-                self.import(&path);
+            if path.extension().is_some_and(|e| {
+                e == "hxpreset" || e.eq_ignore_ascii_case("hlx")
+            }) {
+                self.open_tone_file(&path);
                 continue;
             }
             if path
@@ -1239,6 +1264,338 @@ impl App {
                 }
                 None => self.note("no free impulse response slot".into()),
             }
+        }
+    }
+
+    /// Open a tone file of either kind for a look. The extension decides the
+    /// reader; both end at the same preview window.
+    fn open_tone_file(&mut self, path: &std::path::Path) {
+        if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("hlx")) {
+            self.preview_hlx(path);
+        } else {
+            self.preview_hxpreset(path);
+        }
+    }
+
+    /// What a tone is, in one line: its makeup and what to play it through.
+    fn tone_line(tone: &hx_catalog::Tone) -> String {
+        let content = match tone.chain_content {
+            hx_catalog::ChainContent::FullRig => "Full rig",
+            hx_catalog::ChainContent::AmpAndCab => "Amp and cab",
+            hx_catalog::ChainContent::AmpOnly => "Amp, no cab",
+            hx_catalog::ChainContent::EffectsOnly => "Effects only",
+        };
+        let output = match tone.output_target_guess {
+            hx_catalog::OutputTarget::FrfrPa => "for FRFR or a PA",
+            hx_catalog::OutputTarget::GuitarCabOrDi => "for a real cab or the front of an amp",
+        };
+        format!("{content}, {output}")
+    }
+
+    /// Read a .hlx and show what it is, without touching the device.
+    fn preview_hlx(&mut self, path: &std::path::Path) {
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) => {
+                self.note(format!("could not read {}: {e}", path.display()));
+                return;
+            }
+        };
+        let Some(catalog) = self.catalog.as_ref() else {
+            self.note("reading a tone needs HX Edit's model data first".into());
+            return;
+        };
+        let json: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(j) => j,
+            Err(e) => {
+                self.note(format!("{} is not a readable .hlx: {e}", path.display()));
+                return;
+            }
+        };
+        let tone = hx_catalog::inspect(&json, catalog);
+
+        // The tone's blocks resolved to what applying them needs: parameter
+        // names become indexes, switches marked as such. A parameter the
+        // catalog cannot place is reported, not dropped.
+        let mut skipped = tone.skipped.clone();
+        let mut blocks = Vec::new();
+        for block in tone.blocks.iter().filter(|b| b.path == 0) {
+            let mut params = Vec::new();
+            for (name, value) in &block.params {
+                match catalog.param_index(block.model_number, name) {
+                    Some(index) => {
+                        let switch = catalog
+                            .param(block.model_number, index)
+                            .is_some_and(|p| p.kind == Kind::Switch);
+                        params.push((index as i64, *value, switch));
+                    }
+                    None => skipped.push(format!("{}: no parameter {name:?}", block.model_name)),
+                }
+            }
+            blocks.push(session::ApplyBlock {
+                model: block.model_number,
+                enabled: block.enabled,
+                params,
+            });
+        }
+        if tone.blocks.iter().any(|b| b.path == 1) {
+            skipped.push("the second signal path is shown but not loaded yet".into());
+        }
+
+        // A chain to draw: input, the blocks, output - one path per DSP,
+        // positions synthesised since a .hlx carries no slot array.
+        let mut chain = Vec::new();
+        let mut layout = hx_proto::preset::Layout::default();
+        let mut base = 0usize;
+        for path_no in [0u8, 1] {
+            let on_path: Vec<&hx_catalog::ToneBlock> =
+                tone.blocks.iter().filter(|b| b.path == path_no).collect();
+            if on_path.is_empty() {
+                continue;
+            }
+            let input = base;
+            chain.push(session::Block {
+                position: input as i64,
+                routing: Some(0),
+                kind: hx_proto::preset::Kind::Input,
+                model: 0,
+                enabled: true,
+                values: Vec::new(),
+                paired: None,
+                paired_values: Vec::new(),
+            });
+            let mut head = Vec::new();
+            for (i, block) in on_path.iter().enumerate() {
+                let position = base + 1 + i;
+                chain.push(session::Block {
+                    position: position as i64,
+                    routing: None,
+                    kind: hx_proto::preset::Kind::Block,
+                    model: block.model_number,
+                    enabled: block.enabled,
+                    values: Vec::new(),
+                    paired: None,
+                    paired_values: Vec::new(),
+                });
+                head.push(position);
+            }
+            let output = base + 1 + on_path.len();
+            chain.push(session::Block {
+                position: output as i64,
+                routing: Some(0),
+                kind: hx_proto::preset::Kind::Output,
+                model: 0,
+                enabled: true,
+                values: Vec::new(),
+                paired: None,
+                paired_values: Vec::new(),
+            });
+            layout.paths.push(hx_proto::preset::Path {
+                input: Some(input),
+                output: Some(output),
+                head,
+                ..Default::default()
+            });
+            base = output + 1;
+        }
+
+        self.note(format!("previewing {}", tone.name));
+        self.preview = Some(Preview {
+            name: tone.name.clone(),
+            line: Self::tone_line(&tone),
+            chain,
+            layout,
+            skipped,
+            load: LoadKind::Steps(blocks),
+            dest: self.preset_index.max(0),
+        });
+    }
+
+    /// Read a .hxpreset and show what it is, through the same codec the .hlx
+    /// path uses, so one window understands either. The original bytes are kept
+    /// so Load can write the document exactly.
+    fn preview_hxpreset(&mut self, path: &std::path::Path) {
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.note(format!("could not read {}: {e}", path.display()));
+                return;
+            }
+        };
+        let Some(catalog) = self.catalog.as_ref() else {
+            self.note("reading a tone needs HX Edit's model data first".into());
+            return;
+        };
+        let Some(preset) = hx_proto::preset::Preset::parse(&bytes) else {
+            self.note(format!("{} is not a readable preset", path.display()));
+            return;
+        };
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Untitled");
+        // The document knows its own chain and layout; the codec supplies the
+        // one-line reading of what the tone is.
+        let written = hx_catalog::to_hlx(&preset, catalog, name);
+        let mut tone = hx_catalog::inspect(&written.document, catalog);
+        tone.skipped.extend(written.skipped);
+        self.note(format!("previewing {name}"));
+        self.preview = Some(Preview {
+            name: name.to_owned(),
+            line: Self::tone_line(&tone),
+            chain: session::chain_of(&preset),
+            layout: preset.layout(),
+            skipped: tone.skipped,
+            load: LoadKind::Document(bytes),
+            dest: self.preset_index.max(0),
+        });
+    }
+
+    /// How wide a chain draws, by the renderer's own arithmetic: the space
+    /// before the input, a column per block, the junctions and the padded
+    /// stretch when a path splits, and the wire into the output.
+    fn chain_width(&self, layout: &hx_proto::preset::Layout) -> f32 {
+        let mut widest = 0.0f32;
+        for path in &layout.paths {
+            let mut width = 6.0;
+            if path.input.is_some() {
+                width += theme::BLOCK_WIDTH;
+            }
+            width += path.head.len() as f32 * theme::COLUMN;
+            if !path.lanes.is_empty() {
+                let stretch = path
+                    .lanes
+                    .iter()
+                    .map(|lane| self.lane_width(lane))
+                    .fold(0.0, f32::max);
+                width += 2.0 * theme::JUNCTION_WIDTH + stretch;
+            }
+            width += path.tail.len() as f32 * theme::COLUMN;
+            if path.output.is_some() {
+                width += theme::WIRE_WIDTH + theme::BLOCK_WIDTH;
+            }
+            widest = widest.max(width);
+        }
+        widest
+    }
+
+    /// A tone file, shown the way the app always shows a tone: by the chain
+    /// renderer itself, in display mode. Load asks where it should land, so
+    /// nothing is overwritten by surprise; nothing touches the device before.
+    fn preview_window(&mut self, ctx: &egui::Context) {
+        let Some(mut preview) = self.preview.take() else {
+            return;
+        };
+        let live = matches!(self.connection, Connection::Online);
+        // The window opens at the chain's full width, and narrower only when
+        // the screen cannot hold it - then the chain scrolls inside.
+        let natural = self.chain_width(&preview.layout) + 24.0;
+        let width = natural.min(ctx.screen_rect().width() - 48.0);
+        let mut open = true;
+        let mut load = false;
+        let mut cancel = false;
+
+        // The one renderer draws whatever chain and layout the app holds, so
+        // for the length of this window it holds the file's. The selection
+        // stays with the real chain: a previewed tone has nothing selected.
+        std::mem::swap(&mut self.chain, &mut preview.chain);
+        std::mem::swap(&mut self.layout, &mut preview.layout);
+        let selected = std::mem::replace(&mut self.selected, usize::MAX);
+        self.display_only = true;
+
+        let title = preview.name.clone();
+        egui::Window::new(title)
+            .open(&mut open)
+            .resizable(true)
+            .default_width(width)
+            .show(ctx, |ui| {
+                ui.label(RichText::new(&preview.line).color(theme::DIM));
+                ui.add_space(6.0);
+                egui::ScrollArea::horizontal()
+                    .id_salt("tone-preview")
+                    .show(ui, |ui| {
+                        let paths = self.layout.paths.clone();
+                        ui.vertical(|ui| {
+                            for (n, path) in paths.iter().enumerate() {
+                                if paths.len() > 1 {
+                                    ui.label(
+                                        RichText::new(format!("PATH {}", n + 1))
+                                            .small()
+                                            .color(theme::DIM),
+                                    );
+                                }
+                                let _ = self.path_row(ui, path);
+                            }
+                        });
+                    });
+                for skipped in &preview.skipped {
+                    ui.label(RichText::new(skipped).small().color(theme::DIM));
+                }
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Load into").color(theme::DIM));
+                    let total = if self.presets.is_empty() {
+                        self.preset_count as i64
+                    } else {
+                        self.presets.len() as i64
+                    };
+                    let labels: Vec<String> = (0..total)
+                        .map(|i| {
+                            let name =
+                                self.presets.get(i as usize).cloned().unwrap_or_default();
+                            format!("{}  {}", hx_proto::rpc::slot_label(i), name)
+                        })
+                        .collect();
+                    egui::ComboBox::from_id_salt("load-dest")
+                        .selected_text(
+                            labels
+                                .get(preview.dest as usize)
+                                .cloned()
+                                .unwrap_or_default(),
+                        )
+                        .show_ui(ui, |ui| {
+                            for (i, label) in labels.iter().enumerate() {
+                                ui.selectable_value(&mut preview.dest, i as i64, label);
+                            }
+                        });
+                    if ui
+                        .add_enabled(live, egui::Button::new("Load"))
+                        .on_hover_text("into that preset's edit buffer; Save keeps it")
+                        .clicked()
+                    {
+                        load = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+
+        self.display_only = false;
+        self.selected = selected;
+        std::mem::swap(&mut self.chain, &mut preview.chain);
+        std::mem::swap(&mut self.layout, &mut preview.layout);
+
+        if load {
+            self.loading = true;
+            self.note(format!(
+                "loading {} into {}",
+                preview.name,
+                hx_proto::rpc::slot_label(preview.dest)
+            ));
+            match preview.load {
+                LoadKind::Document(bytes) => self.send(Cmd::LoadDocument {
+                    dest: preview.dest,
+                    bytes,
+                }),
+                LoadKind::Steps(blocks) => self.send(Cmd::LoadSteps {
+                    dest: preview.dest,
+                    name: preview.name,
+                    blocks,
+                }),
+            }
+        } else if open && !cancel {
+            self.preview = Some(preview);
         }
     }
 
@@ -1445,6 +1802,9 @@ impl App {
     /// A fork can go anywhere between the input and the merge; a merge,
     /// anywhere between the fork and the output. Escape lets go.
     fn junction_drag(&mut self, ui: &mut egui::Ui, path: &hx_proto::preset::Path) {
+        if self.display_only {
+            return;
+        }
         let Some((slot, opening)) = self.dragging_junction else {
             return;
         };
@@ -1500,7 +1860,10 @@ impl App {
     /// Whether to offer a parallel branch: the path has somewhere to put one,
     /// something to parallel, and nothing on the branch yet.
     fn can_offer_branch(&self, path: &hx_proto::preset::Path) -> bool {
-        path.lanes.is_empty() && !path.head.is_empty() && self.free_on_branch(path).is_some()
+        !self.display_only
+            && path.lanes.is_empty()
+            && !path.head.is_empty()
+            && self.free_on_branch(path).is_some()
     }
 
     /// The dashed preview of the branch a click would create: it forks after
@@ -1558,6 +1921,9 @@ impl App {
     /// places with it, marked by outlining that block — the lanes are not
     /// contiguous, so between them a move is a trade. Escape lets go.
     fn block_drag(&mut self, ui: &mut egui::Ui) {
+        if self.display_only {
+            return;
+        }
         let Some(from) = self.dragging else {
             return;
         };
@@ -1663,6 +2029,11 @@ impl App {
     /// its model, which required knowing the slot topology — this puts the
     /// action where the pedal goes.
     fn insert_point(&mut self, ui: &mut egui::Ui, before: usize) {
+        // In display mode the gap is just wire: same width, nothing to click.
+        if self.display_only {
+            theme::wire_run(ui, theme::WIRE_WIDTH, theme::BLOCK_HEIGHT);
+            return;
+        }
         let response =
             theme::insert_point(ui, theme::BLOCK_HEIGHT).on_hover_text("add a block here");
         self.gap_rects.push((before, response.rect));
@@ -1699,9 +2070,11 @@ impl App {
             block.enabled,
             colour,
         );
-        self.block_rects.push((slot, hit.rect));
-        if hit.drag_started() {
-            self.dragging = Some(slot);
+        if !self.display_only {
+            self.block_rects.push((slot, hit.rect));
+            if hit.drag_started() {
+                self.dragging = Some(slot);
+            }
         }
         hit.clicked().then_some(i)
     }
@@ -1798,7 +2171,7 @@ impl App {
         let hit = theme::junction(ui, below, opening, i == self.selected || held, tag)
             .on_hover_cursor(egui::CursorIcon::Grab)
             .on_hover_text(format!("{label}\n{what}"));
-        if hit.drag_started() {
+        if hit.drag_started() && !self.display_only {
             self.dragging_junction = Some((slot, opening));
         }
         (hit.clicked().then_some(i), hit.rect)
@@ -3413,12 +3786,48 @@ mod tests {
         let _ = std::fs::remove_file(&file);
     }
 
+    /// Opening a .hlx lands in the preview - drawn, not loaded - and sends
+    /// nothing to the device until Load is pressed.
+    #[test]
+    fn a_tone_file_opens_as_a_preview_not_a_write() {
+        let (mut app, _events, cmds) = app();
+        if app.catalog.is_none() {
+            eprintln!("SKIPPED: HX Edit is not installed, so tones cannot be read");
+            return;
+        }
+        let json = serde_json::json!({
+            "data": { "meta": { "name": "Looked At" }, "tone": { "dsp0": {
+                "block0": { "@model": "HD2_DistScream808Mono", "@enabled": true }
+            }}}
+        });
+        let file = std::env::temp_dir().join("stompchain-preview-test.hlx");
+        std::fs::write(&file, json.to_string()).unwrap();
+
+        app.open_tone_file(&file);
+        let preview = app.preview.as_ref().expect("a preview should open");
+        assert_eq!(preview.name, "Looked At");
+        // Drawn as a real chain: the block plus its input and output.
+        assert_eq!(preview.chain.len(), 3);
+        assert_eq!(preview.layout.paths.len(), 1);
+        assert!(
+            matches!(&preview.load, LoadKind::Steps(blocks) if blocks.len() == 1),
+            "a .hlx loads by rebuilding its blocks"
+        );
+        assert!(
+            !cmds
+                .try_iter()
+                .any(|c| matches!(c, Cmd::PastePreset(_) | Cmd::LoadSteps { .. })),
+            "looking at a tone must not write it"
+        );
+        let _ = std::fs::remove_file(&file);
+    }
+
     /// Importing a file that is not a preset must not reach the device: it
     /// would be accepted and then read back as an empty slot.
     #[test]
     fn importing_a_missing_file_reports_instead_of_sending() {
         let (mut app, _events, cmds) = app();
-        app.import(std::path::Path::new("/nonexistent/nope.hxpreset"));
+        app.open_tone_file(std::path::Path::new("/nonexistent/nope.hxpreset"));
 
         // The app connects on startup, so the queue is not empty — but nothing
         // that would write to the device may be in it.

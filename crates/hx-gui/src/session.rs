@@ -56,6 +56,17 @@ pub enum Cmd {
     ClearIr(i64),
     SelectPreset(i64),
     SelectSetlist(i64),
+    /// Load a preset document into a chosen preset's edit buffer: put the
+    /// device there first, then write the bytes. Save is the user's call.
+    LoadDocument { dest: i64, bytes: Vec<u8> },
+    /// Load a symbolic tone into a chosen preset: clear the chain, then build
+    /// it back block by block. Clearing first is what makes room - probed on
+    /// hardware; a model set into a cleared slot is an ordinary edit.
+    LoadSteps {
+        dest: i64,
+        name: String,
+        blocks: Vec<ApplyBlock>,
+    },
     SelectBlock(i64),
     SetParam {
         block: i64,
@@ -182,6 +193,38 @@ pub struct Block {
     pub paired_values: Vec<f32>,
 }
 
+/// One block of a symbolic tone, resolved and ready to apply: the model
+/// number, whether it is engaged, and its parameter values by index.
+#[derive(Debug, Clone)]
+pub struct ApplyBlock {
+    pub model: u32,
+    pub enabled: bool,
+    /// `(parameter index, native value, is a switch)`.
+    pub params: Vec<(i64, f32, bool)>,
+}
+
+/// The drawable blocks of a preset document: everything the signal passes
+/// through, in slot order. Shared by the worker's own view and the preview of
+/// a preset file, so a file is drawn by the same rules as the loaded chain.
+pub fn chain_of(preset: &hx_proto::Preset) -> Vec<Block> {
+    preset
+        .slots
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.kind != hx_proto::preset::Kind::Empty)
+        .map(|(position, slot)| Block {
+            position: position as i64,
+            routing: preset.routing(position),
+            kind: slot.kind,
+            model: slot.model.unwrap_or_default(),
+            enabled: slot.enabled,
+            values: slot.values.clone(),
+            paired: slot.paired,
+            paired_values: slot.paired_values.clone(),
+        })
+        .collect()
+}
+
 pub fn spawn() -> (Sender<Cmd>, Receiver<Evt>) {
     let (cmd_tx, cmd_rx) = mpsc::channel();
     let (evt_tx, evt_rx) = mpsc::channel();
@@ -304,6 +347,12 @@ impl Worker {
                     self.send(Evt::Presets(names));
                 }
             }
+            Cmd::LoadDocument { dest, bytes } => {
+                if self.go_to(dest) {
+                    self.paste(&bytes);
+                }
+            }
+            Cmd::LoadSteps { dest, name, blocks } => self.load_steps(dest, &name, &blocks),
             Cmd::SelectBlock(block) => {
                 self.run_on_device(|d| d.select_block(block));
             }
@@ -797,6 +846,135 @@ impl Worker {
         }
     }
 
+    /// Put the device on `dest` so a load lands there, not over the open
+    /// preset. A no-op when it is already the one loaded.
+    fn go_to(&mut self, dest: i64) -> bool {
+        let current = self
+            .device
+            .as_mut()
+            .and_then(|d| d.preset_info().ok())
+            .map(|(_, index, _)| index);
+        if current == Some(dest) {
+            return true;
+        }
+        let setlist = self.setlist;
+        if !self.run_on_device(|d| d.select_preset(setlist, dest)) {
+            return false;
+        }
+        // The history belongs to the preset it was recorded on.
+        self.forget_history();
+        self.dirty = false;
+        true
+    }
+
+    /// Load a symbolic tone: clear the chain, then build it back block by
+    /// block. The recipe is hardware-proven: clearing first is what makes
+    /// room, and a model set into a cleared slot is an ordinary edit. One
+    /// history step covers the whole load, so undo puts the chain back.
+    fn load_steps(&mut self, dest: i64, name: &str, blocks: &[ApplyBlock]) {
+        if !self.go_to(dest) {
+            return;
+        }
+        let recorded = self.record_history();
+        match self.apply_steps(blocks) {
+            Ok(()) => {
+                self.dirty = true;
+                self.send(Evt::Activity(format!("loaded {name}; Save keeps it")));
+                self.reload();
+            }
+            Err(why) => {
+                self.send(Evt::Failed(why));
+                if recorded {
+                    // Put the chain back the way it was.
+                    self.step_history(true);
+                }
+            }
+        }
+    }
+
+    /// Clear every block, then set each of the tone's blocks into the run of
+    /// slots after the endpoints, with its parameters and bypass state.
+    fn apply_steps(&mut self, blocks: &[ApplyBlock]) -> Result<(), String> {
+        use hx_proto::msgpack::Value;
+
+        let preset = self
+            .read_settled()
+            .ok_or("the device stopped answering")?;
+        for (position, slot) in preset.slots.iter().enumerate() {
+            if slot.kind == hx_proto::preset::Kind::Block && slot.model.is_some() {
+                let p = position as i64;
+                if !self.run_on_device(|d| d.clear_block(p)) {
+                    return Err(format!("could not clear block {position}"));
+                }
+            }
+        }
+
+        // The clears are writes the device commits at its own pace, and a
+        // request that lands mid-commit is refused. Reading the preset back
+        // is the barrier that proves it is ready for more.
+        let _ = self.read_settled();
+
+        // The block run follows the input and ends at the output - probed on
+        // hardware: an HX Stomp carries its input at slot 0, blocks across
+        // slots 1 to 8, and the output after them.
+        let layout = preset.layout();
+        let path = layout.paths.first().ok_or("this preset has no signal path")?;
+        let base = path.input.map(|input| input + 1).unwrap_or(1);
+        let ceiling = path.output.unwrap_or(preset.slots.len());
+
+        for (i, block) in blocks.iter().enumerate() {
+            let position = (base + i) as i64;
+            if base + i >= ceiling {
+                return Err(format!(
+                    "this tone has {} blocks; this device fits {i}",
+                    blocks.len()
+                ));
+            }
+            // A refusal here is usually pacing, not a verdict - the device is
+            // still committing the previous edit. Ask quietly, settle, and
+            // only a second refusal counts.
+            let model = block.model;
+            let placed = self.quietly(|d| d.set_model(position, model)) || {
+                let _ = self.read_settled();
+                self.run_on_device(|d| d.set_model(position, model))
+            };
+            if !placed {
+                return Err(format!(
+                    "this tone has {} blocks; this device took {i}",
+                    blocks.len()
+                ));
+            }
+            for (index, value, switch) in &block.params {
+                let wire = if *switch {
+                    Value::Bool(*value >= 0.5)
+                } else {
+                    Value::F32(*value)
+                };
+                // A parameter the device declines is a detail; the block is
+                // already right, so keep going rather than tearing down.
+                let (index, wire) = (*index, wire.clone());
+                if !self.quietly(|d| d.set_param(position, index, wire.clone())) {
+                    let _ = self.read_settled();
+                    let _ = self.quietly(|d| d.set_param(position, index, wire));
+                }
+            }
+            if !block.enabled && !self.quietly(|d| d.set_enabled(position, false)) {
+                let _ = self.read_settled();
+                let _ = self.quietly(|d| d.set_enabled(position, false));
+            }
+        }
+        Ok(())
+    }
+
+    /// Ask the device without reporting a refusal: for requests that will be
+    /// retried, where the first no is pacing rather than an answer.
+    fn quietly<T>(
+        &mut self,
+        f: impl FnOnce(&mut hx_usb::Session) -> hx_usb::Result<T>,
+    ) -> bool {
+        self.device.as_mut().is_some_and(|d| f(d).is_ok())
+    }
+
     /// Write a whole preset document over the loaded one.
     ///
     /// The bytes are parsed first. A malformed document is accepted by the
@@ -868,22 +1046,7 @@ impl Worker {
         // Everything the signal passes through, not just the effects: HX Edit
         // draws the input, output and any split/join, and a chain without them
         // reads as though it starts nowhere.
-        let chain = preset
-            .slots
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| s.kind != hx_proto::preset::Kind::Empty)
-            .map(|(position, slot)| Block {
-                position: position as i64,
-                routing: preset.routing(position),
-                kind: slot.kind,
-                model: slot.model.unwrap_or_default(),
-                enabled: slot.enabled,
-                values: slot.values.clone(),
-                paired: slot.paired,
-                paired_values: slot.paired_values.clone(),
-            })
-            .collect();
+        let chain = chain_of(preset);
         self.snapshot_taken = false;
         self.send(Evt::Loaded {
             index: self.shown.0,
