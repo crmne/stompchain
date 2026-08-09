@@ -197,6 +197,21 @@ enum Cmd {
         /// Directory to write the .hlx files into; created if missing.
         output: std::path::PathBuf,
     },
+    /// Rebuild an HX Edit backup bundle (.hxb) into device documents.
+    ///
+    /// The other half of the bundle: a .hxb stores its presets as symbolic
+    /// JSON, so putting one back means rebuilding the bytes the pedal reads.
+    /// Writes one `NNN Name.hxpreset` per occupied slot rather than touching
+    /// the pedal, so a restore can be looked at before it is trusted.
+    ///
+    /// Needs a device attached — not to write to, but because a .hlx does not
+    /// describe everything a preset carries and the missing parts have to come
+    /// from a document the device itself wrote.
+    BundleToPresets {
+        file: std::path::PathBuf,
+        /// Directory to write the .hxpreset files into; created if missing.
+        output: std::path::PathBuf,
+    },
     /// Report a WAV impulse response and whether the device will accept it,
     /// touching no hardware.
     IrInfo { file: std::path::PathBuf },
@@ -453,6 +468,7 @@ fn on_device(cmd: Cmd) -> Result<()> {
         Cmd::Export { file } => export_to_file(s, &file),
         Cmd::Backup { file } => backup(s, &file),
         Cmd::Restore { file } => restore(s, &file),
+        Cmd::BundleToPresets { file, output } => bundle_to_presets(s, &file, &output),
         Cmd::Fetch { id } => fetch(s, id),
         Cmd::Watch => watch(s),
 
@@ -1189,6 +1205,55 @@ fn sanitise_bundle(name: &str) -> String {
 }
 
 /// Lift every occupied tone out of an HX Edit `.hxb` backup into `.hlx` files.
+/// Turn an `.hxb` bundle into device documents, ready to write to a pedal.
+///
+/// The half of `.hxb` that did not exist until the JSON-to-document converter
+/// did: a bundle stores its presets as HX Edit's symbolic JSON, so putting one
+/// back means rebuilding the bytes. This writes them out as files rather than
+/// to the device, so a restore can be inspected before it is trusted.
+///
+/// The template is a document the *device* wrote, because a `.hlx` does not
+/// describe everything a preset carries. Any preset off the same pedal will do;
+/// its own chain is emptied first.
+fn bundle_to_presets(
+    session: &mut hx_usb::Session,
+    file: &std::path::Path,
+    output: &std::path::Path,
+) -> Result<()> {
+    let catalog = hx_catalog::Catalog::load().context("this needs HX Edit's model data")?;
+    let bytes = std::fs::read(file).with_context(|| format!("reading {file:?}"))?;
+    let backup =
+        hx_catalog::read_backup(&bytes).with_context(|| format!("reading the backup {file:?}"))?;
+
+    // The template comes off the pedal: a .hlx does not describe everything a
+    // preset carries, and the missing parts have to be a real document's. Read
+    // only - nothing here writes to the device.
+    let template = session
+        .read_preset_at(0, 0)
+        .context("reading a template preset")?
+        .context("slot 01A is empty; a template needs a preset in it")?;
+
+    std::fs::create_dir_all(output).with_context(|| format!("creating {output:?}"))?;
+    let built = hx_catalog::documents_from_backup(&backup, &template, &catalog);
+    let mut written = 0;
+    for (index, entry) in built.iter().enumerate() {
+        let Some((name, document, report)) = entry else { continue };
+        for note in &report.skipped {
+            println!("  {index:>3}  {name}: {note}");
+        }
+        let path = output.join(format!("{index:03} {}.hxpreset", sanitise(name)));
+        std::fs::write(&path, document.encode()).with_context(|| format!("writing {path:?}"))?;
+        println!("  {index:>3}  {name}  ({} blocks)", report.blocks);
+        written += 1;
+    }
+    println!(
+        "\nbuilt {written} presets from \"{}\" into {}",
+        backup.name,
+        output.display()
+    );
+    Ok(())
+}
+
 fn extract_backup(file: &std::path::Path, output: &std::path::Path) -> Result<()> {
     let bytes = std::fs::read(file).with_context(|| format!("reading {file:?}"))?;
     let backup =

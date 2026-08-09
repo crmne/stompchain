@@ -148,3 +148,97 @@ fn a_rebuilt_document_survives_encoding_and_parsing_back() {
         }
     }
 }
+
+/// A whole `.hxb` goes back to documents: write a bundle from real presets,
+/// read it, rebuild each one, and the chains are the chains that went in.
+///
+/// This is the round trip that makes `.hxb` restorable rather than only
+/// writable, exercised end to end without a pedal.
+#[test]
+fn a_bundle_written_from_presets_rebuilds_into_the_same_chains() {
+    let Ok(catalog) = Catalog::load() else {
+        eprintln!("skipping: HX Edit's catalog is not installed");
+        return;
+    };
+    let all = fixtures();
+
+    // Every fixture becomes a slot in one bundle, in order.
+    let tones: Vec<(String, Option<serde_json::Value>)> = all
+        .iter()
+        .map(|(name, bytes)| {
+            let preset = Preset::parse(bytes).expect("parses");
+            let document = hx_catalog::to_hlx(&preset, &catalog, name).document;
+            // The bundle stores what lives under `data`, which is what
+            // `read_backup` hands back per preset.
+            let tone = document
+                .get("data")
+                .and_then(|d| d.get("tone"))
+                .cloned()
+                .expect("a tone");
+            (name.clone(), Some(tone))
+        })
+        .collect();
+
+    let bytes = hx_catalog::write_backup(&hx_catalog::NewBackup {
+        setlist: "PRESETS",
+        presets: &tones,
+        globals: serde_json::json!({}),
+        device: 0x0021_0006,
+        device_version: 0x0380_0000,
+        captured: 0,
+    });
+    let backup = hx_catalog::read_backup(&bytes).expect("the bundle we just wrote reads back");
+
+    // An empty preset from the fixtures is the template, the way a restore
+    // would use a document read off the pedal.
+    let (_, empty_bytes) = all
+        .iter()
+        .find(|(name, _)| name == "gen-01-empty")
+        .expect("an empty fixture");
+    let template = Preset::parse(empty_bytes).expect("parses");
+
+    let rebuilt = hx_catalog::documents_from_backup(&backup, &template, &catalog);
+    let mut checked = 0;
+    for (name, original_bytes) in &all {
+        let original = Preset::parse(original_bytes).expect("parses");
+        let wanted: Vec<_> = original
+            .slots
+            .iter()
+            .filter(|s| s.kind == hx_proto::preset::Kind::Block && s.model.is_some())
+            .collect();
+        if wanted.is_empty() {
+            continue;
+        }
+        let Some(Some((_, document, built))) = rebuilt
+            .iter()
+            .position(|entry| {
+                entry
+                    .as_ref()
+                    .is_some_and(|(entry_name, _, _)| entry_name == name)
+            })
+            .map(|i| &rebuilt[i])
+        else {
+            panic!("{name}: not in the rebuilt bundle");
+        };
+        assert!(built.skipped.is_empty(), "{name}: skipped {:?}", built.skipped);
+
+        let got: Vec<_> = document
+            .slots
+            .iter()
+            .filter(|s| s.kind == hx_proto::preset::Kind::Block && s.model.is_some())
+            .collect();
+        assert_eq!(got.len(), wanted.len(), "{name}: block count");
+        for (i, (before, after)) in wanted.iter().zip(got.iter()).enumerate() {
+            assert_eq!(before.model, after.model, "{name} block {i}: model");
+            assert_eq!(before.enabled, after.enabled, "{name} block {i}: engaged");
+            assert_eq!(before.values, after.values, "{name} block {i}: values");
+        }
+        // And what comes out is a document the parser accepts.
+        assert!(
+            Preset::parse(&document.encode()).is_some(),
+            "{name}: the rebuilt document does not parse back"
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "no bundles were checked");
+}

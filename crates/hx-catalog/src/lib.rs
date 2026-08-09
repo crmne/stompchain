@@ -27,7 +27,7 @@ pub use hxb::{
     Container, Favourite,
 };
 pub use inspect::{inspect, ChainContent, OutputTarget, Tone, ToneBlock};
-pub use build::{slots_from_hlx, Built};
+pub use build::{documents_from_backup, empty_the_chain, slots_from_hlx, Built};
 pub use write::{to_hlx, Written};
 
 /// Everything HX Edit knows about models and their parameters.

@@ -50,8 +50,9 @@ mod key {
     pub const COUNT: i64 = 2;
     pub const COUNT_2: i64 = 3;
     pub const ARRAY: i64 = 4;
-    /// The wire's own number for an occupied block.
+    /// The wire's own number for an occupied block, and for an empty slot.
     pub const BLOCK: i64 = 6;
+    pub const EMPTY: i64 = 8;
 }
 
 /// What could not be built, so a caller can say so rather than write a preset
@@ -131,6 +132,60 @@ pub fn slots_from_hlx(preset: &mut Preset, document: &Json, catalog: &Catalog) -
     }
 
     Built { blocks, skipped }
+}
+
+/// Turn a whole `.hxb` backup into documents ready for the pedal.
+///
+/// This is what makes `.hxb` a format stompchain can *restore* rather than only
+/// write. A bundle stores its presets as symbolic JSON — HX Edit's own choice —
+/// so putting one back has always needed this direction, and until now the only
+/// route was rebuilding a tone through parameter edits, which loses whatever
+/// the editor does not model.
+///
+/// `template` supplies everything a `.hlx` does not describe and must be a
+/// document the device wrote. Its chain is emptied first, so nothing of the
+/// template's own tone survives into the result.
+///
+/// Empty slots come back as `None`, so a caller can blank them rather than
+/// leaving whatever the pedal happens to hold there.
+pub fn documents_from_backup(
+    backup: &crate::Backup,
+    template: &Preset,
+    catalog: &Catalog,
+) -> Vec<Option<(String, Preset, Built)>> {
+    let bytes = template.encode();
+    backup
+        .presets
+        .iter()
+        .map(|entry| {
+            if entry.empty {
+                return None;
+            }
+            // A fresh copy per preset: each starts from the same template
+            // rather than from whatever the last one left behind.
+            let mut document = Preset::parse(&bytes)?;
+            empty_the_chain(&mut document);
+            let built = slots_from_hlx(&mut document, &entry.hlx, catalog);
+            Some((entry.name.clone(), document, built))
+        })
+        .collect()
+}
+
+/// Clear every block slot, leaving the endpoints and junctions alone.
+///
+/// A template is only a source of the parts a `.hlx` cannot describe; carrying
+/// its blocks through would put someone else's tone in the gaps of the one
+/// being restored.
+pub fn empty_the_chain(preset: &mut Preset) {
+    let empty = Value::Map(vec![
+        (Key::Int(key::KIND), Value::Int(key::EMPTY)),
+        (Key::Int(key::BODY), Value::Nil),
+    ]);
+    for position in 0..preset.slots.len() {
+        // `paste_slot` refuses anything that is not a block or already empty,
+        // which is exactly the protection wanted here.
+        let _ = preset.paste_slot(position, &empty);
+    }
 }
 
 /// One `.hlx` block node as the slot the device expects.
