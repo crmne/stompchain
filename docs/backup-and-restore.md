@@ -180,6 +180,7 @@ Three more finish what those left half-known, each one sitting:
 bash tools/hxsniff/capture.sh enums      # ids 198 and 200, and the enums of 14, 97-99
 bash tools/hxsniff/capture.sh partition  # which op-109 objects are presets/globals/IRs
 bash tools/hxsniff/capture.sh library    # favorites and the setlist buttons
+bash tools/hxsniff/capture.sh assign     # the switch settings on the assign page
 ```
 
 ### What the IR capture settled [confirmed]

@@ -384,8 +384,12 @@ Two real exchanges from our capture:
 Opcode 112 is now known — it lists favorites, and the session-setup call is
 just the editor populating that tab. Opcodes 0, 23, 76, 99 and 254 are still
 only observed during session setup, and need hardware that exposes them: the Command Center opcodes are
-inert on an HX Stomp, so a Helix Floor or LT is the prerequisite. Opcodes 6, 25, 59, 61, 68 and 78 come from the
-`kempline/helix_usb` project rather than our own captures. **[inferred]**
+inert on an HX Stomp, so a Helix Floor or LT is the prerequisite. Opcodes 6, 59, 61, 68 and 78 come from the
+`kempline/helix_usb` project rather than our own captures. **[inferred]** —
+`capture.sh assign` is the scenario aimed at 59, 61 and 68, which are the
+footswitch's label, LED colour and MIDI CC on the Bypass/Controller Assign
+page. Its "opcode 25, set footswitch function" is our own opcode 25 with
+`{118: 97|98|99}`: a device setting like any other, not a separate operation.
 
 Common argument keys: `107` setlist, `108` preset index, `109` name, `118` object
 id, `119` value, `98` block index, `92` snapshot index.

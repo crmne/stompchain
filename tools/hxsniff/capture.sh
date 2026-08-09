@@ -12,6 +12,7 @@
 #     bash tools/hxsniff/capture.sh enums      # the value lists we only sampled
 #     bash tools/hxsniff/capture.sh partition  # restore one kind of thing at a time
 #     bash tools/hxsniff/capture.sh library    # favorites, setlists, preset files
+#     bash tools/hxsniff/capture.sh assign     # the Bypass/Controller Assign page
 #
 # It builds the libusb interposer, launches an instrumented copy of HX Edit
 # (logging every USB transfer), walks you through the scenario one step at a
@@ -103,10 +104,10 @@ freeform() {
 }
 
 case "$SCENARIO" in
-backup | restore | ir | globals | enums | partition | library) ;;
+backup | restore | ir | globals | enums | partition | library | assign) ;;
 *)
     echo "!! unknown scenario '$SCENARIO'" >&2
-    echo "   try: backup restore ir globals enums partition library" >&2
+    echo "   try: backup restore ir globals enums partition library assign" >&2
     exit 2
     ;;
 esac
@@ -430,6 +431,58 @@ library)
     step "library/preset-import" "IMPORT the file you exported into that same empty slot."
     step "library/preset-restore" "Put that slot back to New Preset - rename it back, or" \
         "restore it from a backup afterwards. Skip with 's' if it was empty."
+    ;;
+
+# -----------------------------------------------------------------------------
+# The Bypass/Controller Assign page. Four of its opcodes are documented from our
+# own captures (33, 36, 37, 56, 57) but the switch's own settings are not, and
+# opcodes 59, 61 and 68 - footswitch label, LED colour, MIDI CC - are in
+# PROTOCOL.md on the strength of another project's reading rather than anything
+# we have seen on the wire. This is the page that would settle them.
+#
+# Everything here edits the buffer, so as long as the preset is not saved the
+# stored one is untouched; the last step throws the edits away.
+assign)
+    step "assign/connect" "Wait for HX Edit to finish connecting to the pedal."
+    step "assign/pick-preset" "Load a preset that already has bypass assignments -" \
+        "23A DIR:Relief has four. Note which, so you can put them back."
+    step "assign/open-tab" "Click BYPASS/CONTROLLER ASSIGN." \
+        "(Opening it reads every assignment: expect op33 and op36.)"
+    step "assign/select-row" "Click the first row in the Block/Parameter/Source table."
+
+    # The switch's own settings, none of which we have ever seen written.
+    step "assign/type-momentary" "Type: Latching -> Momentary."
+    step "assign/type-latching" "Type: back to Latching."
+    step "assign/midi-in-cc" "MIDI In: Off -> any CC number." \
+        "(Expect opcode 68, which is currently inferred, not observed.)"
+    step "assign/midi-in-off" "MIDI In: back to Off."
+    step "assign/led-colour" "Switch LED: Auto Color -> a named colour." \
+        "(Expect opcode 61, likewise inferred.)"
+    step "assign/led-auto" "Switch LED: back to Auto Color."
+    step "assign/customize-open" "Click the Customize row - it reads MULTIPLE (3) when" \
+        "several blocks share the switch. Open the label editor."
+    step "assign/customize-label" "Type a label - say  asgntest  - and confirm." \
+        "(Expect opcode 59, the last of the three inferred ones.)"
+    step "assign/customize-clear" "Clear the custom label again."
+
+    # The source list. Key 74's ordinals are mapped; what is not is what the
+    # editor sends when a bypass moves between switches, or is taken off.
+    for source in "Footswitch 2" "Footswitch 3" "MIDI CC" "None" "Footswitch 1"; do
+        step "assign/source-$(slug "$source")" "Source, on that same row: pick $source." \
+            "Ending on Footswitch 1 puts it back."
+    done
+
+    # A parameter under a controller, as opposed to a bypass under a switch.
+    step "assign/param-assign" "Back on EDIT, right-click a knob - a delay Time, say -" \
+        "and assign it to EXP 1."
+    step "assign/param-min" "On the assign page, set that parameter's Min to something" \
+        "distinctive - 10%."
+    step "assign/param-max" "Set its Max to 90%. (Keys 72 and 73, the ends of travel.)"
+    step "assign/param-snapshots" "Change that parameter's source to Snapshots."
+    step "assign/param-remove" "Remove the parameter assignment you just made."
+
+    step "assign/discard" "Reselect the preset from the list WITHOUT saving, so every" \
+        "edit here is thrown away and the pedal is left as it was found."
     ;;
 esac
 
