@@ -357,6 +357,11 @@ Two real exchanges from our capture:
 | 28 | clear block | `{98: block}` — **must be preceded by opcode 78 selecting that block** |
 | 37 | assign a controller | `{98: block, 95: target, 96: scope, 74: flags, 71: MIDI CC}` |
 | 9 | upload impulse response | `{112: slot, 113: checksum, 109: name, 114, 115, …}` then raw samples |
+| 12 | read an IR's descriptor | `{112: slot}` → the same map opcode 9 sends |
+| 11 | read an IR's samples | `{112: slot, 101: 2}` → a blob of 32-bit floats |
+| 10 | rename an impulse response | `{112: slot, 109: name}` |
+| 76 | read the global EQ | `{}` → `{63: enabled, 55: [11 coefficients]}` |
+| 77 | reset the global EQ | `{}` → the same shape as opcode 76 |
 | 6 | rename preset | `{107: setlist, 108: index, 109: name}` |
 | 61 | set footswitch LED colour | — |
 | 59 | set footswitch label | — |
