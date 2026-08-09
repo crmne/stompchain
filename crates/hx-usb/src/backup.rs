@@ -358,9 +358,157 @@ pub fn default_dir() -> Option<PathBuf> {
         })
 }
 
+/// Keep a dated copy of a bundle, and drop the oldest once there are more than
+/// `keep`.
+///
+/// The automatic backup is one directory that every connection overwrites, so
+/// there has only ever been one copy of the pedal on disk and it is always the
+/// pedal as it is *now*. That is the wrong shape for the failure it exists to
+/// survive: unpaced flash writes can corrupt a setlist past a power cycle, and
+/// noticing takes longer than reconnecting — by which time the only copy is the
+/// corrupted one.
+///
+/// So the current bundle is copied aside under its date before it is refreshed.
+/// Snapshots are cheap: a whole pedal is a few megabytes, and `keep` of them is
+/// a bounded cost rather than a directory that grows for ever.
+pub fn snapshot(dir: &Path, stamp: &str, keep: usize) -> Result<Option<PathBuf>> {
+    // Nothing to snapshot before the first backup has been taken.
+    if !dir.join("manifest.json").exists() {
+        return Ok(None);
+    }
+    let Some(parent) = dir.parent() else {
+        return Ok(None);
+    };
+    let history = parent.join("history");
+    std::fs::create_dir_all(&history).map_err(io("making room for a snapshot"))?;
+
+    let name = dir.file_stem().and_then(|s| s.to_str()).unwrap_or("backup");
+    let target = history.join(format!("{name} {stamp}.hxbundle"));
+    // A second snapshot in the same second is the same snapshot.
+    if !target.exists() {
+        copy_tree(dir, &target)?;
+    }
+    prune(&history, keep)?;
+    Ok(Some(target))
+}
+
+/// Copy a bundle directory. Bundles are one level deep — files, plus a
+/// `presets` and an `irs` directory — so this does not need to recurse further
+/// than that, and refusing to is what keeps it from ever walking somewhere
+/// surprising.
+fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+    std::fs::create_dir_all(to).map_err(io("making a snapshot"))?;
+    for entry in std::fs::read_dir(from).map_err(io("reading the bundle"))?.flatten() {
+        let source = entry.path();
+        let target = to.join(entry.file_name());
+        if source.is_dir() {
+            std::fs::create_dir_all(&target).map_err(io("making a snapshot"))?;
+            for inner in std::fs::read_dir(&source).map_err(io("reading the bundle"))?.flatten() {
+                if inner.path().is_file() {
+                    std::fs::copy(inner.path(), target.join(inner.file_name()))
+                        .map_err(io("copying a snapshot"))?;
+                }
+            }
+        } else {
+            std::fs::copy(&source, &target).map_err(io("copying a snapshot"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Drop the oldest snapshots until `keep` remain.
+///
+/// Ordered by name, which is ordered by date: the stamp is written most
+/// significant first precisely so that sorting it sorts by time, with no need
+/// to trust a filesystem's idea of when something was written.
+fn prune(history: &Path, keep: usize) -> Result<()> {
+    let mut bundles: Vec<PathBuf> = std::fs::read_dir(history)
+        .map_err(io("reading the snapshots"))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir() && p.extension().is_some_and(|e| e == "hxbundle"))
+        .collect();
+    if bundles.len() <= keep {
+        return Ok(());
+    }
+    bundles.sort();
+    let doomed = bundles.len() - keep;
+    for old in bundles.into_iter().take(doomed) {
+        // A snapshot that will not delete is not worth failing a backup over:
+        // the backup itself is the thing that matters.
+        let _ = std::fs::remove_dir_all(old);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("stompchain-snap-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bundle.hxbundle/presets")).unwrap();
+        std::fs::write(dir.join("bundle.hxbundle/manifest.json"), b"{}").unwrap();
+        std::fs::write(dir.join("bundle.hxbundle/presets/000 One.hxpreset"), b"one").unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_snapshot_copies_the_whole_bundle() {
+        let dir = scratch("copies");
+        let bundle = dir.join("bundle.hxbundle");
+        let made = snapshot(&bundle, "2026-08-10 001500", 5).unwrap().unwrap();
+
+        assert!(made.join("manifest.json").exists());
+        assert_eq!(
+            std::fs::read(made.join("presets/000 One.hxpreset")).unwrap(),
+            b"one",
+            "the presets come with it"
+        );
+        // And the original is untouched.
+        assert!(bundle.join("manifest.json").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The point of the whole thing: an older copy survives a newer one, so a
+    /// corruption noticed late still has something to go back to.
+    #[test]
+    fn older_snapshots_survive_newer_ones_until_the_limit() {
+        let dir = scratch("prune");
+        let bundle = dir.join("bundle.hxbundle");
+        for stamp in ["2026-08-01 100000", "2026-08-02 100000", "2026-08-03 100000"] {
+            snapshot(&bundle, stamp, 3).unwrap();
+        }
+        let history = dir.join("history");
+        assert_eq!(std::fs::read_dir(&history).unwrap().count(), 3);
+
+        // A fourth pushes the oldest out, and only the oldest.
+        snapshot(&bundle, "2026-08-04 100000", 3).unwrap();
+        let mut left: Vec<String> = std::fs::read_dir(&history)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left.len(), 3);
+        assert!(!left[0].contains("2026-08-01"), "the oldest went: {left:?}");
+        assert!(left[2].contains("2026-08-04"), "the newest stayed: {left:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Nothing to copy before the first backup exists, and saying so is not an
+    /// error — it is the first run.
+    #[test]
+    fn there_is_nothing_to_snapshot_before_the_first_backup() {
+        let dir = std::env::temp_dir().join(format!("stompchain-snap-{}-empty", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bundle.hxbundle")).unwrap();
+        assert!(snapshot(&dir.join("bundle.hxbundle"), "2026-08-10 000000", 3)
+            .unwrap()
+            .is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn preset_files_sort_by_slot_and_keep_the_name() {

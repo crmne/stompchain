@@ -1334,6 +1334,17 @@ impl Worker {
     /// Read the whole pedal into a bundle directory.
     fn back_up(&mut self, dir: &std::path::Path) {
         let stamp = now();
+        // Put the copy that is there aside before overwriting it. Corruption is
+        // noticed later than it happens, and a single bundle that every
+        // connection refreshes is always the pedal as it is now — which is no
+        // use at all when what you need is the pedal as it was on Tuesday.
+        if Some(dir) == automatic_dir().as_deref() {
+            match hx_usb::backup::snapshot(dir, &datestamp(), KEEP_SNAPSHOTS) {
+                Ok(Some(_)) => {}
+                Ok(None) => {}
+                Err(e) => self.send(Evt::Activity(format!("could not keep a snapshot: {e}"))),
+            }
+        }
         let events = self.events.clone();
         let outcome = self.try_on_device(|d| {
             hx_usb::backup::capture(d, dir, stamp, |step| {
@@ -1506,6 +1517,48 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
+/// How many dated copies of the pedal to keep behind the current one.
+///
+/// A whole pedal is a few megabytes, so this is tens of megabytes at worst -
+/// against the alternative, which is having exactly one copy and it being the
+/// broken one.
+const KEEP_SNAPSHOTS: usize = 10;
+
+/// The current date and time, as a name that sorts by time.
+///
+/// Most significant first and no separators that a filesystem would object to,
+/// so ordering the snapshots by name orders them by age without trusting any
+/// filesystem's idea of when a directory was written.
+fn datestamp() -> String {
+    stamp_of(now())
+}
+
+/// The date maths, apart from the clock so it can be checked.
+///
+/// Days from the Unix epoch converted with the civil-from-days algorithm, which
+/// is exact and needs no calendar library for the one place this program has
+/// ever needed a date.
+fn stamp_of(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let time = secs % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}{:02}{:02}",
+        time / 3_600,
+        (time % 3_600) / 60,
+        time % 60
+    )
+}
+
 /// Where the automatic backup lives: one bundle, kept current.
 pub fn automatic_dir() -> Option<std::path::PathBuf> {
     hx_usb::backup::default_dir().map(|d| d.join("automatic.hxbundle"))
@@ -1546,4 +1599,37 @@ fn as_number(value: &hx_proto::msgpack::Value) -> Option<f32> {
         Value::F64(f) => *f as f32,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The snapshot names are the only dates this program writes, and they are
+    /// what a person reads when choosing which copy of their pedal to go back
+    /// to. Civil-from-days is easy to get subtly wrong, so it is pinned at the
+    /// points where it usually breaks: an epoch, a leap day, and a century that
+    /// is not a leap year.
+    #[test]
+    fn the_datestamp_is_a_real_date_that_sorts_by_time() {
+        assert_eq!(stamp_of(0), "1970-01-01 000000");
+        assert_eq!(stamp_of(86_399), "1970-01-01 235959");
+        assert_eq!(stamp_of(86_400), "1970-01-02 000000");
+        // 2000 was a leap year; 1900 was not, and 2100 will not be.
+        assert_eq!(stamp_of(951_782_400), "2000-02-29 000000");
+        assert_eq!(stamp_of(4_107_542_400), "2100-03-01 000000");
+        // The date this was written.
+        assert_eq!(stamp_of(1_786_060_800), "2026-08-07 000000");
+
+        // Sorting the names sorts them by time, which is what prunes the
+        // oldest snapshot rather than an arbitrary one.
+        let mut names = [
+            stamp_of(1_786_060_800),
+            stamp_of(0),
+            stamp_of(951_782_400),
+        ];
+        names.sort();
+        assert_eq!(names[0], stamp_of(0));
+        assert_eq!(names[2], stamp_of(1_786_060_800));
+    }
 }
