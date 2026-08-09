@@ -885,7 +885,7 @@ fn a_parameter_can_be_put_under_an_expression_pedal() {
     drop(preset);
 
     session
-        .assign_parameter(position as i64, 0, Source::Expression(1))
+        .assign_parameter(position as i64, 0, Some(Source::Expression(1)))
         .expect("assigning EXP 1");
 
     assert_healthy(&mut session, "an expression assignment");

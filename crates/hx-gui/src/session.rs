@@ -51,12 +51,26 @@ pub enum Cmd {
         switch: u8,
         on: bool,
     },
-    /// Put a parameter under a controller.
+    /// Put a parameter under a controller, or `None` to take it off one.
     AssignParameter {
         block: i64,
         param: i64,
-        source: hx_proto::rpc::Source,
+        source: Option<hx_proto::rpc::Source>,
+        /// How many parameters the block has, so the reply can be re-read
+        /// without the UI asking twice.
+        params: i64,
     },
+    /// Move one end of a controller's travel, normalised to 0.0-1.0.
+    SetAssignRange {
+        block: i64,
+        param: i64,
+        value: f32,
+        high_end: bool,
+    },
+    /// Read what controls each of a block's parameters. The count comes from
+    /// the caller: the device has no opcode that asks about a whole block, and
+    /// the UI already knows how many the model has.
+    ReadAssignments { block: i64, params: i64 },
     LoadIr {
         slot: i64,
         file: std::path::PathBuf,
@@ -238,6 +252,12 @@ pub enum Evt {
     /// The device's favourite blocks, as (index, name).
     Favourites(Vec<(i64, String)>),
     Setlists(Vec<String>),
+    /// What controls each of a block's parameters, for the ones that have
+    /// something. Parameters not listed have nothing on them.
+    Assignments {
+        block: i64,
+        found: Vec<(i64, hx_usb::Assignment)>,
+    },
     /// Every preset in the setlist, as (name, document bytes). An empty slot
     /// comes back as `None` so the setlist can record that it is empty rather
     /// than silently shortening.
@@ -602,13 +622,31 @@ impl Worker {
                 block,
                 param,
                 source,
+                params,
             } => {
                 self.snapshot();
                 if self.run_on_device(|d| d.assign_parameter(block, param, source)) {
                     self.dirty = true;
-                    self.send(Evt::Activity(format!("assigned to {}", source.label())));
+                    self.send(Evt::Activity(match source {
+                        Some(source) => format!("assigned to {}", source.label()),
+                        None => "assignment removed".to_owned(),
+                    }));
+                    self.report_assignments(block, params);
                 }
             }
+            Cmd::SetAssignRange {
+                block,
+                param,
+                value,
+                high_end,
+            } => {
+                // Dragging an end streams a write per intermediate value, the
+                // way the device's own editor does; no undo step per pixel.
+                if self.run_on_device(|d| d.set_assign_range(block, param, value, high_end)) {
+                    self.dirty = true;
+                }
+            }
+            Cmd::ReadAssignments { block, params } => self.report_assignments(block, params),
             Cmd::SetSetting { id, on } => {
                 if self.run_on_device(|d| d.set_object(id, hx_proto::msgpack::Value::Bool(on))) {
                     self.send(Evt::Activity(format!("setting {id} is now {on}")));
@@ -1253,6 +1291,26 @@ impl Worker {
         }
         self.reload();
         self.send(Evt::Activity(format!("wrote {written} presets to the pedal")));
+    }
+
+    /// Read every parameter's assignment for one block and report the lot.
+    ///
+    /// One read per parameter — there is no opcode that asks about a whole
+    /// block — so this runs when a block is selected rather than every frame.
+    /// A block has at most a couple of dozen parameters and each read is a
+    /// single round trip.
+    fn report_assignments(&mut self, block: i64, params: i64) {
+        let mut found = Vec::new();
+        for param in 0..params {
+            match self.try_on_device(|d| d.read_assignment(block, param)) {
+                Some(Some(assignment)) => found.push((param, assignment)),
+                // Nothing assigned, or the device declined to say: either way
+                // there is nothing to draw.
+                Some(None) => {}
+                None => return,
+            }
+        }
+        self.send(Evt::Assignments { block, found });
     }
 
     fn paste(&mut self, blob: &[u8]) {

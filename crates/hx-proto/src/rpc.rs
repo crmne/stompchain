@@ -148,6 +148,15 @@ pub mod op {
     pub const ASSIGN_CONTROLLER: i64 = 37;
     /// Read a parameter's controller assignment: `{98, 29, 26, 28}`.
     pub const READ_ASSIGNMENT: i64 = 36;
+    /// The low end of a controller's travel: `{98, 29, 26, 28, 119: value}`.
+    ///
+    /// Min and Max are opcodes of their own rather than keys on the assign
+    /// message — keys 72 and 73 are what a *read* returns, not what a write
+    /// takes. Dragging either end streams one write per intermediate value, the
+    /// way the global EQ does.
+    pub const ASSIGN_MIN_OP: i64 = 65;
+    /// The high end of a controller's travel. Same arguments as 65.
+    pub const ASSIGN_MAX_OP: i64 = 66;
     /// Assign a block's bypass to a footswitch: `{98: block, 102: switch}`.
     pub const ASSIGN_FOOTSWITCH: i64 = 56;
     /// Take a block's bypass off a footswitch. Same arguments as 56.
@@ -417,6 +426,10 @@ pub enum Source {
 }
 
 impl Source {
+    /// The ordinal for "nothing controls this". Removing an assignment is not
+    /// a separate opcode: it is opcode 37 with `{74: 0, 71: 0}`.
+    pub const NONE: i64 = 0;
+
     /// The ordinal the device expects under `key::ASSIGN_FLAGS`.
     pub fn ordinal(self) -> i64 {
         match self {

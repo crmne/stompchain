@@ -65,7 +65,7 @@ fn exercise(s: &mut Session) -> Summary {
         let _ = s.set_enabled(p, true);
         let _ = s.assign_bypass_footswitch(p, 1);
         let _ = s.unassign_bypass_footswitch(p, 1);
-        let _ = s.assign_parameter(p, 0, Source::Expression(1));
+        let _ = s.assign_parameter(p, 0, Some(Source::Expression(1)));
         let _ = s.assign_bypass_cc(p, 1);
         let _ = s.set_model(p, 100); // change the block; rebuilt below
         let _ = s.clear_block(p);

@@ -14,6 +14,18 @@ use hx_proto::{rpc, ChannelId, Preset};
 
 use crate::{checksum, Error, Result, Session};
 
+/// What controls a parameter, and over what part of its travel.
+///
+/// The ends are normalised: 0.0 is the parameter's own minimum and 1.0 its
+/// maximum, so an expression pedal set to sweep the middle third reads
+/// `min: 0.33, max: 0.66` whatever units the parameter is shown in.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Assignment {
+    pub source: rpc::Source,
+    pub min: f32,
+    pub max: f32,
+}
+
 impl Session {
     /// Every preset in a setlist, in order.
     pub fn presets(&mut self, setlist: i64) -> Result<Vec<String>> {
@@ -611,7 +623,22 @@ impl Session {
     /// source menu, which is how those custom-drawn dropdowns can be driven at
     /// all: they ignore synthetic clicks. The ordinal under key 74 is the
     /// source, keys 72 and 73 the ends of its travel.
-    pub fn assign_parameter(&mut self, block: i64, param: i64, source: rpc::Source) -> Result<()> {
+    /// `None` takes the assignment off.
+    ///
+    /// Key 71 is not the constant it looks like: it is the assignment's on
+    /// switch, `4` when one is made and `0` when it is removed, and removing
+    /// sends `{74: 0, 71: 0}` through this same opcode rather than one of its
+    /// own.
+    pub fn assign_parameter(
+        &mut self,
+        block: i64,
+        param: i64,
+        source: Option<rpc::Source>,
+    ) -> Result<()> {
+        let (flags, kind) = match source {
+            Some(source) => (source.ordinal(), 4),
+            None => (rpc::Source::NONE, 0),
+        };
         self.command(
             ChannelId::DATA,
             rpc::op::ASSIGN_CONTROLLER,
@@ -620,11 +647,73 @@ impl Session {
                 rpc::key::PATH => Value::Int(0),
                 rpc::key::PARAM_INDEX => Value::Int(param),
                 rpc::key::COMMIT => Value::Bool(true),
-                rpc::key::ASSIGN_FLAGS => Value::Int(source.ordinal()),
-                rpc::key::ASSIGN_KIND => Value::Int(4),
+                rpc::key::ASSIGN_FLAGS => Value::Int(flags),
+                rpc::key::ASSIGN_KIND => Value::Int(kind),
                 rpc::key::ASSIGN_EXTRA => Value::Bool(false),
             },
         )
+    }
+
+    /// One end of a controller's travel, normalised to 0.0–1.0.
+    ///
+    /// Min and Max are their own opcodes; keys 72 and 73 are what a read
+    /// returns, not what a write takes.
+    pub fn set_assign_range(
+        &mut self,
+        block: i64,
+        param: i64,
+        value: f32,
+        high_end: bool,
+    ) -> Result<()> {
+        let op = if high_end {
+            rpc::op::ASSIGN_MAX_OP
+        } else {
+            rpc::op::ASSIGN_MIN_OP
+        };
+        self.command(
+            ChannelId::DATA,
+            op,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::PATH => Value::Int(0),
+                rpc::key::PARAM_INDEX => Value::Int(param),
+                rpc::key::COMMIT => Value::Bool(true),
+                rpc::key::VALUE => Value::F32(value),
+            },
+        )
+    }
+
+    /// What controls a parameter now, and over what travel.
+    ///
+    /// `None` for a parameter nothing controls — which the device reports as
+    /// source ordinal 0, the same "None" the assign page offers.
+    pub fn read_assignment(&mut self, block: i64, param: i64) -> Result<Option<Assignment>> {
+        let reply = self.request(
+            ChannelId::DATA,
+            rpc::op::READ_ASSIGNMENT,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::COMMIT => Value::Bool(true),
+                rpc::key::PATH => Value::Int(0),
+                rpc::key::PARAM_INDEX => Value::Int(param),
+            },
+        )?;
+        let ordinal = reply
+            .get(rpc::key::ASSIGN_FLAGS)
+            .and_then(|v| v.as_i64())
+            .unwrap_or(rpc::Source::NONE);
+        // Ordinal 0 is None, and `from_ordinal` says so by answering nothing.
+        let Some(source) = rpc::Source::from_ordinal(ordinal) else {
+            return Ok(None);
+        };
+        let end = |key: i64, fallback: f32| {
+            reply.get(key).and_then(|v| v.as_f32()).unwrap_or(fallback)
+        };
+        Ok(Some(Assignment {
+            source,
+            min: end(rpc::key::ASSIGN_MIN, 0.0),
+            max: end(rpc::key::ASSIGN_MAX, 1.0),
+        }))
     }
 
     /// Make a footswitch toggle a block in and out.

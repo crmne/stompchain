@@ -206,6 +206,13 @@ pub struct App {
     snapshot_draft: Option<(usize, String)>,
     /// Which MIDI CC the "assign bypass" control offers.
     assign_cc: i64,
+    /// What controls each parameter of the selected block, by parameter index.
+    /// Read when a block is selected; empty means nothing is assigned, or that
+    /// the answer has not come back yet.
+    assignments: std::collections::BTreeMap<i64, hx_usb::Assignment>,
+    /// Which block `assignments` describes, so a stale answer for the block you
+    /// just left is not drawn over the one you are looking at.
+    assignments_for: i64,
     /// Editable copy of the preset name, so typing does not fight the device.
     /// The preset being renamed - its slot index and the draft name. Drives the
     /// inline field on both the loaded title and any right-clicked list row.
@@ -370,6 +377,8 @@ impl App {
             param_draft: None,
             snapshot_draft: None,
             assign_cc: 1,
+            assignments: Default::default(),
+            assignments_for: -1,
             renaming: None,
             log: Vec::new(),
             show_activity: false,
@@ -497,6 +506,9 @@ impl App {
                             .unwrap_or(0);
                     }
                     self.selected = self.selected.min(self.chain.len().saturating_sub(1));
+                    // A different preset means different assignments, and the
+                    // ones on screen belong to the preset that just left.
+                    self.read_assignments();
                     self.browsing = None;
                     self.renaming = None;
                     self.tempo_draft = None;
@@ -536,6 +548,10 @@ impl App {
                 Ok(Evt::Favourites(list)) => self.favourites = list,
                 Ok(Evt::Setlists(names)) => self.setlists = names,
                 Ok(Evt::CapturedSetlist(slots)) => self.keep_setlist(slots),
+                Ok(Evt::Assignments { block, found }) => {
+                    self.assignments_for = block;
+                    self.assignments = found.into_iter().collect();
+                }
                 Ok(Evt::Activity(line)) => self.note(line),
                 Ok(Evt::Failed(e)) => {
                     self.status = e.clone();
@@ -2654,6 +2670,37 @@ impl App {
         }
     }
 
+    /// Ask what controls the selected block's parameters.
+    ///
+    /// One read per parameter and no opcode that asks about a whole block, so
+    /// this runs when the selection changes rather than on a timer. The answer
+    /// clears first: showing the previous block's assignments against this
+    /// block's knobs would be worse than showing none.
+    fn read_assignments(&mut self) {
+        self.assignments.clear();
+        self.assignments_for = -1;
+        if !matches!(self.connection, Connection::Online) {
+            return;
+        }
+        let Some(block) = self.chain.get(self.selected) else {
+            return;
+        };
+        if !self.is_effect(block) {
+            return;
+        }
+        let params = self
+            .slot_model(block)
+            .and_then(|model| self.catalog.as_ref().map(|c| c.ordered_params(model).len()))
+            .unwrap_or(0) as i64;
+        if params == 0 {
+            return;
+        }
+        self.send(Cmd::ReadAssignments {
+            block: block.position,
+            params,
+        });
+    }
+
     /// Whether every value the EQ panel drives has actually been read off the
     /// device. Until it has, the panel shows nothing and touches nothing.
     fn eq_settings_known(&self) -> bool {
@@ -3559,6 +3606,8 @@ impl App {
                     // trip, and clicking through a chain quickly wedged it.
                     self.selected = i;
                     self.browsing = None;
+                    self.browsing_shelf = None;
+                    self.read_assignments();
                 }
             });
     }
@@ -4741,7 +4790,9 @@ impl App {
         };
 
         let mut edit = None;
-        let mut assign: Option<(i64, hx_proto::rpc::Source)> = None;
+        let mut assign: Option<(i64, Option<hx_proto::rpc::Source>)> = None;
+        // Which end of a controller's travel moved, if either.
+        let mut range: Option<(i64, f32, bool)> = None;
         // The pedal, at a size worth looking at. This is the thing being
         // worked on, so it gets the room; the shelf next door is deliberately
         // smaller.
@@ -4761,6 +4812,9 @@ impl App {
         // An input's list starts with `@input`, which carries no value, and
         // using it directly shifted every knob by one.
         let params = catalog.ordered_params(model);
+        // The device is asked about this many when a block is selected, and
+        // told this many when one changes, so both sides agree on the range.
+        let parameter_count = params.len() as i64;
 
         // Knobs sit in rows under the pedal like the face of one, every row
         // starting at the same left edge so the columns line up — a wrapped
@@ -4901,24 +4955,98 @@ impl App {
                                     }
                                 }
                             }
-                            let name = ui.label(RichText::new(&param.name).color(theme::DIM));
-                            // Right-click to put the knob under a pedal or
-                            // switch, which is where you are already looking
-                            // when you decide you want to sweep it with your
-                            // foot.
-                            name.context_menu(|ui| {
+                            // What controls this knob, if anything. Drawn as a
+                            // marker on the name rather than left to a
+                            // right-click nobody thinks to try: an assignment
+                            // you cannot see is an assignment you will be
+                            // surprised by on stage.
+                            let under = self
+                                .assignments
+                                .get(&(index as i64))
+                                .filter(|_| self.assignments_for == position)
+                                .copied();
+                            let label = match under {
+                                Some(_) => RichText::new(format!("• {}", param.name))
+                                    .color(theme::ACCENT),
+                                None => RichText::new(&param.name).color(theme::DIM),
+                            };
+                            let name = ui.add(
+                                egui::Label::new(label).sense(egui::Sense::click()),
+                            );
+                            let name = match under {
+                                Some(a) => name.on_hover_text(format!(
+                                    "{} controls this, over {:.0}% to {:.0}%\nclick to change",
+                                    a.source.label(),
+                                    a.min * 100.0,
+                                    a.max * 100.0
+                                )),
+                                None => name.on_hover_text(
+                                    "click to put this under a pedal or a switch",
+                                ),
+                            };
+                            // Left-click as well as right: the menu is the only
+                            // way to reach this, so it should not be hidden
+                            // behind the gesture people try second.
+                            if name.clicked() {
+                                ui.memory_mut(|m| m.toggle_popup(popup_id(position, index)));
+                            }
+                            let menu = |ui: &mut egui::Ui,
+                                        assign: &mut Option<(i64, Option<hx_proto::rpc::Source>)>| {
                                 ui.label(
                                     RichText::new(format!("Control {} with", param.name))
                                         .small()
                                         .color(theme::DIM),
                                 );
+                                if ui
+                                    .selectable_label(under.is_none(), "None")
+                                    .clicked()
+                                {
+                                    *assign = Some((index as i64, None));
+                                    ui.close_menu();
+                                }
                                 for source in hx_proto::rpc::Source::all() {
-                                    if ui.button(source.label()).clicked() {
-                                        assign = Some((index as i64, source));
+                                    let on = under.is_some_and(|a| a.source == source);
+                                    if ui.selectable_label(on, source.label()).clicked() {
+                                        *assign = Some((index as i64, Some(source)));
                                         ui.close_menu();
                                     }
                                 }
-                            });
+                            };
+                            name.context_menu(|ui| menu(ui, &mut assign));
+                            egui::popup::popup_below_widget(
+                                ui,
+                                popup_id(position, index),
+                                &name,
+                                egui::PopupCloseBehavior::CloseOnClick,
+                                |ui| {
+                                    ui.set_min_width(150.0);
+                                    menu(ui, &mut assign);
+                                    if let Some(a) = under {
+                                        ui.separator();
+                                        ui.label(
+                                            RichText::new("Travel")
+                                                .small()
+                                                .color(theme::DIM),
+                                        );
+                                        for (label, mut value, high) in
+                                            [("Min", a.min, false), ("Max", a.max, true)]
+                                        {
+                                            if ui
+                                                .add(
+                                                    egui::Slider::new(&mut value, 0.0..=1.0)
+                                                        .text(label)
+                                                        .custom_formatter(|v, _| {
+                                                            format!("{:.0}%", v * 100.0)
+                                                        }),
+                                                )
+                                                .changed()
+                                            {
+                                                range = Some((index as i64, value, high));
+                                            }
+                                        }
+                                    }
+                                },
+                            );
                             if changed {
                                 edit = Some((index as i64, current, param.kind == Kind::Switch));
                             }
@@ -4931,11 +5059,29 @@ impl App {
             self.param_draft = update;
         }
 
+        if let Some((param, value, high_end)) = range {
+            // Held locally too, so the slider follows the finger rather than
+            // waiting on a round trip and snapping back.
+            if let Some(a) = self.assignments.get_mut(&param) {
+                if high_end {
+                    a.max = value;
+                } else {
+                    a.min = value;
+                }
+            }
+            self.send(Cmd::SetAssignRange {
+                block: position,
+                param,
+                value,
+                high_end,
+            });
+        }
         if let Some((param, source)) = assign {
             self.edit(Cmd::AssignParameter {
                 block: position,
                 param,
                 source,
+                params: parameter_count,
             });
         }
         if let Some(to) = reroute {
@@ -5394,6 +5540,12 @@ fn eq_cut_group(
             .color(if off { theme::DIM } else { colour }),
     );
     write
+}
+
+/// The popup for one parameter's assignment menu. Keyed by block and
+/// parameter, so two knobs cannot share one open menu.
+fn popup_id(block: i64, param: usize) -> egui::Id {
+    egui::Id::new(("assign", block, param))
 }
 
 /// Make a preset name safe to use as a filename.
