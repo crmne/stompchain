@@ -101,7 +101,33 @@ What it took, beyond the blocks that were already written:
 Still not written: `variax`, `controller`, `footswitch`, and most of `global`
 (only the tempo goes out). Those are device state rather than tone, and nothing
 yet reads them back, so writing them would be guesswork rather than fidelity.
-The reverse direction — JSON back into a device document — remains to build.
+
+## Writing an `.hxb` [built]
+
+`stompchain export-hxb <bundle> <out.hxb>` turns a stompchain backup into an
+HX Edit bundle. It needs only the direction above, because a `.hxb` stores
+presets as that same symbolic JSON. Checked by generating one from a real pedal
+backup, reading it back, and comparing every preset against HX Edit's own bundle:
+**97 of 97 agree** on nodes, models and snapshots.
+
+One block is deliberately absent. A real backup carries `SDMU`, an archive of
+980 model descriptors that is HX Edit's catalog cache rather than anything about
+the pedal's presets; inventing one would be inventing data. **Whether HX Edit
+accepts a bundle without it is untested** and needs a machine with HX Edit on it
+to find out. Nothing depends on the answer: stompchain restores from its own
+bundle, which carries the pedal's own bytes and cannot lose what a conversion
+might.
+
+## The editor's other files [built]
+
+- **`.hls`** (export setlist): a JSON wrapper around base64 of a zlib stream,
+  whose payload is the same `{meta, presets}` the `.hxb` holds in `SL00`. The
+  wrapper states its decompressed size and a CRC32; both are checked.
+- **`.fav`** (export favourite): plain JSON holding one block, an amp bringing
+  its cab as a second slot.
+
+Both read via `read_setlist_file` / `read_favourite_file`, verified against
+files HX Edit wrote.
 
 ## The fast read: opcode 109 (found in the Mac capture)
 

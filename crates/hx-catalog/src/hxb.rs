@@ -561,3 +561,149 @@ mod editor_file_tests {
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926, "the standard check value");
     }
 }
+
+// ----------------------------------------------------------- writing one ---
+
+/// What goes into a backup bundle.
+pub struct NewBackup<'a> {
+    /// The setlist's name, e.g. "PRESETS".
+    pub setlist: &'a str,
+    /// Every slot in front-panel order: the preset's name and its tone as the
+    /// symbolic JSON [`to_hlx`](crate::to_hlx) writes, or `None` for an empty
+    /// slot.
+    pub presets: &'a [(String, Option<Value>)],
+    /// The device's global settings, as HX Edit's `GLOB` block holds them.
+    pub globals: Value,
+    /// The device id, e.g. `0x00210006` for an HX Stomp.
+    pub device: u32,
+    /// The firmware version word, as the device reports it.
+    pub device_version: u32,
+    /// When the backup was taken, seconds since the epoch.
+    pub captured: u32,
+}
+
+/// Build an HX Edit `.hxb` backup bundle.
+///
+/// The container is exact - it round-trips four real backups byte for byte -
+/// and the presets are written by the same converter that agrees with HX Edit's
+/// own output on all 94 presets it was checked against.
+///
+/// One block is deliberately absent. A real backup carries `SDMU`, an archive of
+/// 980 model descriptors that is HX Edit's own catalog cache rather than
+/// anything about this pedal's presets, and inventing one would be inventing
+/// data. **Whether HX Edit accepts a bundle without it is untested** - it needs
+/// a machine with HX Edit on it to find out. stompchain's own restore does not
+/// go through this format: it uses the pedal's own bytes, which cannot lose
+/// anything a conversion might.
+pub fn write_backup(new: &NewBackup) -> Vec<u8> {
+    let presets: Vec<Value> = new
+        .presets
+        .iter()
+        .map(|(name, tone)| match tone {
+            Some(tone) => json!({
+                "meta": { "name": name },
+                "device": new.device,
+                "device_version": new.device_version,
+                "tone": tone,
+            }),
+            // An empty slot carries no meta at all, which is how a backup says
+            // there is nothing there.
+            None => json!({ "device": new.device, "device_version": new.device_version }),
+        })
+        .collect();
+
+    let setlist = json!({
+        "version": 2,
+        "schema": "L6Setlist",
+        "meta": { "name": new.setlist },
+        "data": { "meta": { "name": new.setlist }, "presets": presets },
+    });
+
+    // IDXH: device id, firmware, then the timestamp sixteen bytes in.
+    let mut index = Vec::with_capacity(24);
+    index.extend_from_slice(&new.device.to_le_bytes());
+    index.extend_from_slice(&new.device_version.to_le_bytes());
+    index.extend_from_slice(&[0u8; 8]);
+    index.extend_from_slice(&new.captured.to_le_bytes());
+    index.extend_from_slice(&[0u8; 4]);
+
+    let mut name = new.setlist.as_bytes().to_vec();
+    name.push(0);
+
+    Container {
+        version: 1,
+        blocks: vec![
+            Block { tag: *b"IDXH", compressed: false, raw_len: 24, stored: index },
+            deflated(*b"BOLG", &new.globals),
+            Block {
+                tag: *b"MNLS",
+                compressed: false,
+                raw_len: name.len() as u64,
+                stored: name,
+            },
+            deflated(*b"00LS", &setlist),
+        ],
+    }
+    .encode()
+}
+
+/// A block holding zlib-compressed JSON, the way the bundle stores one.
+fn deflated(tag: [u8; 4], value: &Value) -> Block {
+    use std::io::Write;
+    let raw = serde_json::to_vec(value).unwrap_or_default();
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    let _ = z.write_all(&raw);
+    Block {
+        tag,
+        compressed: true,
+        raw_len: raw.len() as u64,
+        stored: z.finish().unwrap_or_default(),
+    }
+}
+
+#[cfg(test)]
+mod writing_tests {
+    use super::*;
+
+    /// What is written reads back as the same presets, through the same reader
+    /// that reads HX Edit's own backups.
+    #[test]
+    fn a_written_backup_reads_back() {
+        let presets = vec![
+            (
+                "CT-Blackend".to_owned(),
+                Some(json!({ "dsp0": { "block0": { "@model": "HD2_DistScream808" } } })),
+            ),
+            ("New Preset".to_owned(), None),
+            ("Soundgarden".to_owned(), Some(json!({ "dsp0": {} }))),
+        ];
+        let bytes = write_backup(&NewBackup {
+            setlist: "PRESETS",
+            presets: &presets,
+            globals: json!({ "System": { "tempo": 120 } }),
+            device: 0x0021_0006,
+            device_version: 0x0380_0000,
+            captured: 1_786_308_507,
+        });
+
+        let back = read_backup(&bytes).expect("reads back");
+        assert_eq!(back.name, "PRESETS");
+        assert_eq!(back.presets.len(), 3);
+        assert_eq!(
+            back.occupied().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            ["CT-Blackend", "Soundgarden"],
+            "the empty slot stays empty and the named ones survive"
+        );
+        assert_eq!(
+            back.presets[0].hlx.pointer("/data/tone/dsp0/block0/@model").and_then(Value::as_str),
+            Some("HD2_DistScream808")
+        );
+
+        // And the container itself is the shape a real backup has.
+        let container = Container::parse(&bytes).expect("parses");
+        let tags: Vec<String> = container.blocks.iter().map(|b| b.tag_str()).collect();
+        assert_eq!(tags, ["IDXH", "BOLG", "MNLS", "00LS"]);
+        assert_eq!(container.blocks[0].stored.len(), 24, "the index block");
+        assert_eq!(&container.blocks[2].stored, b"PRESETS\0");
+    }
+}

@@ -174,6 +174,19 @@ enum Cmd {
         input: std::path::PathBuf,
         output: std::path::PathBuf,
     },
+    /// Turn a stompchain backup into an HX Edit bundle (.hxb), touching no
+    /// hardware.
+    ///
+    /// The presets go out as HX Edit's own symbolic JSON, which is portable
+    /// across firmware in a way the pedal's own bytes are not. Whether HX Edit
+    /// itself accepts the result is untested - stompchain restores from its own
+    /// bundle, which cannot lose anything a conversion might.
+    ExportHxb {
+        /// A bundle directory written by `stompchain back-up`.
+        bundle: std::path::PathBuf,
+        /// Where to write the .hxb.
+        output: std::path::PathBuf,
+    },
     /// Lift every tone out of an HX Edit backup bundle (.hxb) into .hlx files,
     /// touching no hardware.
     ///
@@ -223,6 +236,7 @@ fn main() -> Result<()> {
         Cmd::Inspect { file } => inspect_hlx(&file),
         Cmd::ExportHlx { input, output } => export_hlx(&input, &output),
         Cmd::ExtractBackup { file, output } => extract_backup(&file, &output),
+        Cmd::ExportHxb { bundle, output } => export_hxb(&bundle, &output),
         Cmd::IrInfo { file } => ir_info(&file),
         Cmd::List => list_devices(),
         // Reject a malformed preset address before opening anything: failing
@@ -448,6 +462,7 @@ fn on_device(cmd: Cmd) -> Result<()> {
         Cmd::Inspect { file } => inspect_hlx(&file),
         Cmd::ExportHlx { input, output } => export_hlx(&input, &output),
         Cmd::ExtractBackup { file, output } => extract_backup(&file, &output),
+        Cmd::ExportHxb { bundle, output } => export_hxb(&bundle, &output),
         Cmd::IrInfo { file } => ir_info(&file),
     }
 }
@@ -1111,6 +1126,66 @@ fn export_hlx(input: &std::path::Path, output: &std::path::Path) -> Result<()> {
         eprintln!("  skipped: {skipped}");
     }
     Ok(())
+}
+
+/// Turn a stompchain bundle into an HX Edit `.hxb`.
+fn export_hxb(bundle: &std::path::Path, output: &std::path::Path) -> Result<()> {
+    let catalog = hx_catalog::Catalog::load()
+        .context("writing an .hxb needs HX Edit's catalog to name models")?;
+    let manifest: hx_usb::backup::Manifest = serde_json::from_slice(
+        &std::fs::read(bundle.join("manifest.json"))
+            .with_context(|| format!("reading {bundle:?}"))?,
+    )
+    .context("that directory is not a stompchain backup")?;
+
+    // Each slot: its name, and its tone as the symbolic JSON HX Edit stores.
+    let mut presets = Vec::with_capacity(manifest.presets.len());
+    for (index, name) in manifest.presets.iter().enumerate() {
+        let path = bundle
+            .join("presets")
+            .join(format!("{index:03} {}.hxpreset", sanitise_bundle(name)));
+        let tone = match std::fs::read(&path) {
+            Ok(bytes) => hx_proto::preset::Preset::parse(&bytes)
+                .map(|p| hx_catalog::to_hlx(&p, &catalog, name).document["data"]["tone"].clone()),
+            Err(_) => None,
+        };
+        presets.push((name.clone(), tone));
+    }
+
+    let globals = std::fs::read(bundle.join("globals.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    let bytes = hx_catalog::write_backup(&hx_catalog::NewBackup {
+        setlist: manifest.setlists.first().map(String::as_str).unwrap_or("PRESETS"),
+        presets: &presets,
+        globals,
+        device: 0x0021_0006,
+        device_version: 0x0380_0000,
+        captured: manifest.captured as u32,
+    });
+    std::fs::write(output, &bytes).with_context(|| format!("writing {output:?}"))?;
+
+    let kept = presets.iter().filter(|(_, t)| t.is_some()).count();
+    println!(
+        "wrote {} ({kept} presets, {} bytes)",
+        output.display(),
+        bytes.len()
+    );
+    println!("note: whether HX Edit accepts this is untested; stompchain restores from the bundle itself");
+    Ok(())
+}
+
+/// The same file naming `hx_usb::backup` writes with.
+fn sanitise_bundle(name: &str) -> String {
+    let cleaned: String = name
+        .trim()
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == ' ' { c } else { '_' })
+        .collect();
+    let cleaned = cleaned.trim().to_owned();
+    if cleaned.is_empty() { "untitled".to_owned() } else { cleaned }
 }
 
 /// Lift every occupied tone out of an HX Edit `.hxb` backup into `.hlx` files.
