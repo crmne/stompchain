@@ -130,6 +130,13 @@ pub enum Cmd {
         id: i64,
         on: bool,
     },
+    /// Read every global setting this program knows the name of.
+    ReadSettings,
+    /// Write one global setting, in whatever shape the device holds it.
+    WriteSetting {
+        id: i64,
+        value: f32,
+    },
     /// Read the loaded preset and hand back its bytes, for the clipboard or a
     /// file. The document is copied verbatim rather than rebuilt from what the
     /// UI shows, because a preset carries more than the UI models.
@@ -186,6 +193,9 @@ pub enum Evt {
     Settings {
         global_eq: bool,
     },
+    /// Every named global setting and its current value, as a number: a switch
+    /// reads 0 or 1, a choice its index, a number itself.
+    SettingValues(Vec<(i64, f32)>),
     /// The loaded preset's bytes, in answer to `Cmd::CopyPreset`.
     Copied {
         name: String,
@@ -563,6 +573,40 @@ impl Worker {
             Cmd::SetSetting { id, on } => {
                 if self.run_on_device(|d| d.set_object(id, hx_proto::msgpack::Value::Bool(on))) {
                     self.send(Evt::Activity(format!("setting {id} is now {on}")));
+                }
+            }
+            Cmd::ReadSettings => {
+                let mut values = Vec::new();
+                for setting in hx_proto::settings::SETTINGS {
+                    if let Some(v) = self.try_on_device(|d| d.object(setting.id)) {
+                        if let Some(number) = as_number(&v) {
+                            values.push((setting.id, number));
+                        }
+                    }
+                }
+                self.send(Evt::SettingValues(values));
+            }
+            Cmd::WriteSetting { id, value } => {
+                // The device refuses a value of the wrong type, so it goes back
+                // shaped like whatever it currently holds.
+                let Some(current) = self.try_on_device(|d| d.object(id)) else {
+                    return;
+                };
+                let shaped = match current {
+                    hx_proto::msgpack::Value::Bool(_) => {
+                        hx_proto::msgpack::Value::Bool(value >= 0.5)
+                    }
+                    hx_proto::msgpack::Value::F32(_) => hx_proto::msgpack::Value::F32(value),
+                    hx_proto::msgpack::Value::F64(_) => {
+                        hx_proto::msgpack::Value::F64(value as f64)
+                    }
+                    _ => hx_proto::msgpack::Value::Int(value.round() as i64),
+                };
+                if self.run_on_device(|d| d.set_object(id, shaped)) {
+                    let name = hx_proto::settings::setting(id)
+                        .map(|s| s.name)
+                        .unwrap_or("setting");
+                    self.send(Evt::Activity(format!("{name} is now {value}")));
                 }
             }
             Cmd::BackUp(dir) => self.back_up(&dir),
@@ -1256,5 +1300,19 @@ fn working(step: &hx_usb::backup::Step) -> Option<Evt> {
             what: String::new(),
             progress: 1.0,
         },
+    })
+}
+
+/// A device setting as a plain number, whatever shape it arrived in: a switch
+/// is 0 or 1, a choice its index, a number itself.
+fn as_number(value: &hx_proto::msgpack::Value) -> Option<f32> {
+    use hx_proto::msgpack::Value;
+    Some(match value {
+        Value::Bool(b) => *b as u8 as f32,
+        Value::Int(i) | Value::WideInt(i, _) => *i as f32,
+        Value::UInt(u) | Value::Wide(u, _) => *u as f32,
+        Value::F32(f) => *f,
+        Value::F64(f) => *f as f32,
+        _ => return None,
     })
 }

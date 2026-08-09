@@ -193,6 +193,8 @@ pub struct App {
     status: String,
     /// A backup or restore in flight: what it is doing, and how far along.
     working: Option<(String, f32)>,
+    /// Current value of each named global setting, by object id.
+    settings: std::collections::BTreeMap<i64, f32>,
     current_snapshot: usize,
 }
 
@@ -296,6 +298,7 @@ impl App {
             show_activity: false,
             status: "Looking for a device…".into(),
             working: None,
+            settings: Default::default(),
             current_snapshot: 0,
         };
         // Without the model data there is nothing to edit with, so the
@@ -422,6 +425,9 @@ impl App {
                     self.redo_depth = redo;
                 }
                 Ok(Evt::Settings { global_eq }) => self.global_eq = global_eq,
+                Ok(Evt::SettingValues(values)) => {
+                    self.settings = values.into_iter().collect();
+                }
                 Ok(Evt::Copied { name, blob }) => {
                     let size = blob.len();
                     match std::mem::replace(&mut self.pending_copy, CopyTarget::Clipboard) {
@@ -639,6 +645,9 @@ impl App {
                         .clicked()
                     {
                         self.show_device = !self.show_device;
+                        if self.show_device {
+                            self.send(Cmd::ReadSettings);
+                        }
                     }
                     if !self.firmware.is_empty() {
                         // Same size as the device name, so the two share a
@@ -1794,35 +1803,76 @@ impl App {
         self.show_device = open;
     }
 
-    /// The handful of global settings worth exposing by name.
+    /// The device's global settings, by name.
     ///
-    /// The namespace is 147 numbered objects with no names anywhere in HX
-    /// Edit's data, so naming them is a matter of having identified each one.
-    /// These are the ones that have been: guessing at the rest would be worse
-    /// than leaving them out.
+    /// The namespace is 154 numbered objects with no names anywhere in HX
+    /// Edit's data. The ones here were identified by watching HX Edit write
+    /// them, one control at a time - see `hx_proto::settings`. The rest are
+    /// reachable only from the pedal's own menu, so they are not shown rather
+    /// than shown as numbers nobody can act on.
     fn preferences(&mut self, ui: &mut egui::Ui) {
-        const GLOBAL_EQ_ENABLED: i64 = 203;
+        use hx_proto::settings::{self, Kind};
 
         if !matches!(self.connection, Connection::Online) {
             ui.label(RichText::new("connect to read the device's settings").color(theme::DIM));
             return;
         }
+        if self.settings.is_empty() {
+            ui.label(RichText::new("reading the device's settings…").color(theme::DIM));
+            return;
+        }
 
-        ui.horizontal(|ui| {
-            let mut on = self.global_eq;
-            if ui.checkbox(&mut on, "Global EQ").changed() {
-                self.global_eq = on;
-                self.send(Cmd::SetSetting {
-                    id: GLOBAL_EQ_ENABLED,
-                    on,
+        let mut write: Option<(i64, f32)> = None;
+        for group in settings::groups() {
+            ui.add_space(6.0);
+            ui.label(RichText::new(group.to_uppercase()).small().color(theme::DIM));
+            for setting in settings::SETTINGS.iter().filter(|s| s.group == group) {
+                let Some(&current) = self.settings.get(&setting.id) else {
+                    continue;
+                };
+                ui.horizontal(|ui| {
+                    ui.add_sized([120.0, 18.0], egui::Label::new(setting.name).truncate());
+                    match &setting.kind {
+                        Kind::Switch(off, on) => {
+                            let mut yes = current >= 0.5;
+                            let label = if yes { *on } else { *off };
+                            if ui.selectable_label(yes, label).clicked() {
+                                yes = !yes;
+                                write = Some((setting.id, yes as u8 as f32));
+                            }
+                        }
+                        Kind::Choice(options) => {
+                            let index = (current.round() as usize).min(options.len() - 1);
+                            egui::ComboBox::from_id_salt(setting.id)
+                                .selected_text(options[index])
+                                .show_ui(ui, |ui| {
+                                    for (i, option) in options.iter().enumerate() {
+                                        if ui.selectable_label(i == index, *option).clicked() {
+                                            write = Some((setting.id, i as f32));
+                                        }
+                                    }
+                                });
+                        }
+                        Kind::Number { min, max, unit } => {
+                            let mut value = current;
+                            let slider = egui::Slider::new(&mut value, *min..=*max)
+                                .suffix(*unit)
+                                .clamping(egui::SliderClamping::Always);
+                            if ui.add(slider).changed() {
+                                write = Some((setting.id, value));
+                            }
+                        }
+                    }
                 });
             }
-            ui.label(
-                RichText::new("applies to every preset, after the output")
-                    .small()
-                    .color(theme::DIM),
-            );
-        });
+        }
+
+        if let Some((id, value)) = write {
+            // Show it at once: the device is the truth, but waiting a round trip
+            // to redraw makes a knob feel like it did not take.
+            self.settings.insert(id, value);
+            self.send(Cmd::WriteSetting { id, value });
+        }
     }
 
     /// Start pulling model data out of an HX Edit installer, off the UI

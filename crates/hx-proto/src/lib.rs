@@ -35,6 +35,7 @@ pub mod frame;
 pub mod msgpack;
 pub mod preset;
 pub mod rpc;
+pub mod settings;
 
 pub use frame::{ChannelHeader, ChannelId, Frame};
 pub use msgpack::Value;
