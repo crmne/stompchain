@@ -164,6 +164,63 @@ pub mod op {
     pub const SELECT_BLOCK: i64 = 78;
     /// `{92: index}` — switch snapshot.
     pub const SELECT_SNAPSHOT: i64 = 88;
+
+    // ------------------------------------------------------ addressed slots ---
+    // The fast path, read off HX Edit's own backup, restore and library exports
+    // (see docs/backup-and-restore.md). Everything above works on the *loaded*
+    // preset; these name the slot, so a whole-pedal backup never loads anything
+    // and answers in about 50 ms a preset instead of the seconds a load costs.
+    /// `{107: setlist, 108: index, 101: 2}` — read any slot's document.
+    pub const FETCH_PRESET: i64 = 4;
+    /// `{107, 108, 110: document}` — write a document straight into a slot.
+    pub const WRITE_SLOT: i64 = 5;
+    /// `{107, 108, 109: name, 110: document}` — write a slot and name it, which
+    /// is what a paste or an import does.
+    pub const WRITE_SLOT_NAMED: i64 = 8;
+    /// `{107: setlist, 108: index}` — empty a slot.
+    pub const CLEAR_SLOT: i64 = 16;
+
+    // ------------------------------------------------------------ the store ---
+    /// Stream one object out of the device's object store:
+    /// `{64: id, 106: false}` to start, `{64: id, 106: true, 105: offset}` to
+    /// continue. HX Edit's backup walks 803 ids this way.
+    pub const FETCH_BLOB: i64 = 109;
+    /// The write inverse of [`FETCH_BLOB`], same argument shape.
+    pub const WRITE_BLOB: i64 = 111;
+
+    // ----------------------------------------------------------- the globals ---
+    /// Write the whole global-settings block as one msgpack blob. What a
+    /// "restore global settings only" sends, in a single message.
+    pub const WRITE_GLOBALS: i64 = 86;
+    /// Global EQ reset — answers with the same shape as [`GLOBAL_EQ`].
+    pub const GLOBAL_EQ_RESET: i64 = 77;
+
+    // --------------------------------------------------------------- the IRs ---
+    /// `{112: slot}` — an IR slot's descriptor: name, checksum and format, the
+    /// same argument map [`UPLOAD_IR`] sends.
+    pub const IR_DESCRIPTOR: i64 = 12;
+    /// `{112: slot, 101: 2}` — an IR slot's samples. Everything comes back
+    /// 48 kHz mono `f32`, always 2048 samples, whatever was uploaded.
+    pub const IR_SAMPLES: i64 = 11;
+    /// `{112: slot, 109: name}` — rename an IR slot.
+    pub const RENAME_IR: i64 = 10;
+
+    // ----------------------------------------------------------- favourites ---
+    // A favourite is a block with its settings, kept by the device so it can be
+    // dropped into any preset. Its own small family of opcodes, not object-store
+    // entries. Control channel.
+    /// List the favourites.
+    pub const LIST_FAVOURITES: i64 = 112;
+    /// `{98: block}` — read a block back in the shape a favourite is stored in.
+    pub const READ_AS_FAVOURITE: i64 = 45;
+    /// Read one favourite.
+    pub const FETCH_FAVOURITE: i64 = 113;
+    /// Write one favourite.
+    pub const WRITE_FAVOURITE: i64 = 114;
+    /// Empty a favourite slot.
+    pub const CLEAR_FAVOURITE: i64 = 116;
+    /// Rename a favourite.
+    pub const RENAME_FAVOURITE: i64 = 117;
 }
 
 /// Transaction ids start here on each channel and count up.

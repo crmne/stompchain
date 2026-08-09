@@ -913,28 +913,86 @@ impl Session {
             .ok_or_else(|| Error::Protocol("preset blob was not an l6-helix document".into()))
     }
 
-    /// Read a preset by slot, if the device will do it without loading it.
+    /// Read any preset by slot, without loading it.
     ///
-    /// [`read_preset`](Self::read_preset) with no argument returns the loaded
-    /// preset; this asks the same opcode for a specific slot. A backup that
-    /// could read any slot straight from flash would not have to load all 126
-    /// presets one at a time - the two-minute part of a full backup. Whether the
-    /// device honours the argument, and whether it leaves the loaded preset
-    /// alone, is what the `read_preset_at` probe test settles against hardware.
-    pub fn read_preset_at(&mut self, setlist: i64, index: i64) -> Result<Preset> {
+    /// [`read_preset`](Self::read_preset) returns whatever is loaded, and
+    /// loading each preset in turn is what makes a whole-pedal backup take two
+    /// minutes. This is the opcode HX Edit's own backup uses instead: it names
+    /// the slot, answers in about 20 ms, and leaves the loaded preset and the
+    /// player's sound alone.
+    ///
+    /// `None` is an empty slot, which the device answers with no document at
+    /// all. That is a state worth recording rather than skipping: restoring a
+    /// backup has to blank those slots to put the pedal back as it was.
+    ///
+    /// The bytes are not identical to loading the slot and reading it - a
+    /// loaded document carries the firmware build string a stored one does not,
+    /// which shifts every section offset - but the tone is the same, blocks,
+    /// values, bypasses, tempo and snapshots alike.
+    pub fn read_preset_at(&mut self, setlist: i64, index: i64) -> Result<Option<Preset>> {
         let v = self.request(
             ChannelId::DATA,
-            rpc::op::READ_PRESET,
+            rpc::op::FETCH_PRESET,
+            hx_proto::msgmap! {
+                rpc::key::SETLIST => Value::Int(setlist),
+                rpc::key::PRESET_INDEX => Value::Int(index),
+                rpc::key::ARGS => Value::Int(2),
+            },
+        )?;
+        let Some(blob) = v.as_raw() else {
+            return Ok(None);
+        };
+        Preset::parse(blob)
+            .map(Some)
+            .ok_or_else(|| Error::Protocol("preset blob was not an l6-helix document".into()))
+    }
+
+    /// Write a document straight into a slot, naming it.
+    ///
+    /// This is how HX Edit restores a backup and how it pastes or imports a
+    /// preset: the document goes to the slot in one message, with no edit
+    /// buffer and no separate save. It is a flash write, so it is paced like
+    /// every other one - see `settle_flash`.
+    pub fn write_preset_at(
+        &mut self,
+        setlist: i64,
+        index: i64,
+        name: &str,
+        preset: &Preset,
+    ) -> Result<()> {
+        // Normalised the same way `write_preset` does: an empty branch has to go
+        // out with its attach points zeroed or the document contradicts itself.
+        let mut settled = Preset::parse(&preset.encode())
+            .ok_or_else(|| Error::Protocol("the document to write does not re-parse".into()))?;
+        settled.settle_branches();
+
+        self.request(
+            ChannelId::DATA,
+            rpc::op::WRITE_SLOT_NAMED,
+            hx_proto::msgmap! {
+                rpc::key::SETLIST => Value::Int(setlist),
+                rpc::key::PRESET_INDEX => Value::Int(index),
+                rpc::key::NAME => Value::Str(name.to_owned()),
+                rpc::key::DOCUMENT => Value::Bin(settled.encode(), 2),
+            },
+        )?;
+        self.settle_flash();
+        Ok(())
+    }
+
+    /// Empty a slot, the way HX Edit's restore blanks the slots a backup holds
+    /// nothing for.
+    pub fn clear_preset_at(&mut self, setlist: i64, index: i64) -> Result<()> {
+        self.request(
+            ChannelId::DATA,
+            rpc::op::CLEAR_SLOT,
             hx_proto::msgmap! {
                 rpc::key::SETLIST => Value::Int(setlist),
                 rpc::key::PRESET_INDEX => Value::Int(index),
             },
         )?;
-        let blob = v
-            .as_raw()
-            .ok_or_else(|| Error::Protocol("preset response was not a blob".into()))?;
-        Preset::parse(blob)
-            .ok_or_else(|| Error::Protocol("preset blob was not an l6-helix document".into()))
+        self.settle_flash();
+        Ok(())
     }
 }
 

@@ -98,52 +98,99 @@ fn reading_repeatedly_is_safe() {
     assert_healthy(&mut session, "eight preset reads");
 }
 
-/// Probe: does READ_PRESET with a slot argument read that slot from flash
-/// without loading it? If so, a full backup is seconds, not two minutes.
+/// The fast read: any slot, the same tone as loading it, without loading it.
 ///
-/// Read-only: it selects a couple of presets to get a reference and puts the
-/// original back; it never saves. Reports what the device actually does and
-/// only *insists* that the loaded preset is untouched by the indexed read.
+/// This is what makes a whole-pedal backup quick. It is checked the only way
+/// that means anything - read a slot the fast way, then load that slot and read
+/// it the slow way, and demand the same tone - and it also insists the loaded
+/// preset never moves, because a backup must not change what the player hears.
 #[test]
 #[ignore = "needs an HX device"]
-fn read_preset_at_reads_a_slot_without_loading() {
+fn reading_a_slot_does_not_load_it() {
     let Some(mut s) = device() else { return };
-    let (setlist, loaded, name) = s.preset_info().expect("preset info");
+    let (setlist, loaded, _) = s.preset_info().expect("preset info");
     let target = if loaded == 0 { 5 } else { 0 };
 
-    // References the honest way: the loaded document, and the target's document
-    // via an actual load, then back to where we started.
-    let loaded_doc = s.read_preset().expect("read loaded").encode();
-    s.select_preset(setlist, target).expect("select target");
-    let target_doc = s.read_preset().expect("read target").encode();
-    s.select_preset(setlist, loaded).expect("select back");
+    // The fast way, from wherever we happen to be sitting.
+    let started = Instant::now();
+    let fast = s
+        .read_preset_at(setlist, target)
+        .expect("indexed read")
+        .expect("that slot holds a preset")
+        .encode();
+    let elapsed = started.elapsed();
     assert_eq!(
-        s.preset_info().expect("info").1,
+        s.preset_info().expect("info after").1,
         loaded,
-        "should be back on the original preset before probing"
+        "reading a slot must not change the loaded preset"
     );
 
-    // The probe itself.
-    match s.read_preset_at(setlist, target) {
-        Ok(p) => {
-            let got = p.encode();
-            let still = s.preset_info().expect("info after probe").1;
-            eprintln!(
-                "PROBE read_preset_at(slot {target}) while {loaded} {name:?} loaded: \
-                 {} bytes | ==target:{} | ==loaded:{} | loaded-still:{}",
-                got.len(),
-                got == target_doc,
-                got == loaded_doc,
-                still,
-            );
-            assert_eq!(
-                still, loaded,
-                "SAFETY: an indexed read must not change the loaded preset"
-            );
+    // The slow way, for comparison, then back to where the player was.
+    s.select_preset(setlist, target).expect("select target");
+    let slow = s.read_preset().expect("read target").encode();
+    s.select_preset(setlist, loaded).expect("select back");
+
+    // The two serialisations are not byte-identical - the loaded document
+    // carries the firmware build string the stored one does not, so every
+    // section offset shifts - but they must describe the same tone.
+    let chain = |bytes: &[u8]| {
+        let p = hx_proto::Preset::parse(bytes).expect("parses");
+        let slots: Vec<_> = p
+            .slots
+            .iter()
+            .map(|s| (s.kind, s.model, s.paired, s.enabled, s.values.clone()))
+            .collect();
+        (slots, p.tempo(), p.snapshots())
+    };
+    let (fast_slots, fast_tempo, fast_snaps) = chain(&fast);
+    let (slow_slots, slow_tempo, slow_snaps) = chain(&slow);
+    assert_eq!(fast_slots, slow_slots, "same blocks, models, values and bypass");
+    assert_eq!(fast_tempo, slow_tempo, "same tempo");
+    assert_eq!(fast_snaps, slow_snaps, "same snapshots");
+    eprintln!(
+        "slot {target} read in {elapsed:?} without loading it \
+         ({} bytes stored vs {} loaded, same tone)",
+        fast.len(),
+        slow.len()
+    );
+    assert_healthy(&mut s, "indexed read");
+}
+
+/// A whole setlist read the fast way, which is what a backup does.
+///
+/// Read-only, and the point is the wall clock: 126 presets used to mean 126
+/// loads and about two minutes.
+#[test]
+#[ignore = "needs an HX device"]
+fn reading_every_preset_is_quick() {
+    let Some(mut s) = device() else { return };
+    let (setlist, loaded, _) = s.preset_info().expect("preset info");
+    let names = s.presets(setlist).expect("preset names");
+
+    let started = Instant::now();
+    let (mut read, mut empty) = (0, 0);
+    for index in 0..names.len() as i64 {
+        match s
+            .read_preset_at(setlist, index)
+            .unwrap_or_else(|e| panic!("reading slot {index}: {e}"))
+        {
+            Some(_) => read += 1,
+            None => empty += 1,
         }
-        Err(e) => eprintln!("PROBE read_preset_at rejected by device: {e}"),
     }
-    assert_healthy(&mut s, "indexed read probe");
+    let elapsed = started.elapsed();
+    eprintln!("read {read} presets and {empty} empty slots in {elapsed:?}");
+
+    assert_eq!(
+        s.preset_info().expect("info after").1,
+        loaded,
+        "a whole-setlist read must leave the loaded preset alone"
+    );
+    assert!(
+        elapsed < Duration::from_secs(30),
+        "a full read should be quick, took {elapsed:?}"
+    );
+    assert_healthy(&mut s, "reading every preset");
 }
 
 /// Probe: does any LIST_PRESETS selector return preset bodies, not just names?

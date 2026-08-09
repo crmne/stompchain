@@ -312,7 +312,7 @@ impl Session {
     /// reading the result back, the way [`write_preset`](Self::write_preset)
     /// does, is stronger still and is the next step once the command transcript
     /// can be re-captured against hardware.
-    fn settle_flash(&self) {
+    pub(crate) fn settle_flash(&self) {
         std::thread::sleep(Duration::from_millis(750));
     }
 
