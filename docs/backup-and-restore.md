@@ -333,8 +333,21 @@ going back, so it costs nothing to run.
   no capture will ever name them.
 - **The op-111 blob framing.** The only thing standing between us and the
   object-store path — and op4/op5 may make it unnecessary.
-- **Favorites are their own opcodes**, not just object-store entries: op112
-  lists, op45 reads a block to save as one, op113 reads, op114 writes, op116
-  clears, op117 renames. A favorite exports as an 896-byte JSON `.fav`, a
-  setlist as a 62 KB `.hls` — both in `captures/library-exports/` alongside a
-  `.hlx`, so the three file formats can be decoded offline.
+- **Favorites are their own opcodes**, not just object-store entries.
+  **Implemented and verified on hardware** (`favourites`, `save_favourite`,
+  `rename_favourite`, `clear_favourite`), with the argument shapes read out of
+  `captures/mac-library-capture.log`:
+
+  ```
+  op112 {}                                  → [{118: index, 64: ?, 105: ?, 109: name}, …]
+  op119 {98: block, 118: index, 31: true, 109: name}   keep a block (control channel)
+  op113 {118: index}                        read one
+  op114 {118: index, 34: {…}, 31: true, 109: name}     write one whole
+  op117 {118: index, 109: name}             rename
+  op116 {118: index}                        forget
+  ```
+
+  op119 is the editor's own "save to favourites" and is the one worth sending:
+  it reads the block itself, so there is nothing to pass but where it is and
+  what to call it. A favorite exports as an 896-byte JSON `.fav`, a setlist as a
+  62 KB `.hls` — both in `captures/library-exports/`, still to be decoded.

@@ -161,6 +161,75 @@ impl Session {
         Ok(())
     }
 
+    /// The device's favourite blocks, as `(index, name)`.
+    ///
+    /// A favourite is a block kept with its settings so it can be dropped into
+    /// any preset - the editor's own shelf, living on the pedal rather than in
+    /// this program. Distinct from stompchain's favourite *presets*, which are
+    /// a local file.
+    pub fn favourites(&mut self) -> Result<Vec<(i64, String)>> {
+        let result = self.request(ChannelId::DATA, rpc::op::LIST_FAVOURITES, Value::Nil)?;
+        let Value::Array(entries) = result else {
+            return Ok(Vec::new());
+        };
+        Ok(entries
+            .iter()
+            .filter_map(|e| {
+                Some((
+                    e.get(rpc::key::OBJECT_ID)?.as_i64()?,
+                    e.get(rpc::key::NAME)?.as_str()?.to_owned(),
+                ))
+            })
+            .collect())
+    }
+
+    /// Keep a block as a favourite, under a name.
+    ///
+    /// `block` is a position in the loaded chain; `index` is which favourite
+    /// slot to put it in. This is the one message the editor sends when you
+    /// choose "save as favourite", and it reads the block itself - there is
+    /// nothing to send but where it is and what to call it.
+    pub fn save_favourite(&mut self, block: i64, index: i64, name: &str) -> Result<()> {
+        self.bootstrap()?;
+        self.command(
+            ChannelId::CONTROL,
+            rpc::op::SAVE_FAVOURITE,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::OBJECT_ID => Value::Int(index),
+                rpc::key::FAVOURITE_FLAG => Value::Bool(true),
+                rpc::key::NAME => Value::Str(name.to_owned()),
+            },
+        )?;
+        self.settle_flash();
+        Ok(())
+    }
+
+    /// Rename a favourite.
+    pub fn rename_favourite(&mut self, index: i64, name: &str) -> Result<()> {
+        self.command(
+            ChannelId::DATA,
+            rpc::op::RENAME_FAVOURITE,
+            hx_proto::msgmap! {
+                rpc::key::OBJECT_ID => Value::Int(index),
+                rpc::key::NAME => Value::Str(name.to_owned()),
+            },
+        )?;
+        self.settle_flash();
+        Ok(())
+    }
+
+    /// Forget a favourite.
+    pub fn clear_favourite(&mut self, index: i64) -> Result<()> {
+        self.command(
+            ChannelId::DATA,
+            rpc::op::CLEAR_FAVOURITE,
+            hx_proto::msgmap! { rpc::key::OBJECT_ID => Value::Int(index) },
+        )?;
+        self.settle_flash();
+        Ok(())
+    }
+
     /// Bring the control channel up to the state HX Edit leaves it in.
     ///
     /// Opening the service is not enough: HX Edit follows it with a fixed

@@ -33,6 +33,9 @@ pub mod key {
     pub const PRESET_INDEX: i64 = 108;
     pub const NAME: i64 = 109;
     pub const OBJECT_ID: i64 = 118;
+    /// Rides with a favourite write, always true in every capture of one.
+    /// **[inferred]** - its meaning is unknown, it is replayed as observed.
+    pub const FAVOURITE_FLAG: i64 = 31;
     pub const VALUE: i64 = 119;
     /// Slot position in the signal chain.
     pub const BLOCK: i64 = 98;
@@ -213,8 +216,11 @@ pub mod op {
     pub const LIST_FAVOURITES: i64 = 112;
     /// `{98: block}` — read a block back in the shape a favourite is stored in.
     pub const READ_AS_FAVOURITE: i64 = 45;
-    /// Read one favourite.
+    /// Read one favourite: `{118: index}`.
     pub const FETCH_FAVOURITE: i64 = 113;
+    /// Keep a block as a favourite, the editor's own "save to favourites":
+    /// `{98: block, 118: index, 31: true, 109: name}`. Control channel.
+    pub const SAVE_FAVOURITE: i64 = 119;
     /// Write one favourite.
     pub const WRITE_FAVOURITE: i64 = 114;
     /// Empty a favourite slot.

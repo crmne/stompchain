@@ -910,3 +910,47 @@ fn a_parameter_can_be_put_under_an_expression_pedal() {
 
     assert_healthy(&mut session, "an expression assignment");
 }
+
+/// The device's favourite blocks, listed, kept and forgotten again.
+///
+/// A favourite is a block the pedal holds with its settings so it can be
+/// dropped into any preset. Read-only unless there is a free slot to use, and
+/// whatever it writes it removes.
+#[test]
+#[ignore = "needs an HX device"]
+fn favourites_can_be_listed_kept_and_forgotten() {
+    let Some(mut s) = device() else { return };
+
+    let before = s.favourites().expect("listing favourites");
+    eprintln!("favourites: {before:?}");
+
+    // A block to keep: the first the loaded preset actually holds.
+    let preset = s.read_preset().expect("read preset");
+    let Some((block, _)) = preset.blocks().next() else {
+        eprintln!("SKIPPED: the loaded preset has no blocks to keep");
+        return;
+    };
+
+    // Somewhere free to put it, so nothing of Carmine's is overwritten.
+    let taken: Vec<i64> = before.iter().map(|(i, _)| *i).collect();
+    let Some(slot) = (0..16).find(|i| !taken.contains(i)) else {
+        eprintln!("SKIPPED: every favourite slot is in use");
+        return;
+    };
+
+    s.save_favourite(block as i64, slot, "STOMPCHAIN TEST")
+        .expect("keeping a favourite");
+    let after = s.favourites().expect("listing again");
+    assert!(
+        after.iter().any(|(i, n)| *i == slot && n == "STOMPCHAIN TEST"),
+        "the favourite should be listed: {after:?}"
+    );
+
+    s.clear_favourite(slot).expect("forgetting it again");
+    let ended = s.favourites().expect("listing once more");
+    assert!(
+        !ended.iter().any(|(i, _)| *i == slot),
+        "the slot should be free again: {ended:?}"
+    );
+    assert_control_healthy(&mut s, "favourites");
+}
