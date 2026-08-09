@@ -21,7 +21,10 @@ mod load;
 mod write;
 
 pub use format::Display;
-pub use hxb::{read_backup, Backup, BackupPreset, Block, Container};
+pub use hxb::{
+    read_backup, read_favourite_file, read_setlist_file, Backup, BackupPreset, Block,
+    Container, Favourite,
+};
 pub use inspect::{inspect, ChainContent, OutputTarget, Tone, ToneBlock};
 pub use write::{to_hlx, Written};
 

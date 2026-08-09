@@ -91,6 +91,12 @@ pub fn read_backup(bytes: &[u8]) -> Result<Backup, Error> {
         })
         .ok_or_else(|| Error::Backup("no setlist block found in this .hxb".into()))?;
 
+    presets_from(&setlist)
+}
+
+/// Lift the presets out of a `{data: {meta, presets}}` document, which is what a
+/// backup's setlist block and a `.hls` file both hold.
+fn presets_from(setlist: &Value) -> Result<Backup, Error> {
     let data = &setlist["data"];
     let name = data
         .get("meta")
@@ -98,7 +104,10 @@ pub fn read_backup(bytes: &[u8]) -> Result<Backup, Error> {
         .and_then(Value::as_str)
         .unwrap_or("HX Stomp backup")
         .to_owned();
-    let raw = data["presets"].as_array().expect("checked above");
+    let raw = data
+        .get("presets")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::Backup("the setlist holds no presets".into()))?;
 
     let presets = raw
         .iter()
@@ -362,5 +371,193 @@ mod tests {
         }
         assert!(checked > 0, "no .hxb files found to check");
         eprintln!("round-tripped {checked} real backups byte-for-byte");
+    }
+}
+
+// -------------------------------------------------- the editor's own files ---
+
+/// Read a `.hls` setlist file - HX Edit's "export setlist".
+///
+/// The wrapper is plain JSON; the presets are base64 of a zlib stream, and the
+/// JSON inside is the same `{meta, presets}` the `.hxb` carries in its `SL00`
+/// block. So a setlist file and a backup lift apart exactly the same way, and
+/// this returns the same [`Backup`].
+///
+/// The wrapper states the decompressed size and a CRC32 of it; both are checked,
+/// because a truncated download that still parses is the failure worth catching.
+pub fn read_setlist_file(bytes: &[u8]) -> Result<Backup, Error> {
+    let wrapper: Value = serde_json::from_slice(bytes)
+        .map_err(|e| Error::Backup(format!("not a readable .hls: {e}")))?;
+    let encoded = wrapper
+        .get("encoded_data")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::Backup("the setlist file carries no presets".into()))?;
+
+    let compressed = base64(encoded)
+        .ok_or_else(|| Error::Backup("the setlist file's payload is not base64".into()))?;
+    let mut raw = Vec::new();
+    flate2::read::ZlibDecoder::new(&compressed[..])
+        .read_to_end(&mut raw)
+        .map_err(|e| Error::Backup(format!("the setlist file would not inflate: {e}")))?;
+
+    if let Some(expected) = wrapper.pointer("/compression/decompressed_size").and_then(Value::as_u64)
+    {
+        if expected != raw.len() as u64 {
+            return Err(Error::Backup(format!(
+                "the setlist file is {} bytes where it says {expected}; it is truncated",
+                raw.len()
+            )));
+        }
+    }
+    if let Some(expected) = wrapper.pointer("/compression/crc32").and_then(Value::as_u64) {
+        let got = crc32(&raw);
+        if expected as u32 != got {
+            return Err(Error::Backup(
+                "the setlist file's checksum does not match its contents".into(),
+            ));
+        }
+    }
+
+    let setlist: Value = serde_json::from_slice(&raw)
+        .map_err(|e| Error::Backup(format!("the setlist file's presets are not JSON: {e}")))?;
+    // A `.hxb` wraps this in `data`; a `.hls` does not. Reuse the one reader.
+    presets_from(&json!({ "data": setlist }))
+}
+
+/// One block kept as a favourite, read from a `.fav` file.
+pub struct Favourite {
+    pub name: String,
+    /// The block, and the cab riding with it if it is an amp: `slot0` and
+    /// `slot1` in the file, in the same shape a `.hlx` writes a block.
+    pub slots: Vec<Value>,
+}
+
+/// Read a `.fav` favourite file - HX Edit's "export favourite".
+///
+/// Plain JSON, uncompressed: a name and the block itself, an amp bringing its
+/// cab along as a second slot.
+pub fn read_favourite_file(bytes: &[u8]) -> Result<Favourite, Error> {
+    let file: Value = serde_json::from_slice(bytes)
+        .map_err(|e| Error::Backup(format!("not a readable .fav: {e}")))?;
+    let name = file
+        .pointer("/data/meta/name")
+        .and_then(Value::as_str)
+        .unwrap_or("favourite")
+        .to_owned();
+    let slots = file
+        .pointer("/data/favorite")
+        .and_then(Value::as_object)
+        .ok_or_else(|| Error::Backup("the favourite file holds no block".into()))?;
+
+    // slot0, slot1, … in order, so an amp keeps its cab behind it.
+    let mut numbered: Vec<(u32, Value)> = slots
+        .iter()
+        .filter_map(|(k, v)| Some((k.strip_prefix("slot")?.parse().ok()?, v.clone())))
+        .collect();
+    numbered.sort_by_key(|(n, _)| *n);
+
+    Ok(Favourite {
+        name,
+        slots: numbered.into_iter().map(|(_, v)| v).collect(),
+    })
+}
+
+/// Decode standard base64, ignoring the whitespace a pretty-printed file wraps
+/// its payload in.
+fn base64(text: &str) -> Option<Vec<u8>> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::with_capacity(text.len() / 4 * 3);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for byte in text.bytes() {
+        if byte == b'=' {
+            break;
+        }
+        if byte.is_ascii_whitespace() {
+            continue;
+        }
+        let value = ALPHABET.iter().position(|c| *c == byte)? as u32;
+        acc = (acc << 6) | value;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
+/// CRC32, the ordinary one, to check what a `.hls` says about its own payload.
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+#[cfg(test)]
+mod editor_file_tests {
+    use super::*;
+
+    fn capture(name: &str) -> Option<Vec<u8>> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../captures/library-exports")
+            .join(name);
+        std::fs::read(path).ok()
+    }
+
+    /// A `.hls` setlist file lifts apart the same way a backup does.
+    #[test]
+    fn a_setlist_file_reads_as_a_backup() {
+        let Some(bytes) = capture("HX Stomp.hls") else { return };
+        let setlist = read_setlist_file(&bytes).expect("reads");
+        assert_eq!(setlist.name, "HX Stomp");
+        assert_eq!(setlist.presets.len(), 126, "a full setlist");
+        assert!(setlist.occupied().count() > 50, "and most of them hold a tone");
+
+        // The first slot lifts out as a `.hlx` with a tone in it.
+        let first = &setlist.presets[0];
+        assert_eq!(first.label(), "01A");
+        assert!(first.hlx.pointer("/data/tone/dsp0").is_some());
+    }
+
+    /// The wrapper states its own payload's size and checksum, and a file that
+    /// disagrees with itself is refused rather than half-read.
+    #[test]
+    fn a_truncated_setlist_file_is_refused() {
+        let Some(bytes) = capture("HX Stomp.hls") else { return };
+        let text = String::from_utf8(bytes).expect("json");
+        // Drop a chunk out of the middle of the payload.
+        let cut = text.replacen("eNrs", "eNr", 1);
+        assert!(read_setlist_file(cut.as_bytes()).is_err());
+    }
+
+    /// A `.fav` holds one block, and an amp brings its cab.
+    #[test]
+    fn a_favourite_file_reads_its_block() {
+        let Some(bytes) = capture("favtest.fav") else { return };
+        let favourite = read_favourite_file(&bytes).expect("reads");
+        assert_eq!(favourite.name, "favtest");
+        assert_eq!(favourite.slots.len(), 2, "the amp and its cab");
+        assert_eq!(
+            favourite.slots[0]["@model"].as_str().unwrap(),
+            "HD2_AmpUSDeluxeNrm"
+        );
+        assert!(favourite.slots[1]["@model"]
+            .as_str()
+            .unwrap()
+            .contains("Cab"));
+    }
+
+    #[test]
+    fn base64_decodes_what_the_editor_writes() {
+        assert_eq!(base64("aGVsbG8=").unwrap(), b"hello");
+        // Whitespace is ignored, the way a pretty-printed payload carries it.
+        assert_eq!(base64("aGVs\n bG8=").unwrap(), b"hello");
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926, "the standard check value");
     }
 }
