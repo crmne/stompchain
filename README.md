@@ -200,6 +200,23 @@ tools/hxsniff/reassemble.py  ~/.cache/hxsniff/hxsniff.log --chan 1080:03ed
 tools/hxsniff/attribute.py   ~/.cache/hxsniff/hxsniff.log
 ```
 
+`capture.sh` runs a whole scenario end to end: it launches the instrumented
+editor, walks you through the clicks one at a time, and marks the log before
+each one so `attribute.py` can say which messages a given click produced.
+
+```sh
+bash tools/hxsniff/capture.sh backup     # a full read  (opcode 109)
+bash tools/hxsniff/capture.sh restore    # a full write (op 109's inverse)
+bash tools/hxsniff/capture.sh ir         # IR import, export, copy, clear
+bash tools/hxsniff/capture.sh globals    # every device setting HX Edit exposes
+DRY=1 bash tools/hxsniff/capture.sh ir   # read the steps through first
+```
+
+The IR scenario imports the probe files `make-irs.py` writes — a ramp whose
+every sample encodes its own index, a staircase of powers of two, a stereo pair
+with the channels opposite in sign, and one file over both the length and rate
+limits — so sample bytes are identifiable in a reply stream we cannot yet frame.
+
 `tools/midiprobe` and `tools/usbprobe` cover the MIDI and USB-descriptor sides;
 `tools/hxpower` power-cycles a wedged device through a Home Assistant smart
 plug, which pairs well with the hardware test suite. The `captures/` directory
