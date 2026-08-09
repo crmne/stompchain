@@ -109,13 +109,21 @@ pub struct Slot {
     pub values: Vec<f32>,
     /// The paired model's values, in its own parameter order.
     pub paired_values: Vec<f32>,
-    /// Key 9: the model's engine class. Simple effects carry 1, delay-RAM
-    /// effects 8, amps 18, IR blocks 19 or 20 by tap count, send/looper 25;
-    /// endpoints, splits and joins carry none (0 here is this field's
-    /// default). A function of the model alone — it was first misread as a
-    /// branch index, but the branch is implied by slot position, which is what
-    /// [`Preset::layout`] uses. The device maintains it on model changes, so
-    /// it is only ever carried through byte-exact, never synthesised.
+    /// Key 9: the slot's engine class.
+    ///
+    /// It was first misread as a branch index — the branch is implied by slot
+    /// position, which is what [`Preset::layout`] uses — and then as a function
+    /// of the model alone, which it is not: an amp carries 17 on its own and 18
+    /// with a cab riding along, so 30 of 217 models seen carry two values.
+    /// Keyed by the model's *category* and whether it is paired, nothing is
+    /// ambiguous across 240 captured presets. `Catalog::type_tag` derives it,
+    /// and `hx-catalog/tests/type_tags.rs` pins the derivation against every
+    /// fixture.
+    ///
+    /// Editing a preset still carries it through byte-exact — the device
+    /// maintains it on model changes, so there is nothing to gain by
+    /// recomputing. Deriving it is for *building* a document from a symbolic
+    /// tone, where there is nothing to carry through.
     pub type_tag: i64,
 }
 
@@ -181,7 +189,7 @@ mod key {
     pub const INLINE_MODEL: i64 = 8;
     /// Whether the block is switched on.
     pub const ENABLED: i64 = 10;
-    /// A per-model type tag whose meaning is still open. See `Slot::type_tag`.
+    /// The slot's engine class. See `Slot::type_tag`.
     pub const TYPE_TAG: i64 = 9;
     /// Parameter values on an effect slot.
     pub const VALUES: i64 = 11;

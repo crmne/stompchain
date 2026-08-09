@@ -735,12 +735,38 @@ and reading it back:
 The reading that fits is an **engine or resource class**: simple effects share
 one code, effects needing delay RAM share another, amps their own, the two IR
 lengths take adjacent codes for double the memory, and the two block types that
-touch hardware I/O share the last. It is a function of the model alone — both
-copies of the same amp carry 18 whichever branch they sit on (it was first
-misread as a branch index; the branch is implied by array position, see below).
+touch hardware I/O share the last. It was first misread as a branch index; the
+branch is implied by array position, see below.
+
+**It is not a function of the model alone. [confirmed]** The table above is what
+one preset shows; across 240 captured presets holding 217 distinct models, 30 of
+those models carry *two* different values. An amp carries **17 on its own and 18
+with a cab riding along**, and a cab carries **15 alone and 16 as a dual** — the
+tag describes what is in the slot, and an amp slot with a cab in it is not the
+same shape as an amp slot without one. Keyed by the model's category *and*
+whether it is paired, nothing is ambiguous:
+
+| category | alone | with a cab |
+|---|---|---|
+| amp, preamp | 17 | 18 |
+| cab | 15 | 16 |
+| delay, reverb | 8 | — |
+| distortion, dynamics, EQ, filter, modulation, pitch, wah, volume/pan | 1 | — |
+| FX loop | 9 | — |
+| looper | 22 | — |
+| split, merge | 0 | — |
+
+Two models sit outside their category: the **3 Note Generator** carries 23 rather
+than 1, which fits — it has no input to process — and **Send** carries 25 where
+the FX Loop it shares a category with carries 9.
+
 Endpoints, splits and joins carry no key 9 at all. The device maintains the
-value itself on model changes, so an editor only ever needs to carry it through
-byte-exact — never to synthesise it.
+value itself on model changes, so *editing* a preset only ever needs to carry it
+through byte-exact. Deriving it matters for the other direction: **building** a
+document from a symbolic tone, where there is nothing to carry through, and this
+is the one field of a slot that a `.hlx` does not record.
+`Catalog::type_tag` derives it and `hx-catalog/tests/type_tags.rs` pins the
+derivation against every captured fixture.
 
 ### The slot array is a topology, not a running order [confirmed]
 

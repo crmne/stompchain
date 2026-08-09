@@ -377,6 +377,60 @@ impl Catalog {
         self.model(model.cab_link.as_deref()?)
     }
 
+    /// The engine class the device stamps on a slot — key 9 in the document.
+    ///
+    /// Needed to *build* a preset rather than edit one: every other field of a
+    /// slot can be read off a `.hlx`, and this one cannot, so without it a
+    /// document can only ever be carried through from the device, never
+    /// written from a symbolic tone.
+    ///
+    /// It is a function of the model's category and of whether a cab rides
+    /// along - not of the model alone, which is what the field's own comment
+    /// used to say. Checked across 240 presets holding 217 distinct models:
+    /// keyed by model alone, 30 of them carry two different values; keyed by
+    /// category and pairing, none is ambiguous.
+    ///
+    /// An amp alone is 17 and an amp with its cab 18; a cab alone 15 and a dual
+    /// cab 16. Delay and reverb share 8, the delay-RAM class. Splits and joins
+    /// carry 0. Everything ordinary is 1. Two models are their own class
+    /// regardless of their category - the 3 Note Generator, which has no input,
+    /// and Send, which is not a Return.
+    pub fn type_tag(&self, model: u32, has_cab: bool) -> Option<i64> {
+        let model = self.model_number(model)?;
+        // Two models sit apart from their categories, so they are asked first.
+        match model.name.as_str() {
+            "3 Note Generator" => return Some(23),
+            name if name.starts_with("Send") => return Some(25),
+            _ => {}
+        }
+        let category = self
+            .category_of(&model.id)
+            .and_then(|id| self.category(id))
+            .map(|c| c.name.as_str())
+            .unwrap_or("");
+        Some(match category {
+            "Amp" | "Preamp" => {
+                if has_cab {
+                    18
+                } else {
+                    17
+                }
+            }
+            "Cab" => {
+                if has_cab {
+                    16
+                } else {
+                    15
+                }
+            }
+            "Delay" | "Reverb" => 8,
+            "Send/Return" => 9,
+            "Looper" => 22,
+            "Split" | "Merge" => 0,
+            _ => 1,
+        })
+    }
+
     /// Models in a category, in the order HX Edit shows them.
     pub fn models_in(&self, category: u32) -> Vec<&Model> {
         self.category(category)
