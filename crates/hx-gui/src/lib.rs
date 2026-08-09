@@ -4020,33 +4020,72 @@ fn model_picker(
         catalog.models_in(showing)
     };
 
+    // HX Edit shelves a category - Mono, Stereo, Legacy on the effects, Guitar
+    // and Bass on the amps, Single and Dual on the cabs - and those shelves are
+    // how people talk about the models. A search cuts across them, so it stays
+    // one flat list.
+    let shelves: Vec<(&str, Vec<&hx_catalog::Model>)> = if searching {
+        vec![("", models)]
+    } else {
+        let shelved: Vec<(&str, Vec<&hx_catalog::Model>)> = catalog
+            .category(showing)
+            .map(|c| {
+                c.subcategories
+                    .iter()
+                    .map(|sub| {
+                        let models = sub
+                            .models
+                            .iter()
+                            .filter_map(|id| catalog.model(id))
+                            .collect::<Vec<_>>();
+                        (sub.name.as_str(), models)
+                    })
+                    .filter(|(_, models)| !models.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        // A category with no second level - and a paired one, whose tiles are
+        // amp-and-cab pairs rather than the shelved models - shows flat.
+        if shelved.is_empty() || pairing {
+            vec![("", models)]
+        } else {
+            shelved
+        }
+    };
+
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            if models.is_empty() {
+            if shelves.iter().all(|(_, models)| models.is_empty()) {
                 ui.label(RichText::new("Nothing matches").color(theme::DIM));
             }
-            ui.horizontal_wrapped(|ui| {
-                for model in models {
-                    let selected = holding.model == Some(model.id.as_str());
-                    let art = catalog
-                        .artwork(model)
-                        .map(|p| theme::Art::whole(format!("file://{}", p.display())));
-                    if theme::model_tile(ui, &model.name, art.as_ref(), selected).clicked() {
-                        // Only models the firmware knows by number can be sent.
-                        picked = number_of(catalog, &model.id).map(|model_number| Picked {
-                            model: model_number,
-                            // In a paired category the cab comes with the amp;
-                            // if the firmware does not know that cab by number
-                            // the amp still goes in, alone.
-                            paired: pairing
-                                .then(|| catalog.paired_cab(model))
-                                .flatten()
-                                .and_then(|cab| number_of(catalog, &cab.id)),
-                        });
-                    }
+            for (shelf, models) in shelves {
+                if !shelf.is_empty() {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(shelf.to_uppercase()).small().color(theme::DIM));
                 }
-            });
+                ui.horizontal_wrapped(|ui| {
+                    for model in models {
+                        let selected = holding.model == Some(model.id.as_str());
+                        let art = catalog
+                            .artwork(model)
+                            .map(|p| theme::Art::whole(format!("file://{}", p.display())));
+                        if theme::model_tile(ui, &model.name, art.as_ref(), selected).clicked() {
+                            // Only models the firmware knows by number can be sent.
+                            picked = number_of(catalog, &model.id).map(|model_number| Picked {
+                                model: model_number,
+                                // In a paired category the cab comes with the amp;
+                                // if the firmware does not know that cab by number
+                                // the amp still goes in, alone.
+                                paired: pairing
+                                    .then(|| catalog.paired_cab(model))
+                                    .flatten()
+                                    .and_then(|cab| number_of(catalog, &cab.id)),
+                            });
+                        }
+                    }
+                });
+            }
         });
 
     picked
