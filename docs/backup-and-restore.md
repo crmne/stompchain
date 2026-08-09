@@ -97,16 +97,63 @@ Opcode 109 request args (RPC envelope: `100`=opcode, `101`=args, `102`=txn):
 ```
 
 In the backup capture, opcode 109 transfers **803 distinct objects** (`64` ids
-0..832, with gaps), and opcode **4** is sent once per preset (126×, likely a
-per-preset prepare/lock). So op 109 is not a preset reader - it is a general
-**object-store transfer**, and reading every object *is* the whole backup:
-presets, globals, IRs, favorites, and setlist, one mechanism. This is the unified
-fast backup, and its write inverse is the unified fast restore.
+0..832, with gaps), so it is not a preset reader — it is a general
+**object-store transfer**. Its write inverse is **opcode 111**, same argument
+shape, and a restore-everything sends exactly the same 803 ids back.
 
-Still to pin down before implementing: the reply framing on `1001→03ef` (where
-each object's bytes land), how a transfer terminates, what op 4 does, and which
-`64` ids are presets vs globals vs IRs vs favorites (so a partial restore is
-possible). Capture: `captures/mac-backup-capture.log`.
+Still to pin down: the reply framing on `1001→03ef` (where each object's bytes
+land) and how a transfer terminates. Captures:
+`captures/mac-backup-capture.log`, `captures/mac-partition-capture.log`.
+
+## The fast read was opcode 4 all along [confirmed]
+
+Opcode **4** was written off above as "a per-preset prepare/lock" because the
+backup sends it 126 times. It is not. It reads a preset:
+
+```
+op4 {107: setlist, 108: index, 101: 2}   → the whole preset document
+op5 {107, 108, 123, 124, 125, 110: doc}  → write one back
+op8 {107, 108, 109: name, 110: doc}      → write one with a name (paste, import)
+op16 {107: setlist, 108: index}          → empty a slot
+```
+
+This is the fast per-preset read the design went looking for and could not find
+by probing — `READ_PRESET` plus an index returns the *loaded* preset, so the
+conclusion was that indexed reads did not exist. They do, under an opcode that
+was sitting in the very first capture being read as something else. It answers
+in about 50 ms with no preset load, against the ~114 s a `backup-all` takes
+today because it loads all 126 in turn.
+
+`capture.sh library` is what settled it: exporting a single preset to a file
+sends exactly one op4, and exporting the setlist sends 126 — no object store
+involved. Importing a setlist is op5 per slot, op16 for the empty ones.
+
+So there are two fast paths, not one, and the simpler one is enough:
+
+| | Whole object store | Per preset |
+|---|---|---|
+| Read | op109, 803 objects | **op4 by index** |
+| Write | op111, same 803 | **op5**, or op8 to name it |
+| Covers | everything, undifferentiated | presets only |
+| Framing | chunked, still undecoded | one message each, already decodable |
+
+## What a restore actually sends [confirmed]
+
+Not one mechanism but four, chosen by what is ticked in the dialog — which is
+why ticking one kind at a time partitions the work by **opcode** rather than by
+object id:
+
+- **Global settings** → a single **op86** carrying one 619-byte msgpack blob.
+  The whole globals block in one write.
+- **Presets/setlists** → **op5** per slot, **op16** for the ones that should be
+  empty. 126 messages, paced by the device's flash writes.
+- **IRs** → op9, the same upload the editor uses for an import.
+- **Everything ticked** → all of the above *plus* **op111** for the full 803-id
+  object store.
+
+Capture: `captures/mac-partition-capture.log` (and the earlier
+`captures/mac-restore-capture.log`, which shows the same op5/op86/op111 mix and
+no op109 at all).
 
 ## Capturing the restore
 
@@ -187,27 +234,36 @@ the wire bytes are only decodable against the files they came back as.
 HX Edit streams a write per intermediate value while a control is dragged, so a
 distinct target value per control is what keeps them apart:
 
-| id | Setting | Values seen |
+| id | Setting | Values |
 |---|---|---|
-| 14 | tempo source | `1` at connect, `0` written — the other two of Per Snapshot / Per Preset / Global / Host Sync are unseen |
+| 14 | tempo source | `0` Per Snapshot, `1` Per Preset, `2` Global; Host Sync writes nothing standalone, so `3` is presumed |
 | 16 | tempo, BPM | float |
 | 27 | preset numbering format | `false` = 01A-42C, `true` = 000-125 |
 | 95 | EXP/FS Tip | `false` = EXP 1, `true` = FS4 |
 | 96 | EXP/FS Ring | `false` = EXP 2, `true` = FS5 |
-| 97 | FS3 function | `0` Tap/Tuner, `1` Stomp 3 |
-| 98 | FS4 function | `1` Stomp 4, `10` All Bypass |
-| 99 | FS5 function | `2`, `8` FS Mode >, `11` Toggle EXP |
+| 97 | FS3 function | one shared enum, below |
+| 98 | FS4 function | " |
+| 99 | FS5 function | " |
 | 190–192 | Global EQ low peak | freq, Q, gain |
 | 193–195 | Global EQ mid peak | freq, Q, gain |
-| 196–198 | Global EQ high peak | freq, Q, **gain (198 inferred)** |
+| 196–198 | Global EQ high peak | freq, Q, gain |
 | 199 | Global EQ low cut | freq |
-| 200 | Global EQ high cut | freq — **inferred** |
+| 200 | Global EQ high cut | freq |
 | 203 | Global EQ enabled | bool |
 
-The two inferred ids come from `op76`, which returns the whole set at once as
+The footswitch function enum is one numbering shared by all three ids, and FS3
+simply offers fewer of it — no banking, no FS Mode:
+
+| | | | | | |
+|---|---|---|---|---|---|
+| `0` Tap/Tuner | `1` Stomp N | `2` Bank Up | `3` Bank Down | `4` Preset Up | `5` Preset Down |
+| `6` Snapshot Up | `7` Snapshot Down | `8` FS Mode > | `9` < FS Mode | `10` All Bypass | `11` Toggle EXP |
+
+Ids 198 and 200 were inferred from `op76` before they were seen written, and
+`capture.sh enums` then wrote them: 198 took +6.0 dB and 200 took 12.3 kHz,
+exactly where the array said they would be. `op76` returns the whole set as
 `{63: enabled, 55: [110, 0.707, 0, 2000, 0.707, 0, 8000, 0.707, 0, 19.9, 20100]}`
-— eleven values that 190–197 and 199 land on in exactly that order, leaving
-position 9 as high peak gain and position 11 as high cut. `op77` is the
+— eleven values that 190–200 land on in exactly that order. `op77` is the
 window's RESET and answers with the same shape. Opening the window reads ids
 201 and 202 (202 = 1, 201 = null on an HX Stomp) rather than the coefficients.
 
@@ -259,18 +315,14 @@ going back, so it costs nothing to run.
   framing of op11's blob, against `captures/ir-exports/`: those are the files
   HX Edit wrote from the same reads, so the bytes on the wire have a known
   answer to be checked against.
-- **Globals id ↔ name.** The 19 ids HX Edit writes are named above. The rest of
-  the 154 still want correlating with the `GLOB` block's 156 named fields by
-  value — they are reachable only from the pedal's own menu, so no capture can
-  name them. What a capture *can* still finish is in `capture.sh enums`: ids 198
-  and 200, which are inferred rather than seen, the FS3/FS4/FS5 function enums
-  (six of roughly ten values between them), and the tempo source enum (one of
-  four).
-- **Which op-109 objects are what.** `capture.sh partition` restores one kind at
-  a time from a backup taken minutes earlier, so each restore writes back what
-  is already there and the object ids sort themselves into presets, globals and
-  IRs.
-- **Favorites and setlists.** Never captured. Favorites ride in the op-109 store
-  so a full backup holds them regardless, but the setlist IMPORT/EXPORT buttons
-  are simply unknown, which is worth fixing before a restore path leans on them.
-  `capture.sh library`.
+- **Globals id ↔ name.** The 21 ids HX Edit writes are named above, values and
+  all. The rest of the 154 still want correlating with the `GLOB` block's 156
+  named fields by value — they are reachable only from the pedal's own menu, so
+  no capture will ever name them.
+- **The op-111 blob framing.** The only thing standing between us and the
+  object-store path — and op4/op5 may make it unnecessary.
+- **Favorites are their own opcodes**, not just object-store entries: op112
+  lists, op45 reads a block to save as one, op113 reads, op114 writes, op116
+  clears, op117 renames. A favorite exports as an 896-byte JSON `.fav`, a
+  setlist as a 62 KB `.hls` — both in `captures/library-exports/` alongside a
+  `.hlx`, so the three file formats can be decoded offline.

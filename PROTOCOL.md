@@ -357,6 +357,18 @@ Two real exchanges from our capture:
 | 28 | clear block | `{98: block}` — **must be preceded by opcode 78 selecting that block** |
 | 37 | assign a controller | `{98: block, 95: target, 96: scope, 74: flags, 71: MIDI CC}` |
 | 9 | upload impulse response | `{112: slot, 113: checksum, 109: name, 114, 115, …}` then raw samples |
+| 4 | **read a preset at an index, without loading it** | `{107: setlist, 108: index, 101: 2}` → the whole document |
+| 5 | write a preset document into an index | `{107, 108, 123, 124, 125, 110: document}` |
+| 8 | write a preset *with a name* — paste, and file import | `{107, 108, 109: name, 123, 124, 125, 110: document}` |
+| 16 | empty a preset slot | `{107: setlist, 108: index}` |
+| 86 | write the whole globals block | `{110: <one msgpack blob>}` |
+| 111 | object-store transfer *in* — opcode 109's inverse | `{64: id, 106: continuing, 105: ack}` |
+| 45 | read a block, to save it as a favorite | `{98: block}` → its model-ref and values |
+| 112 | list favorites | `{}` |
+| 113 | read a favorite | copy and export send it |
+| 114 | write a favorite | paste and import send it |
+| 116 | clear a favorite | — |
+| 117 | rename a favorite | — |
 | 12 | read an IR's descriptor | `{112: slot}` → the same map opcode 9 sends |
 | 11 | read an IR's samples | `{112: slot, 101: 2}` → a blob of 32-bit floats |
 | 10 | rename an impulse response | `{112: slot, 109: name}` |
@@ -369,8 +381,9 @@ Two real exchanges from our capture:
 | 25 | set footswitch function | — |
 | 78 | highlight slot | — |
 
-Opcodes 0, 13, 23, 76, 99, 112 and 254 are observed during session setup but
-their meaning needs hardware that exposes them: the Command Center opcodes are
+Opcode 112 is now known — it lists favorites, and the session-setup call is
+just the editor populating that tab. Opcodes 0, 23, 76, 99 and 254 are still
+only observed during session setup, and need hardware that exposes them: the Command Center opcodes are
 inert on an HX Stomp, so a Helix Floor or LT is the prerequisite. Opcodes 6, 25, 59, 61, 68 and 78 come from the
 `kempline/helix_usb` project rather than our own captures. **[inferred]**
 

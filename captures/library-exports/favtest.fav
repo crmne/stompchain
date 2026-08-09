@@ -1,0 +1,40 @@
+{
+  "version" : 1,
+  "data" : {
+    "meta" : {
+      "name" : "favtest"
+    },
+    "device" : 2162694,
+    "favorite" : {
+      "slot0" : {
+        "Bias" : 0.64999997615814209,
+        "@model" : "HD2_AmpUSDeluxeNrm",
+        "Master" : 1,
+        "Treble" : 0.5,
+        "Drive" : 0.39999997615814209,
+        "ChVol" : 0.89999997615814209,
+        "@enabled" : true,
+        "Ripple" : 0,
+        "@type" : 3,
+        "Bass" : 0.60000002384185791,
+        "BiasX" : 0.5,
+        "Hum" : 0,
+        "Mid" : 0.68000006675720215,
+        "Presence" : 0,
+        "Sag" : 0.5
+      },
+      "slot1" : {
+        "@model" : "HD2_Cab2x12Interstate",
+        "@type" : 2,
+        "@mic" : 8,
+        "Low Cut" : 80,
+        "EarlyReflections" : 0,
+        "Distance" : 3,
+        "Level" : 0,
+        "HighCut" : 8000
+      }
+    },
+    "device_version" : 58720256
+  },
+  "schema" : "L6ModelFavorite"
+}
