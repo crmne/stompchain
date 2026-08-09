@@ -3130,13 +3130,16 @@ impl App {
                     catalog,
                     search,
                     browsing,
-                    current.as_deref(),
+                    Holding {
+                        model: current.as_deref(),
+                        paired: block.paired.is_some(),
+                    },
                     heading,
                     false,
                 );
             });
 
-        if let Some(model) = picked {
+        if let Some(Picked { model, paired }) = picked {
             if empty {
                 // The first slot the signal reaches that is free.
                 let at = self
@@ -3146,11 +3149,12 @@ impl App {
                     .and_then(|p| p.input)
                     .map(|i| i + 1)
                     .unwrap_or(1);
-                self.edit(Cmd::InsertBlock { at, model });
+                self.edit(Cmd::InsertBlock { at, model, paired });
             } else {
                 self.edit(Cmd::SetModel {
                     block: block.position,
                     model,
+                    paired,
                 });
             }
         }
@@ -3192,8 +3196,15 @@ impl App {
                         let Some(catalog) = catalog.as_ref() else {
                             return;
                         };
-                        picked =
-                            model_picker(ui, catalog, search, browsing, None, "ADD A BLOCK", true);
+                        picked = model_picker(
+                            ui,
+                            catalog,
+                            search,
+                            browsing,
+                            Holding::default(),
+                            "ADD A BLOCK",
+                            true,
+                        );
                     });
             });
 
@@ -3216,9 +3227,9 @@ impl App {
             self.close_picker();
             return;
         }
-        if let Some(model) = picked {
+        if let Some(Picked { model, paired }) = picked {
             self.close_picker();
-            self.edit(Cmd::InsertBlock { at, model });
+            self.edit(Cmd::InsertBlock { at, model, paired });
         }
     }
 
@@ -3301,15 +3312,13 @@ impl App {
             for model in family {
                 let name = model.name.strip_prefix("Split ").unwrap_or(&model.name);
                 let on = model.id == current;
-                let chip = theme::category_chip(ui, name, theme::ACCENT, on)
+                // The split types are named, not pictured: they are three
+                // variations on one thing, and HX Edit gives the category a
+                // single glyph that would say the same on all three.
+                let chip = theme::category_chip(ui, name, None, theme::ACCENT, on)
                     .on_hover_text(split_type_hint(&model.name));
                 if chip.clicked() && !on {
-                    // Only models the firmware knows by number can be sent.
-                    picked = catalog
-                        .symbols()
-                        .iter()
-                        .find(|s| s.model.as_deref() == Some(model.id.as_str()))
-                        .map(|s| s.number);
+                    picked = number_of(catalog, &model.id);
                 }
             }
         });
@@ -3545,6 +3554,7 @@ impl App {
             self.edit(Cmd::SetModel {
                 block: position,
                 model,
+                paired: None,
             });
         }
         if let Some((index, value, switch)) = edit {
@@ -3653,15 +3663,42 @@ fn attach_range(path: &hx_proto::preset::Path, opening: bool) -> Option<(usize, 
 /// A free function taking the pieces it needs rather than `&mut self`, so the
 /// same widget serves the swap shelf and the insert popup — the two places you
 /// choose a pedal should not look or behave differently.
+/// What a block holds now, which decides where the picker opens and which tile
+/// it marks as the current one.
+#[derive(Debug, Clone, Copy, Default)]
+struct Holding<'a> {
+    model: Option<&'a str>,
+    /// Whether a second model rides along — an Amp+Cab.
+    paired: bool,
+}
+
+/// What the picker hands back: a model, and the cab that rides along with it
+/// when the shelf it came from was Amp+Cab.
+#[derive(Debug, Clone, Copy)]
+struct Picked {
+    model: u32,
+    paired: Option<u32>,
+}
+
+/// The device speaks in model numbers, and only knows the models its firmware
+/// carries — a catalog entry with no symbol cannot be sent.
+fn number_of(catalog: &hx_catalog::Catalog, id: &str) -> Option<u32> {
+    catalog
+        .symbols()
+        .iter()
+        .find(|s| s.model.as_deref() == Some(id))
+        .map(|s| s.number)
+}
+
 fn model_picker(
     ui: &mut egui::Ui,
     catalog: &hx_catalog::Catalog,
     search: &mut String,
     browsing: &mut Option<u32>,
-    current: Option<&str>,
+    holding: Holding,
     heading: &str,
     focus_search: bool,
-) -> Option<u32> {
+) -> Option<Picked> {
     let mut picked = None;
 
     ui.horizontal(|ui| {
@@ -3684,7 +3721,13 @@ fn model_picker(
     // already in - not the first category. Otherwise swapping an amp snapped
     // the browser back to Distortion every time.
     let showing = browsing.unwrap_or_else(|| {
-        current
+        // A block that already holds a pair browses as Amp+Cab, which is where
+        // its own model lives as far as the person looking at it is concerned.
+        if holding.paired {
+            return hx_catalog::Category::AMP_CAB;
+        }
+        holding
+            .model
             .and_then(|id| catalog.category_of(id))
             .unwrap_or(1)
     });
@@ -3695,13 +3738,24 @@ fn model_picker(
             }
             let colour = theme::category_colour(category.colour);
             let on = !searching && category.id == showing;
-            if theme::category_chip(ui, &category.name, colour, on).clicked() {
+            let icon = catalog.category_artwork(category).map(|(path, frames)| {
+                let uri = format!("file://{}", path.display());
+                match frames {
+                    0 | 1 => theme::Art::whole(uri),
+                    n => theme::Art::strip(uri, 0, n),
+                }
+            });
+            if theme::category_chip(ui, &category.name, icon.as_ref(), colour, on).clicked() {
                 *browsing = Some(category.id);
                 search.clear();
             }
         }
     });
     ui.separator();
+
+    // Whether what is on screen fills a block with two models. A search cuts
+    // across categories, so it can only offer single models.
+    let pairing = !searching && catalog.category(showing).is_some_and(|c| c.paired);
 
     let models: Vec<&hx_catalog::Model> = if searching {
         let needle = search.to_lowercase();
@@ -3727,17 +3781,22 @@ fn model_picker(
             }
             ui.horizontal_wrapped(|ui| {
                 for model in models {
-                    let selected = current == Some(model.id.as_str());
+                    let selected = holding.model == Some(model.id.as_str());
                     let art = catalog
                         .artwork(model)
                         .map(|p| theme::Art::whole(format!("file://{}", p.display())));
                     if theme::model_tile(ui, &model.name, art.as_ref(), selected).clicked() {
                         // Only models the firmware knows by number can be sent.
-                        picked = catalog
-                            .symbols()
-                            .iter()
-                            .find(|s| s.model.as_deref() == Some(model.id.as_str()))
-                            .map(|s| s.number);
+                        picked = number_of(catalog, &model.id).map(|model_number| Picked {
+                            model: model_number,
+                            // In a paired category the cab comes with the amp;
+                            // if the firmware does not know that cab by number
+                            // the amp still goes in, alone.
+                            paired: pairing
+                                .then(|| catalog.paired_cab(model))
+                                .flatten()
+                                .and_then(|cab| number_of(catalog, &cab.id)),
+                        });
                     }
                 }
             });

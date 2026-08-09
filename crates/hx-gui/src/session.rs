@@ -81,6 +81,8 @@ pub enum Cmd {
     SetModel {
         block: i64,
         model: u32,
+        /// The cab that rides along, for an Amp+Cab. `None` for everything else.
+        paired: Option<u32>,
     },
     SelectSnapshot(i64),
     ClearBlock(i64),
@@ -114,6 +116,8 @@ pub enum Cmd {
     InsertBlock {
         at: usize,
         model: u32,
+        /// The cab that rides along, for an Amp+Cab. `None` for everything else.
+        paired: Option<u32>,
     },
     /// Put back what the last undo took away.
     Redo,
@@ -201,6 +205,22 @@ pub struct ApplyBlock {
     pub enabled: bool,
     /// `(parameter index, native value, is a switch)`.
     pub params: Vec<(i64, f32, bool)>,
+}
+
+/// Put a model in a slot, with or without a cab riding along.
+///
+/// One place so inserting and swapping cannot drift apart on which of the two
+/// device calls they make.
+fn place(
+    device: &mut hx_usb::Session,
+    block: i64,
+    model: u32,
+    paired: Option<u32>,
+) -> hx_usb::Result<()> {
+    match paired {
+        Some(cab) => device.set_model_pair(block, model, cab),
+        None => device.set_model(block, model),
+    }
 }
 
 /// The drawable blocks of a preset document: everything the signal passes
@@ -404,7 +424,7 @@ impl Worker {
             }
             Cmd::Undo => self.step_history(true),
             Cmd::Redo => self.step_history(false),
-            Cmd::InsertBlock { at, model } => {
+            Cmd::InsertBlock { at, model, paired } => {
                 use hx_proto::preset::Kind;
 
                 // Two device operations, and no more: adjust the document if
@@ -480,7 +500,7 @@ impl Worker {
                     }
                 }
 
-                if self.run_on_device(|d| d.set_model(target as i64, model)) {
+                if self.run_on_device(|d| place(d, target as i64, model, paired)) {
                     if let Some((split, join, fork_at, merge_at)) = claim {
                         self.run_on_device(|d| {
                             let mut p = d.read_preset()?;
@@ -676,9 +696,13 @@ impl Worker {
                     self.handle(Cmd::ListIrs);
                 }
             }
-            Cmd::SetModel { block, model } => {
+            Cmd::SetModel {
+                block,
+                model,
+                paired,
+            } => {
                 self.snapshot();
-                if self.run_on_device(|d| d.set_model(block, model)) {
+                if self.run_on_device(|d| place(d, block, model, paired)) {
                     self.dirty = true;
                     self.reload();
                 }

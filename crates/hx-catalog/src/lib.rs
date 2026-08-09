@@ -68,6 +68,9 @@ pub struct Model {
     /// Artwork file name, e.g. `FX_HX_DIST_KinkyBoost.png`. Resolve it with
     /// [`Catalog::artwork`].
     pub image: Option<String>,
+    /// The cab this model pairs with in an Amp+Cab block, if it is an amp.
+    /// From `amp.models`' `cablink`; resolve it with [`Catalog::paired_cab`].
+    pub cab_link: Option<String>,
     pub params: Vec<Param>,
 }
 
@@ -111,6 +114,13 @@ pub struct Category {
     /// Taken from the catalog rather than invented, so a chain drawn here
     /// looks like the same chain drawn there.
     pub colour: u32,
+    /// Icon file name, e.g. `FX_HX_Category_Amp.png`. Resolve it with
+    /// [`Catalog::category_artwork`].
+    pub image: Option<String>,
+    /// Whether choosing from this category fills a block with *two* models —
+    /// true only of Amp+Cab. Such a category re-lists models that belong to
+    /// another one, so [`Catalog::category_of`] steps over it.
+    pub paired: bool,
     /// Model ids in the order HX Edit lists them, flattened across
     /// subcategories.
     pub models: Vec<String>,
@@ -163,6 +173,11 @@ impl Category {
     pub const PREAMP: u32 = 12;
     pub const CAB: u32 = 13;
     pub const IR: u32 = 14;
+
+    /// Amp+Cab, the one category HX Edit's catalog does not contain: the file
+    /// numbers its categories 0-9 and then jumps to 11. It is rebuilt in
+    /// [`load`](crate::load) from the amps that name a cab.
+    pub const AMP_CAB: u32 = 10;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -250,6 +265,26 @@ impl Catalog {
         path.is_file().then_some(path)
     }
 
+    /// A category's icon, and how many frames it holds.
+    ///
+    /// Same `%N` convention as the endpoints: `FX_HX_Category_SendReturn_%3.png`
+    /// is a vertical strip of three, one per direction the block can face.
+    /// Everything else is a single frame, reported as 1 so a caller can treat
+    /// both alike.
+    pub fn category_artwork(&self, category: &Category) -> Option<(PathBuf, usize)> {
+        let file = category.image.as_deref()?;
+        let path = self.resources.join("icons_category").join(file);
+        if !path.is_file() {
+            return None;
+        }
+        let frames = file
+            .strip_suffix(".png")
+            .and_then(|stem| stem.rsplit_once("_%"))
+            .and_then(|(_, count)| count.parse().ok())
+            .unwrap_or(1);
+        Some((path, frames))
+    }
+
     /// The icon strip for an input or output, and how many frames it holds.
     ///
     /// HX Edit does not give the endpoints a fixed picture: it draws whichever
@@ -322,11 +357,21 @@ impl Catalog {
     /// Cali Q Graphic carries 14 there, while the EQ category is 106 — so
     /// using it to open the browser landed on whichever category happened to
     /// share the number. The membership lists are the authority.
+    /// Amp+Cab is skipped: it re-lists the amps, so searching it first would
+    /// answer "Amp+Cab" for every amp and send the browser somewhere the block
+    /// may well not be. A block that really is a pair is known by its second
+    /// model, not by its first model's category.
     pub fn category_of(&self, model: &str) -> Option<u32> {
         self.categories
             .iter()
+            .filter(|c| !c.paired)
             .find(|c| c.models.iter().any(|m| m == model))
             .map(|c| c.id)
+    }
+
+    /// The cab that rides along with an amp in an Amp+Cab block.
+    pub fn paired_cab(&self, model: &Model) -> Option<&Model> {
+        self.model(model.cab_link.as_deref()?)
     }
 
     /// Models in a category, in the order HX Edit shows them.
@@ -581,6 +626,65 @@ pub(crate) mod tests {
                 "{structural} is not something you browse for"
             );
         }
+    }
+
+    /// Amp+Cab is the one category HX Edit's own catalog leaves out — its ids
+    /// run 0-9 and then 11 — so it is rebuilt from the amps that name a cab.
+    #[test]
+    fn amp_and_cab_is_rebuilt_from_the_amps_that_name_a_cab() {
+        let Some(c) = catalog() else { return };
+        let amp_cab = c.category(Category::AMP_CAB).expect("Amp+Cab is rebuilt");
+
+        assert_eq!(amp_cab.name, "Amp+Cab");
+        assert!(amp_cab.paired, "choosing one fills a block with two models");
+        assert!(amp_cab.is_effect(), "it belongs in the browser");
+
+        // It sits where HX Edit shows it: after Wah, before Amp.
+        let ids: Vec<u32> = c.categories().iter().map(|c| c.id).collect();
+        let at = ids.iter().position(|id| *id == Category::AMP_CAB).unwrap();
+        assert_eq!(ids[at - 1], 9, "Wah comes before it");
+        assert_eq!(ids[at + 1], Category::AMP, "Amp comes after it");
+
+        // Every model in it pairs with a cab, that cab is a real model, and
+        // both halves are known to the firmware by number — which is what
+        // choosing one actually sends, so a pair that cannot be numbered would
+        // be a tile that quietly does nothing.
+        assert!(!amp_cab.models.is_empty());
+        let numbered = |id: &str| c.symbols().iter().any(|s| s.model.as_deref() == Some(id));
+        for model in c.models_in(Category::AMP_CAB) {
+            let cab = c
+                .paired_cab(model)
+                .unwrap_or_else(|| panic!("{} names a cab that exists", model.id));
+            assert_eq!(c.category_of(&cab.id), Some(Category::CAB));
+            assert!(numbered(&model.id), "{} has a model number", model.id);
+            assert!(numbered(&cab.id), "{} has a model number", cab.id);
+        }
+
+        // And it re-lists amps rather than owning them, so an amp still
+        // browses as an Amp — otherwise swapping one would land here instead.
+        let amp = c.models_in(Category::AMP_CAB)[0];
+        assert_eq!(c.category_of(&amp.id), Some(Category::AMP));
+    }
+
+    /// The browser's category glyphs, including the one for the category
+    /// HX Edit's catalog never mentions.
+    #[test]
+    fn categories_resolve_to_icons_on_disk() {
+        let Some(c) = catalog() else { return };
+        let by_name = |n: &str| c.categories().iter().find(|c| c.name == n).unwrap();
+
+        for name in ["Distortion", "Amp", "Amp+Cab", "Reverb"] {
+            let (path, frames) = c
+                .category_artwork(by_name(name))
+                .unwrap_or_else(|| panic!("{name} has an icon"));
+            assert!(path.is_file());
+            assert_eq!(frames, 1, "{name} is a single image");
+        }
+
+        // Send/Return's is a strip, one frame per direction the block faces —
+        // the `%3` in its filename, the same convention as the endpoints.
+        let (_, frames) = c.category_artwork(by_name("Send/Return")).unwrap();
+        assert_eq!(frames, 3);
     }
 
     /// HX Edit shelves each category into Mono / Stereo / Legacy and the like.

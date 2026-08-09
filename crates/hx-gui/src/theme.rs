@@ -172,14 +172,28 @@ pub fn category_swatch(ui: &mut Ui, colour: Color32) -> Response {
     response
 }
 
-/// A category, as a chip in that category's own colour.
-pub fn category_chip(ui: &mut Ui, name: &str, colour: Color32, on: bool) -> Response {
-    let galley = ui.painter().layout_no_wrap(
-        name.to_owned(),
-        egui::FontId::proportional(12.0),
-        if on { Color32::BLACK } else { colour },
-    );
-    let size = Vec2::new(galley.size().x + 16.0, 22.0);
+/// A category, as a chip in that category's own colour, with HX Edit's own
+/// glyph for it where one is installed.
+///
+/// The icons are monochrome silhouettes, so they are tinted to match the text
+/// rather than drawn as they come — which also means the chip still reads when
+/// it is filled and the text goes black.
+pub fn category_chip(
+    ui: &mut Ui,
+    name: &str,
+    icon: Option<&Art>,
+    colour: Color32,
+    on: bool,
+) -> Response {
+    const ICON: f32 = 14.0;
+    const GAP: f32 = 5.0;
+
+    let ink = if on { Color32::BLACK } else { colour };
+    let galley = ui
+        .painter()
+        .layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.0), ink);
+    let art_width = icon.map_or(0.0, |_| ICON + GAP);
+    let size = Vec2::new(galley.size().x + art_width + 16.0, 22.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     if !ui.is_rect_visible(rect) {
         return response;
@@ -197,11 +211,20 @@ pub fn category_chip(ui: &mut Ui, name: &str, colour: Color32, on: bool) -> Resp
             ),
         );
     }
+    // Icon and label as one group, centred together.
+    let left = rect.center().x - (galley.size().x + art_width) / 2.0;
+    if let Some(icon) = icon {
+        icon.paint(
+            ui,
+            egui::Rect::from_min_size(
+                egui::pos2(left, rect.center().y - ICON / 2.0),
+                Vec2::splat(ICON),
+            ),
+            ink,
+        );
+    }
     painter.galley(
-        egui::pos2(
-            rect.center().x - galley.size().x / 2.0,
-            rect.center().y - galley.size().y / 2.0,
-        ),
+        egui::pos2(left + art_width, rect.center().y - galley.size().y / 2.0),
         galley,
         TEXT,
     );

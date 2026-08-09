@@ -36,8 +36,8 @@ pub(crate) fn catalog(dir: &Path) -> Result<Catalog, Error> {
     Ok(Catalog {
         resources: dir.to_owned(),
         symbols: symbols(dir, &models),
+        categories: categories(dir, &models)?,
         models,
-        categories: categories(dir)?,
         displays: read::<HashMap<String, Display>>(&dir.join("HelixControls.json"))
             .unwrap_or_default(),
     })
@@ -105,9 +105,9 @@ fn artwork(raw: &RawCatalog) -> HashMap<String, String> {
         .collect()
 }
 
-fn categories(dir: &Path) -> Result<Vec<Category>, Error> {
+fn categories(dir: &Path, models: &HashMap<String, Model>) -> Result<Vec<Category>, Error> {
     let raw: RawCatalog = read(&dir.join("HX_ModelCatalog.json"))?;
-    Ok(raw
+    let mut categories: Vec<Category> = raw
         .categories
         .into_iter()
         .map(|c| {
@@ -149,11 +149,67 @@ fn categories(dir: &Path) -> Result<Vec<Category>, Error> {
                 name: c.name,
                 short_name,
                 colour,
+                image: c.image,
+                paired: false,
                 models,
                 subcategories,
             }
         })
-        .collect())
+        .collect();
+
+    if let Some(amp_cab) = amp_and_cab(&categories, models) {
+        // Where HX Edit puts it: between Wah and Amp, which is where its own
+        // missing id belongs.
+        let at = categories
+            .iter()
+            .position(|c| c.id == Category::AMP)
+            .unwrap_or(categories.len());
+        categories.insert(at, amp_cab);
+    }
+
+    Ok(categories)
+}
+
+/// Rebuild the Amp+Cab category, which `HX_ModelCatalog.json` does not carry.
+///
+/// The file numbers its categories 0-9 and then jumps to 11 — there is no 10 —
+/// yet `icons_category` ships `FX_HX_Category_Amp+Cab.png` and HX Edit shows
+/// the category between Wah and Amp. What it lists is not a separate set of
+/// models: every amp in `amp.models` carries a `cablink` naming the cab it
+/// pairs with, and an Amp+Cab block is one slot holding both. So the category
+/// is the amps that name a cab, in Amp's own order, shelves and colour.
+fn amp_and_cab(categories: &[Category], models: &HashMap<String, Model>) -> Option<Category> {
+    let amp = categories.iter().find(|c| c.id == Category::AMP)?;
+    let pairs = |ids: &[String]| -> Vec<String> {
+        ids.iter()
+            .filter(|id| models.get(*id).is_some_and(|m| m.cab_link.is_some()))
+            .cloned()
+            .collect()
+    };
+
+    let models_with_cabs = pairs(&amp.models);
+    if models_with_cabs.is_empty() {
+        return None;
+    }
+
+    Some(Category {
+        id: Category::AMP_CAB,
+        name: "Amp+Cab".to_owned(),
+        short_name: "Amp+Cab".to_owned(),
+        colour: amp.colour,
+        image: Some("FX_HX_Category_Amp+Cab.png".to_owned()),
+        paired: true,
+        models: models_with_cabs,
+        subcategories: amp
+            .subcategories
+            .iter()
+            .map(|s| Subcategory {
+                name: s.name.clone(),
+                models: pairs(&s.models),
+            })
+            .filter(|s| !s.models.is_empty())
+            .collect(),
+    })
 }
 
 fn read<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, Error> {
@@ -178,6 +234,8 @@ struct RawCatalog {
 struct RawCategory {
     id: u32,
     name: String,
+    #[serde(default)]
+    image: Option<String>,
     #[serde(default, rename = "shortName")]
     short_name: String,
     /// Written as a hex string — "0xf5901e" — not a number.
@@ -224,6 +282,9 @@ struct RawModel {
     stereo: bool,
     #[serde(default)]
     load: f32,
+    /// Only amps carry this: the cab they pair with in an Amp+Cab block.
+    #[serde(default, rename = "cablink")]
+    cab_link: Option<String>,
     #[serde(default)]
     params: Vec<Fields>,
 }
@@ -263,6 +324,7 @@ impl From<RawModel> for Model {
             stereo: m.stereo,
             load: m.load,
             image: None,
+            cab_link: m.cab_link,
             params: m.params.into_iter().map(Param::from).collect(),
         }
     }

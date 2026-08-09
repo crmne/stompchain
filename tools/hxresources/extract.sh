@@ -21,6 +21,7 @@ WANTED=(
     HelixControls.json
     Helix.sym
     icons_models
+    icons_category
 )
 WANTED_GLOB='*.models'
 

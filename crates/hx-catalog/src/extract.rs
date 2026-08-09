@@ -10,11 +10,12 @@ use std::process::Command;
 
 /// The files worth taking: names, parameter ranges, display formatting, the
 /// number-to-model table, and the artwork.
-const WANTED: [&str; 4] = [
+const WANTED: [&str; 5] = [
     "HX_ModelCatalog.json",
     "HelixControls.json",
     "Helix.sym",
     "icons_models",
+    "icons_category",
 ];
 
 /// Where extracted resources go: the directory [`resources_dir`] reads,

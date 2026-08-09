@@ -430,6 +430,19 @@ impl Session {
     /// Like clearing, this needs the editing cursor on the block first — see
     /// [`Session::clear_block`] for why that matters.
     pub fn set_model(&mut self, block: i64, model: u32) -> Result<()> {
+        self.set_model_ref(block, model, None)
+    }
+
+    /// Make a block an Amp+Cab: an amp with its cab riding along in the same
+    /// slot, each keeping its own parameters.
+    ///
+    /// The pairing is the amp's, not a free choice — `amp.models` gives every
+    /// amp a `cablink`, and `hx_catalog::Catalog::paired_cab` resolves it.
+    pub fn set_model_pair(&mut self, block: i64, amp: u32, cab: u32) -> Result<()> {
+        self.set_model_ref(block, amp, Some(cab))
+    }
+
+    fn set_model_ref(&mut self, block: i64, model: u32, paired: Option<u32>) -> Result<()> {
         self.select_block(block)?;
         self.command(
             ChannelId::DATA,
@@ -437,9 +450,9 @@ impl Session {
             hx_proto::msgmap! {
                 rpc::key::BLOCK => Value::Int(block),
                 rpc::key::MODEL_REF => hx_proto::msgmap! {
-                    rpc::key::PAIRED => Value::Bool(false),
+                    rpc::key::PAIRED => Value::Bool(paired.is_some()),
                     rpc::key::MODEL => Value::Int(model as i64),
-                    rpc::key::PAIRED_MODEL => Value::Int(-1),
+                    rpc::key::PAIRED_MODEL => Value::Int(paired.map_or(-1, |p| p as i64)),
                 },
             },
         )
