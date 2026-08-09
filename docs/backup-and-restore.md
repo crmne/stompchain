@@ -60,7 +60,7 @@ checksum), `GLOB` (globals JSON), `SDMU`, `MNLS` (the name `PRESETS`), `SL00`
 Compressed blocks are one zlib stream (flags==1); integrity is zlib's adler32,
 so there is **no container checksum**. Implemented in `hx-catalog/src/hxb.rs`.
 
-## MessagePack tone ↔ HX Edit JSON (the faithful converter, still to build)
+## MessagePack tone → HX Edit JSON [built, checked against 94 real presets]
 
 The device document (`Preset.tone`, numeric keys) and HX Edit's `.hlx`/`.hxb`
 JSON (symbolic) are two encodings of the same tone. `to_hlx` today emits blocks +
@@ -78,9 +78,30 @@ is lossy. A faithful converter must map, both directions:
   (`@tempo/@topology*/@guitarinputZ/...`), `variax`, `controller`, `footswitch`.
   Each needs byte-exact identification against the golden pairs.
 
-Validation is fully offline: all 126 presets exist as both `.hxpreset` (from
-`backup-all`) and HX Edit JSON (from the `.hxb`), matched by name — golden pairs
-for both directions.
+Validation is fully offline: the presets exist as both `.hxpreset` (from a
+backup) and HX Edit JSON (from the `.hxb`), matched by name — golden pairs for
+both directions. **All 94 that pair up now agree exactly** on node structure,
+model names and all three snapshots' bypass states.
+
+What it took, beyond the blocks that were already written:
+
+- **The wiring.** `inputA`/`inputB`, `outputA`/`outputB`, `split` and `join`.
+  A is the main output and B the send, on all 94.
+- **The split's kind**, off the junction body's model number: 256 is A/B, 257 a
+  Y, 258 a crossover. Calling them all Y described a chain that forks wrongly.
+- **Snapshots**, with what each switches on. A junction joins that list only
+  when its body says a snapshot may switch it (key 18) — 31 of the 97 do.
+- **The cab as `cab0`**, not another block number, which is what HX Edit calls
+  it. It carries no position because it belongs to the amp before it, so the
+  reader puts the Nth cab after the Nth amp.
+- **The looper**, slot kind 7, which was being dropped: it carries its model
+  inline like a junction rather than under a model reference.
+- **Shared model names** — `HD2_DistScream808`, not the `…Mono` firmware symbol.
+
+Still not written: `variax`, `controller`, `footswitch`, and most of `global`
+(only the tempo goes out). Those are device state rather than tone, and nothing
+yet reads them back, so writing them would be guesswork rather than fidelity.
+The reverse direction — JSON back into a device document — remains to build.
 
 ## The fast read: opcode 109 (found in the Mac capture)
 

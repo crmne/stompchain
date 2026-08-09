@@ -127,6 +127,9 @@ pub enum Kind {
     Join,
     /// An effect, amp or cab.
     Block,
+    /// A looper, which the device keeps in a slot of its own rather than among
+    /// the effects - it carries its model inline, the way a junction does.
+    Looper,
     Empty,
     /// A slot kind we have not identified; carried through rather than dropped.
     Unknown(i64),
@@ -140,6 +143,7 @@ impl Kind {
             2 => Kind::Split,
             3 => Kind::Join,
             6 => Kind::Block,
+            7 => Kind::Looper,
             8 => Kind::Empty,
             other => Kind::Unknown(other),
         }
@@ -203,10 +207,39 @@ mod key {
     /// Tempo in BPM, within the settings.
     pub const TEMPO: i64 = 16;
 
+    /// The model number a junction holds, which is what kind of split it is:
+    /// a Y, an A/B or a crossover.
+    pub const JUNCTION_MODEL: i64 = 8;
+
+    /// On a split or a join: whether a snapshot can switch it. HX Edit lists
+    /// the junction among a snapshot's blocks only when this is set.
+    pub const JUNCTION_SNAPSHOTS: i64 = 18;
+
     /// Snapshots and footswitch assignments.
     pub const SNAPSHOT_SECTION: i64 = 10;
     pub const SNAPSHOTS: i64 = 10;
     pub const SNAPSHOT_NAME: i64 = 4;
+    /// Whether a snapshot holds anything.
+    pub const SNAPSHOT_VALID: i64 = 0;
+    /// Per-slot state within a snapshot: `[?, enabled]` for each slot, so a
+    /// snapshot remembers which blocks were on when it was taken.
+    pub const SNAPSHOT_SLOTS: i64 = 3;
+    /// The snapshot's own tempo.
+    pub const SNAPSHOT_TEMPO: i64 = 5;
+    /// Whether the name was typed rather than left as "SNAPSHOT 1".
+    pub const SNAPSHOT_NAMED: i64 = 14;
+}
+
+/// One snapshot: a remembered set of bypass states, with its own name and tempo.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Snapshot {
+    pub name: String,
+    pub tempo: Option<f32>,
+    pub valid: bool,
+    /// Whether the name was given rather than left at the default.
+    pub named: bool,
+    /// Whether each slot was on, indexed the same as [`Preset::slots`].
+    pub enabled: Vec<Option<bool>>,
 }
 
 impl Preset {
@@ -500,6 +533,56 @@ impl Preset {
             .collect()
     }
 
+    /// Every snapshot in full, not just its name.
+    ///
+    /// A snapshot is the preset's other half: the same blocks with a different
+    /// set of them switched on, under its own name and tempo. Anything that
+    /// claims to save a preset faithfully has to carry these, and reading only
+    /// the names - which is all [`snapshots`](Self::snapshots) does - loses
+    /// exactly what makes them worth having.
+    pub fn snapshot_details(&self) -> Vec<Snapshot> {
+        let Some(Value::Array(entries)) = self
+            .tone
+            .get(key::SNAPSHOT_SECTION)
+            .and_then(|s| s.get(key::SNAPSHOTS))
+        else {
+            return Vec::new();
+        };
+        entries
+            .iter()
+            .map(|e| Snapshot {
+                name: e
+                    .get(key::SNAPSHOT_NAME)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                tempo: e.get(key::SNAPSHOT_TEMPO).and_then(|v| match v {
+                    Value::F32(f) => Some(*f),
+                    Value::F64(f) => Some(*f as f32),
+                    Value::Int(i) => Some(*i as f32),
+                    _ => None,
+                }),
+                valid: matches!(e.get(key::SNAPSHOT_VALID), Some(Value::Bool(true))),
+                named: matches!(e.get(key::SNAPSHOT_NAMED), Some(Value::Bool(true))),
+                enabled: match e.get(key::SNAPSHOT_SLOTS) {
+                    Some(Value::Array(slots)) => slots
+                        .iter()
+                        .map(|s| match s {
+                            // Each slot reads `[?, enabled]`; the first field is
+                            // not understood and is not needed to know what was on.
+                            Value::Array(pair) => match pair.get(1) {
+                                Some(Value::Bool(b)) => Some(*b),
+                                _ => None,
+                            },
+                            _ => None,
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                },
+            })
+            .collect()
+    }
+
     /// How the slots are wired together.
     ///
     /// The slot array is a fixed topology, not a running order: the input, the
@@ -517,6 +600,45 @@ impl Preset {
             .get(key::ATTACH)
             .and_then(Value::as_i64)
             .map(|n| n as usize)
+    }
+
+    /// Where the split or join at `position` attaches: the slot it sits just
+    /// before on the main line. `None` if that slot is neither.
+    pub fn attach_of(&self, position: usize) -> Option<usize> {
+        let body_key = match self.slots.get(position).map(|s| s.kind) {
+            Some(Kind::Split) => key::SPLIT_BODY,
+            Some(Kind::Join) => key::JOIN_BODY,
+            _ => return None,
+        };
+        self.attach(position, body_key)
+    }
+
+    /// What kind of junction sits at `position`, as a model number - a Y split
+    /// and a crossover are different models, and a document that calls them all
+    /// Y describes a chain that splits the wrong way.
+    pub fn junction_model(&self, position: usize) -> Option<u32> {
+        let body_key = match self.slots.get(position).map(|s| s.kind) {
+            Some(Kind::Split) => key::SPLIT_BODY,
+            Some(Kind::Join) => key::JOIN_BODY,
+            _ => return None,
+        };
+        self.slot_body(position)?
+            .get(body_key)?
+            .get(key::JUNCTION_MODEL)
+            .and_then(Value::as_i64)
+            .map(|n| n as u32)
+    }
+
+    /// Whether a snapshot can switch the split or join at `position`.
+    ///
+    /// A junction is not always under snapshot control, and HX Edit lists it
+    /// among a snapshot's blocks only when it is - so anything writing that
+    /// document has to ask.
+    pub fn junction_switchable(&self, position: usize) -> bool {
+        matches!(
+            self.slot_body(position).and_then(|b| b.get(key::JUNCTION_SNAPSHOTS)),
+            Some(Value::Bool(true))
+        )
     }
 
     pub fn layout(&self) -> Layout {
@@ -558,7 +680,7 @@ impl Preset {
                         path.join = Some(position);
                     }
                 }
-                Kind::Block | Kind::Empty | Kind::Unknown(_) => {
+                Kind::Block | Kind::Looper | Kind::Empty | Kind::Unknown(_) => {
                     if slot.model.is_none() {
                         continue; // a free position, not a block
                     }
@@ -1502,5 +1624,46 @@ mod tests {
     #[test]
     fn rejects_a_blob_that_is_not_a_preset() {
         assert!(Preset::parse(b"\xa3abc").is_none());
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    /// Snapshots read back with their names, tempos and which blocks were on.
+    #[test]
+    fn snapshots_carry_more_than_their_names() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let Ok(entries) = std::fs::read_dir(&dir) else { return };
+        let mut checked = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("hxpreset") {
+                continue;
+            }
+            let bytes = std::fs::read(&path).unwrap();
+            let Some(preset) = Preset::parse(&bytes) else { continue };
+            let details = preset.snapshot_details();
+            if details.is_empty() {
+                continue;
+            }
+            // The names match what the older accessor reports, and each
+            // snapshot knows the state of every slot rather than none.
+            assert_eq!(
+                details.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
+                preset.snapshots(),
+                "{} names disagree",
+                path.display()
+            );
+            assert_eq!(
+                details[0].enabled.len(),
+                preset.slots.len(),
+                "{} should know every slot's state",
+                path.display()
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "no fixtures with snapshots");
     }
 }

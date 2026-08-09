@@ -39,7 +39,7 @@ pub mod settings;
 
 pub use frame::{ChannelHeader, ChannelId, Frame};
 pub use msgpack::Value;
-pub use preset::Preset;
+pub use preset::{Preset, Snapshot};
 pub use rpc::Message;
 
 /// Line 6's USB vendor id.

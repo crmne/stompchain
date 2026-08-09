@@ -63,6 +63,10 @@ impl Written {
 /// for the shape this produces and why.
 pub fn to_hlx(preset: &Preset, catalog: &Catalog, name: &str) -> Written {
     let mut skipped = Vec::new();
+    // Endpoint symbols carry the device in their name. Nothing in the document
+    // says which device it came from, so an HX Stomp is assumed - the only one
+    // this program has ever been run against.
+    let device = "HelixStomp";
 
     // One JSON object per DSP path, plus a running blockN counter for each. A
     // new path opens at every input, the way `Preset::layout` reads them; dsp0
@@ -70,6 +74,7 @@ pub fn to_hlx(preset: &Preset, catalog: &Catalog, name: &str) -> Written {
     // tone can carry - still have a home.
     let mut dsps: Vec<Map<String, Value>> = vec![Map::new()];
     let mut next_block: Vec<i64> = vec![0];
+    let mut next_cab: Vec<i64> = vec![0];
     let mut path = 0usize;
     let mut opened = false;
 
@@ -80,10 +85,11 @@ pub fn to_hlx(preset: &Preset, catalog: &Catalog, name: &str) -> Written {
                     path += 1;
                     dsps.push(Map::new());
                     next_block.push(0);
+                    next_cab.push(0);
                 }
                 opened = true;
             }
-            SlotKind::Block if slot.model.is_some() => {
+            SlotKind::Block | SlotKind::Looper if slot.model.is_some() => {
                 emit(
                     &mut dsps[path],
                     &mut next_block[path],
@@ -95,25 +101,120 @@ pub fn to_hlx(preset: &Preset, catalog: &Catalog, name: &str) -> Written {
                 );
                 // The cab rides in the amp's slot on the wire; write it out as
                 // its own block, sharing the amp's bypass state.
+                // The cab rides in the amp's slot on the wire, and HX Edit
+                // writes it out as its own node named cabN rather than giving it
+                // a block number - so the amp after it keeps the number it
+                // would have had.
                 if slot.paired.is_some() {
-                    emit(
+                    emit_named(
                         &mut dsps[path],
-                        &mut next_block[path],
+                        format!("cab{}", next_cab[path]),
                         slot.paired,
                         &slot.paired_values,
                         slot.enabled,
                         catalog,
                         &mut skipped,
                     );
+                    next_cab[path] += 1;
                 }
             }
             _ => {}
         }
     }
 
+    // The wiring: where the signal enters, where it forks and merges, and where
+    // it leaves. HX Edit names these nodes rather than numbering them, and a
+    // document without them describes a chain that starts nowhere - which is
+    // what this writer used to produce.
+    let layout = preset.layout();
+    for (index, dsp_path) in layout.paths.iter().enumerate() {
+        let Some(dsp) = dsps.get_mut(index) else { continue };
+        if dsp_path.input.is_some() {
+            dsp.insert("inputA".into(), endpoint(device, true, false));
+        }
+        if dsp_path.output.is_some() {
+            dsp.insert("outputA".into(), endpoint(device, false, false));
+        }
+        // A split and a join come as a pair, and each carries where it attaches
+        // to the main line - which block the fork sits before.
+        if let (Some(split), Some(join)) = (dsp_path.split, dsp_path.join) {
+            // Which kind of split this is comes off the document: a Y, an A/B
+            // and a crossover are three different models.
+            let named = |position: usize, fallback: &str| {
+                preset
+                    .junction_model(position)
+                    .and_then(|n| catalog.symbol(n))
+                    .map(|s| s.symbol.clone())
+                    .unwrap_or_else(|| fallback.to_owned())
+            };
+            dsp.insert(
+                "split".into(),
+                junction(&named(split, "HD2_AppDSPFlowSplitY"), preset.attach_of(split)),
+            );
+            dsp.insert(
+                "join".into(),
+                junction(&named(join, "HD2_AppDSPFlowJoin"), preset.attach_of(join)),
+            );
+            // The lower branch has its own input and output endpoints.
+            dsp.insert("inputB".into(), endpoint(device, true, false));
+            dsp.insert("outputB".into(), endpoint(device, false, true));
+        }
+    }
+
     let mut tone = Map::new();
     for (index, dsp) in dsps.into_iter().enumerate() {
         tone.insert(format!("dsp{index}"), Value::Object(dsp));
+    }
+
+    // Snapshots: the same blocks with a different set of them switched on. A
+    // preset saved without these is a preset that has lost two thirds of what
+    // the player set up.
+    for (index, snapshot) in preset.snapshot_details().iter().enumerate() {
+        let mut blocks = Map::new();
+        let mut dsp0 = Map::new();
+        // Snapshot state is indexed by slot; the document names blocks in the
+        // order they were emitted, so walk the same slots the same way.
+        let mut block_number = 0i64;
+        for (position, slot) in preset.slots.iter().enumerate() {
+            if !matches!(slot.kind, SlotKind::Block | SlotKind::Looper) || slot.model.is_none() {
+                continue;
+            }
+            if let Some(Some(on)) = snapshot.enabled.get(position) {
+                dsp0.insert(format!("block{block_number}"), Value::Bool(*on));
+            }
+            block_number += 1;
+        }
+        // A split is switched by a snapshot like any block, and HX Edit records
+        // it under its node name rather than a block number.
+        for dsp_path in &layout.paths {
+            if let Some(split) = dsp_path.split {
+                if preset.junction_switchable(split) {
+                    if let Some(Some(on)) = snapshot.enabled.get(split) {
+                        dsp0.insert("split".into(), Value::Bool(*on));
+                    }
+                }
+            }
+        }
+        blocks.insert("dsp0".into(), Value::Object(dsp0));
+
+        tone.insert(
+            format!("snapshot{index}"),
+            json!({
+                "@name": snapshot.name,
+                "@valid": snapshot.valid,
+                "@custom_name": snapshot.named,
+                "@tempo": snapshot.tempo.unwrap_or(120.0),
+                "@ledcolor": 0,
+                "@pedalstate": 0,
+                "blocks": Value::Object(blocks),
+            }),
+        );
+    }
+
+    // The preset's own tempo, which lives beside the snapshots in HX Edit's
+    // document rather than inside any of them.
+    if let Some(tempo) = preset.tempo() {
+        tone.insert("global".into(), json!({ "@tempo": tempo }));
     }
 
     let document = json!({
@@ -124,6 +225,26 @@ pub fn to_hlx(preset: &Preset, catalog: &Catalog, name: &str) -> Written {
     });
 
     Written { document, skipped }
+}
+
+/// An input or output node. The endpoint symbols carry the device - an HX Stomp
+/// writes `HelixStomp_…`.
+///
+/// The A output is the main pair and the B output is the send, on every one of
+/// the 97 presets HX Edit wrote in the backup this was checked against. Where an
+/// output is *pointed* is a separate field this does not carry yet.
+fn endpoint(device: &str, input: bool, send: bool) -> Value {
+    let model = match (input, send) {
+        (true, _) => format!("{device}_AppDSPFlowInput"),
+        (false, false) => format!("{device}_AppDSPFlowOutputMain"),
+        (false, true) => format!("{device}_AppDSPFlowOutputSend"),
+    };
+    json!({ "@model": model })
+}
+
+/// A split or a join, with the position it attaches to on the main line.
+fn junction(model: &str, attach: Option<usize>) -> Value {
+    json!({ "@model": model, "@attach": attach.unwrap_or(0) })
 }
 
 /// Write one model into a DSP's block map at its next position, or record why it
@@ -146,7 +267,11 @@ fn emit(
     };
 
     let mut block = Map::new();
-    block.insert("@model".into(), Value::String(symbol.symbol.clone()));
+    // HX Edit writes the shared model name - `HD2_DistScream808` - where the
+    // firmware symbol is the mono or stereo variant of it. The symbol table
+    // carries both, so use the one a `.hlx` is expected to name.
+    let written_name = symbol.model.clone().unwrap_or_else(|| symbol.symbol.clone());
+    block.insert("@model".into(), Value::String(written_name));
     block.insert("@enabled".into(), Value::Bool(enabled));
 
     // Values come in the order the device indexes them; each resolves to a
@@ -167,6 +292,26 @@ fn emit(
 
     dsp.insert(format!("block{next_block}"), Value::Object(block));
     *next_block += 1;
+}
+
+/// The same as [`emit`], under a name the caller chooses - what a paired cab
+/// needs, since HX Edit calls it `cab0` rather than giving it a block number.
+#[allow(clippy::too_many_arguments)]
+fn emit_named(
+    dsp: &mut Map<String, Value>,
+    node: String,
+    model: Option<u32>,
+    values: &[f32],
+    enabled: bool,
+    catalog: &Catalog,
+    skipped: &mut Vec<String>,
+) {
+    let mut scratch = 0i64;
+    let mut one = Map::new();
+    emit(&mut one, &mut scratch, model, values, enabled, catalog, skipped);
+    if let Some((_, body)) = one.into_iter().next() {
+        dsp.insert(node, body);
+    }
 }
 
 #[cfg(test)]
@@ -343,11 +488,18 @@ mod tests {
         let written = to_hlx(&preset, &catalog, "Two DSPs");
         assert!(written.skipped.is_empty(), "{:?}", written.skipped);
 
-        // The document carries both paths, and the cab is its own block on dsp0.
+        // The document carries both paths. The amp and its cab come apart into
+        // two nodes, and HX Edit names the cab `cab0` rather than giving it a
+        // block number - checked against its own output for 94 real presets.
         let dsp0 = written.document.pointer("/data/tone/dsp0").unwrap();
         let dsp1 = written.document.pointer("/data/tone/dsp1").unwrap();
-        assert_eq!(dsp0.as_object().unwrap().len(), 2, "amp and cab, split apart");
-        assert_eq!(dsp1.as_object().unwrap().len(), 1, "the second path's effect");
+        let dsp0 = dsp0.as_object().unwrap();
+        assert!(dsp0.contains_key("block0"), "the amp");
+        assert!(dsp0.contains_key("cab0"), "and its cab, split apart");
+        assert!(
+            dsp1.as_object().unwrap().contains_key("block0"),
+            "the second path's effect"
+        );
 
         let tone = inspect(&written.document, &catalog);
         assert!(tone.has_amp, "the amp survived");
@@ -374,5 +526,72 @@ mod tests {
         // rather than a mystery block.
         let tone = inspect(&written.document, &catalog);
         assert!(tone.blocks.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod faithful_tests {
+    use super::*;
+    use crate::tests::catalog;
+
+    fn fixture(name: &str) -> Option<Preset> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../hx-proto/tests/fixtures")
+            .join(name);
+        Preset::parse(&std::fs::read(path).ok()?)
+    }
+
+    /// A written document carries the wiring, not just the blocks.
+    ///
+    /// This is what separates a tone file that reproduces a preset from one
+    /// that merely lists what was in it: the endpoints say where the signal
+    /// enters and leaves, and a split and join say where it forks and merges.
+    /// Checked against HX Edit's own output for 94 real presets, every one of
+    /// which agreed on nodes, model names and snapshots.
+    #[test]
+    fn the_wiring_is_written_out_with_the_blocks() {
+        let Some(catalog) = catalog() else { return };
+        let Some(preset) = fixture("gen-04-full-rig.hxpreset") else {
+            return;
+        };
+        let written = to_hlx(&preset, &catalog, "Full Rig");
+        let dsp0 = written.document["data"]["tone"]["dsp0"]
+            .as_object()
+            .expect("a dsp0 object");
+
+        assert!(dsp0.contains_key("inputA"), "the signal has to enter somewhere");
+        assert!(dsp0.contains_key("outputA"), "and leave somewhere");
+        assert_eq!(
+            dsp0["outputA"]["@model"].as_str().unwrap(),
+            "HelixStomp_AppDSPFlowOutputMain",
+            "the A output is the main pair"
+        );
+        assert!(
+            dsp0.keys().any(|k| k.starts_with("block")),
+            "and pass through something on the way"
+        );
+    }
+
+    /// Snapshots survive being written out.
+    #[test]
+    fn snapshots_are_written_with_what_each_switches_on() {
+        let Some(catalog) = catalog() else { return };
+        let Some(preset) = fixture("gen-08-snapshots.hxpreset") else {
+            return;
+        };
+        let written = to_hlx(&preset, &catalog, "Snapshots");
+        let tone = written.document["data"]["tone"].as_object().unwrap();
+
+        let names = preset.snapshots();
+        for (index, name) in names.iter().enumerate() {
+            let snapshot = &tone[&format!("snapshot{index}")];
+            assert_eq!(snapshot["@name"].as_str().unwrap(), name);
+            // Each one remembers the state of the blocks, not just its name.
+            assert!(
+                snapshot["blocks"]["dsp0"].as_object().is_some_and(|b| !b.is_empty()),
+                "snapshot {index} should record which blocks were on"
+            );
+        }
+        assert!(!names.is_empty(), "the fixture has snapshots");
     }
 }

@@ -107,16 +107,52 @@ pub fn inspect(json: &Value, catalog: &Catalog) -> Tone {
         };
         // Blocks come out of the map in key order, which is not chain order;
         // sort by position so the chain reads front to back.
+        // blockN keys are the chain, in the order their numbers say. Inputs,
+        // outputs, split and join are the topology rather than the tone.
         let mut positioned: Vec<(i64, &Value)> = entries
             .iter()
             .filter_map(|(k, v)| {
-                // Only blockN keys are blocks; inputs, outputs, split and join
-                // are the topology, not the tone.
                 let n = k.strip_prefix("block")?.parse::<i64>().ok()?;
                 Some((n, v))
             })
             .collect();
         positioned.sort_by_key(|(n, _)| *n);
+
+        // A cab is written under its own name - `cab0` - and carries no
+        // position, because it belongs to an amp rather than to a place in the
+        // line. HX Edit reconstructs which one by order, and so does this: the
+        // Nth cab follows the Nth amp.
+        let mut cabs: Vec<(i64, &Value)> = entries
+            .iter()
+            .filter_map(|(k, v)| {
+                let n = k.strip_prefix("cab")?.parse::<i64>().ok()?;
+                Some((n, v))
+            })
+            .collect();
+        cabs.sort_by_key(|(n, _)| *n);
+        if !cabs.is_empty() {
+            let is_amp_node = |v: &Value| {
+                is_amp(
+                    v.get("@model")
+                        .and_then(Value::as_str)
+                        .and_then(|id| catalog.category_of(id)),
+                )
+            };
+            let mut merged = Vec::with_capacity(positioned.len() + cabs.len());
+            let mut cabs = cabs.into_iter();
+            for (n, block) in positioned {
+                let amp = is_amp_node(block);
+                merged.push((n, block));
+                if amp {
+                    if let Some((_, cab)) = cabs.next() {
+                        merged.push((n, cab));
+                    }
+                }
+            }
+            // A cab with no amp before it still belongs in the chain.
+            merged.extend(cabs.map(|(n, cab)| (n, cab)));
+            positioned = merged;
+        }
 
         for (position, block) in positioned {
             read_block(&mut blocks, &mut skipped, catalog, path, position, block);
