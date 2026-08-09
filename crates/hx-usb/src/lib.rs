@@ -213,14 +213,27 @@ impl Found {
 
     /// Open the device with every transfer copied into `log`, to capture a
     /// transcript that can be replayed offline later. See the `replay` module.
+    ///
+    /// Retries the device's every-other-attempt deafness like [`open`](Self::open)
+    /// does, clearing the log first so the retry records a clean session.
     pub fn open_recording(&self, log: replay::Log) -> Result<Session> {
+        match self.open_recording_once(&log) {
+            Err(Error::Timeout(_)) | Err(Error::Protocol(_)) => {
+                log.lock().unwrap().clear();
+                self.open_recording_once(&log)
+            }
+            other => other,
+        }
+    }
+
+    fn open_recording_once(&self, log: &replay::Log) -> Result<Session> {
         let (interface, ep_out, ep_in) = self.claim()?;
         let usb: Box<dyn Wire> = Box::new(UsbWire {
             ep_out,
             ep_in,
             read_posted: false,
         });
-        let wire: Box<dyn Wire> = Box::new(replay::RecordingWire::new(usb, log));
+        let wire: Box<dyn Wire> = Box::new(replay::RecordingWire::new(usb, log.clone()));
         Session::bring_up(Some(interface), wire, self.profile)
     }
 
