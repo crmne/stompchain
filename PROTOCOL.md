@@ -262,10 +262,38 @@ Four opcodes cover it:
 | 56 | `{98: block, 102: switch}` | put a block's bypass on a footswitch |
 | 57 | `{98: block, 102: switch}` | take it off again |
 | 33 | `{102: switch}` | read a footswitch's configuration |
+| 65 | `{98, 29, 26, 28, 119: value}` | the controller's Min |
+| 66 | `{98, 29, 26, 28, 119: value}` | its Max |
+| 58 | `{102: switch, 65: momentary}` | Type: latching or momentary |
+| 59 | `{102: switch, 109: label}` | set the switch's custom label |
+| 60 | `{102: switch}` | clear it again |
+| 61 | `{102: switch, 66: colour}` | set the switch's LED colour |
+| 62 | `{102: switch}` | put the LED back to Auto Color |
 
-Key **74 is the source**, as an ordinal in the order HX Edit lists them: 1–2 the
-expression pedals, 3–7 the footswitches, 8 MIDI CC, 9 Snapshots. Keys 72 and 73
-carry the ends of the controller's travel, normalised. Bypass is a switch, so
+Key **74 is the source**, as an ordinal in the order HX Edit lists them: **0
+None**, 1–2 the expression pedals, 3–7 the footswitches, 8 MIDI CC, 9 Snapshots
+— `74: 1` for EXP 1 and `74: 9` for Snapshots are ours, from the assign capture.
+Key **71 is not the constant it looks like**: it is the assignment's on switch,
+`4` when one is made and `0` when it is removed, and removing sends `{74: 0,
+71: 0}` rather than a separate opcode.
+
+**Min and Max are opcodes 65 and 66, not keys 72 and 73. [confirmed]** Dragging
+either end streams one write per intermediate value, the same way the global EQ
+does. Keys 72 and 73 remain what a *read* returns.
+
+**A bypass's Source list holds only footswitches and None. [confirmed]** No
+expression pedals — a bypass is a switch — and no MIDI CC either, because MIDI
+is not a source for a bypass: the assign page gives it its own **MIDI In** row,
+sent as `op37 {98: block, 95: cc, 96: 300, 74: 0, 71: 4}` with no parameter keys
+at all, and switched off again by the same message with `71: 0`. So opcode 68,
+which the inferred table calls "set MIDI CC", was never sent.
+
+Switch numbering is not consistent between these: opcodes 56 and 57 count from
+zero, `102: 0` being Footswitch 1, while the opcode 33 reads that follow them
+went 2, 3, 1 where 56 sent 1, 2, 0. Either 33 is one-based or it reads a
+neighbour, and that wants pinning before anything depends on it.
+
+Keys 72 and 73 carry the ends of the controller's travel, normalised. Bypass is a switch, so
 only a footswitch or a CC can drive it — HX Edit lists expression pedals for a
 bypass and then steps over them.
 
@@ -275,6 +303,15 @@ the accessibility API, which had this section stuck at "the menu opens and
 nothing can be chosen". A scroll event over the closed dropdown steps its
 selection and sends the traffic, which is how the whole source list was mapped
 one entry at a time.
+
+### An opcode-20 reply of 1 is not a failure [confirmed]
+
+Selecting a preset answers `{103: 1}` on the control channel and then reports
+`{103: 0}` a millisecond later as an `ev20` notification, followed by the ev8 /
+ev39 / ev4 sequence of the preset actually loading. So `103` on opcode 20 is not
+the error field it is everywhere else — 1 means the request was taken and will
+finish asynchronously. A client that treats a non-zero `103` as a refusal will
+decide every preset change failed, and then reload nothing.
 
 ### Identifying a flag by patching the reply [method]
 
@@ -347,7 +384,7 @@ Two real exchanges from our capture:
 | Op | Meaning | Args |
 |---|---|---|
 | 1 | list presets | `{107: setlist, 101: 2}` → array of `{index: {109: name, …}}` |
-| 20 | select preset | `{107: setlist, 108: index}` |
+| 20 | select preset | `{107: setlist, 108: index}` — answers `103: 1`, see below |
 | 22 | read current preset document | nil |
 | 23 | current preset metadata | nil — returns `{107, 108, 109: name}` |
 | 24 | fetch object by id | `{118: id}` |
@@ -375,20 +412,19 @@ Two real exchanges from our capture:
 | 76 | read the global EQ | `{}` → `{63: enabled, 55: [11 coefficients]}` |
 | 77 | reset the global EQ | `{}` → the same shape as opcode 76 |
 | 6 | rename preset | `{107: setlist, 108: index, 109: name}` |
-| 61 | set footswitch LED colour | — |
-| 59 | set footswitch label | — |
 | 68 | set MIDI CC / channel | — |
 | 25 | set footswitch function | — |
 | 78 | highlight slot | — |
 
-Opcode 112 is now known — it lists favorites, and the session-setup call is
+Opcodes 59 and 61 are no longer inferred: `capture.sh assign` caught them, and
+they are in the assignment table above with their real arguments. Opcode 112 is
+now known too — it lists favorites, and the session-setup call is
 just the editor populating that tab. Opcodes 0, 23, 76, 99 and 254 are still
 only observed during session setup, and need hardware that exposes them: the Command Center opcodes are
-inert on an HX Stomp, so a Helix Floor or LT is the prerequisite. Opcodes 6, 59, 61, 68 and 78 come from the
-`kempline/helix_usb` project rather than our own captures. **[inferred]** —
-`capture.sh assign` is the scenario aimed at 59, 61 and 68, which are the
-footswitch's label, LED colour and MIDI CC on the Bypass/Controller Assign
-page. Its "opcode 25, set footswitch function" is our own opcode 25 with
+inert on an HX Stomp, so a Helix Floor or LT is the prerequisite. Opcodes 6, 68 and 78 still come from the `kempline/helix_usb` project rather
+than our own captures. **[inferred]** — and opcode 68 in particular now looks
+doubtful: a whole session of setting MIDI In on the assign page never sent it
+(see below). Its "opcode 25, set footswitch function" is our own opcode 25 with
 `{118: 97|98|99}`: a device setting like any other, not a separate operation.
 
 Common argument keys: `107` setlist, `108` preset index, `109` name, `118` object
