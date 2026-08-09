@@ -44,6 +44,7 @@ enum LoadKind {
 
 /// One row in the library browser: the file, its tone name and a one-line
 /// reading of the chain (both derived from the file), and its saved metadata.
+#[derive(Clone)]
 struct LibEntry {
     file: std::path::PathBuf,
     file_name: String,
@@ -2292,6 +2293,19 @@ impl App {
 
         ui.add_space(10.0);
         ui.separator();
+        // The way a tone leaves this machine for the web: the .hlx the site
+        // reads, and the details beside it in the site's own field names.
+        if ui
+            .button("Export for the web")
+            .on_hover_text(
+                "write this tone as .hlx with its details alongside, \
+                 ready to upload",
+            )
+            .clicked()
+        {
+            self.export_for_the_web(i);
+        }
+        ui.add_space(6.0);
         // Removal drops the file into the library's .trash - recoverable, so no
         // confirmation ceremony.
         if ui
@@ -2307,6 +2321,58 @@ impl App {
             self.lib_selected = None;
             self.refresh_library();
         }
+    }
+
+    /// Write a library tone out in the shape the Tones site takes.
+    ///
+    /// Two files, not one: the `.hlx` the site parses for what the tone *is* —
+    /// through the same inspector the site runs, so the two cannot drift — and
+    /// a `.json` of what only a person knows, in the site's own field names.
+    /// The library keeps whole device documents, so the `.hlx` is made here
+    /// rather than stored; snapshots and routing stay in the library copy,
+    /// which is the one that goes back on a pedal.
+    fn export_for_the_web(&mut self, index: usize) {
+        let Some(entry) = self.lib_entries.get(index).cloned() else {
+            return;
+        };
+        let Some(catalog) = self.catalog.as_ref() else {
+            self.note("exporting needs HX Edit's model data first".into());
+            return;
+        };
+        let Some(dir) = rfd::FileDialog::new()
+            .set_title("Where to put the tone")
+            .pick_folder()
+        else {
+            return;
+        };
+
+        let stem = sanitise(&entry.name);
+        let document = match std::fs::read(&entry.file) {
+            Ok(bytes) => bytes,
+            Err(e) => return self.note(format!("could not read {}: {e}", entry.name)),
+        };
+        // A library tone is a device document; the site wants the symbolic
+        // form. A tone kept as .hlx already is passed through untouched.
+        let hlx = if entry.file.extension().is_some_and(|e| e.eq_ignore_ascii_case("hlx")) {
+            String::from_utf8_lossy(&document).into_owned()
+        } else {
+            match hx_proto::preset::Preset::parse(&document) {
+                Some(preset) => hx_catalog::to_hlx(&preset, catalog, &entry.name).to_pretty_string(),
+                None => return self.note(format!("{} is not a readable preset", entry.name)),
+            }
+        };
+
+        let tone = dir.join(format!("{stem}.hlx"));
+        if let Err(e) = std::fs::write(&tone, hlx) {
+            return self.note(format!("could not write {}: {e}", tone.display()));
+        }
+        let details = dir.join(format!("{stem}.json"));
+        let json = serde_json::to_vec_pretty(&entry.meta.for_the_web(&entry.name))
+            .unwrap_or_default();
+        if let Err(e) = std::fs::write(&details, json) {
+            return self.note(format!("could not write {}: {e}", details.display()));
+        }
+        self.note(format!("exported {} to {}", entry.name, dir.display()));
     }
 
     /// The impulse response slots, mirroring HX Edit's IRs tab.

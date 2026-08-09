@@ -169,6 +169,75 @@ pub fn save_meta(file_name: &str, meta: &Meta) -> Result<(), String> {
     std::fs::write(dir.join("index.json"), json).map_err(|e| e.to_string())
 }
 
+impl Meta {
+    /// This tone's details in the shape the Tones site takes them.
+    ///
+    /// The field set was chosen to match, so this is nearly a straight copy -
+    /// but "nearly" is where uploads fail. Two fields are enums on the site and
+    /// free text here, so they are mapped to the site's own keys and dropped
+    /// when they do not match one, rather than sent as something the site will
+    /// reject with a validation error nobody can act on. `kind` follows the
+    /// same rule the site uses: a tone with a song is a song, otherwise it is
+    /// an original.
+    pub fn for_the_web(&self, name: &str) -> serde_json::Value {
+        let mut tone = serde_json::Map::new();
+        tone.insert("name".into(), name.into());
+        tone.insert("tags".into(), self.tags.clone().into());
+        for (field, value) in [
+            ("description", &self.description),
+            ("part", &self.part),
+            ("tuning", &self.tuning),
+            ("guitar_type", &self.guitar),
+            ("song", &self.song),
+            ("artist", &self.artist),
+        ] {
+            if !value.trim().is_empty() {
+                tone.insert(field.into(), value.trim().into());
+            }
+        }
+        if let Some(key) = pickup_type_key(&self.pickup_type) {
+            tone.insert("pickup_type".into(), key.into());
+        }
+        if let Some(key) = pickup_electronics_key(&self.pickup_electronics) {
+            tone.insert("pickup_electronics".into(), key.into());
+        }
+        tone.insert(
+            "kind".into(),
+            if self.song.trim().is_empty() {
+                "original"
+            } else {
+                "song"
+            }
+            .into(),
+        );
+        serde_json::Value::Object(tone)
+    }
+}
+
+/// The site's `pickup_type` keys, from however the field was typed here.
+fn pickup_type_key(value: &str) -> Option<&'static str> {
+    let folded: String = value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    match folded.as_str() {
+        "singlecoil" | "single" | "sc" => Some("single_coil"),
+        "humbucker" | "hb" | "bucker" => Some("humbucker"),
+        "p90" | "p90s" => Some("p90"),
+        _ => None,
+    }
+}
+
+/// The site's `pickup_electronics` keys.
+fn pickup_electronics_key(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "passive" => Some("passive"),
+        "active" => Some("active"),
+        _ => None,
+    }
+}
+
 /// One slot of a setlist.
 ///
 /// The name rides along with the file so a setlist can be read, listed and
@@ -430,6 +499,34 @@ mod tests {
         remove_setlist(&path).unwrap();
         assert!(setlists().is_empty());
         assert_eq!(entries().len(), 1, "the tone outlives the setlist");
+    }
+
+    /// The site's two enum fields are free text here, and an upload that sends
+    /// "Humbucker" where the site wants "humbucker" fails a validation the
+    /// person cannot see. What will not map is left out rather than guessed.
+    #[test]
+    fn the_web_shape_uses_the_sites_own_enum_keys() {
+        let meta = Meta {
+            pickup_type: "Humbucker".into(),
+            pickup_electronics: "Passive".into(),
+            song: "Blackened".into(),
+            artist: "Metallica".into(),
+            tags: vec!["thrash".into()],
+            ..Default::default()
+        };
+        let json = meta.for_the_web("Blackened Rhythm");
+        assert_eq!(json["name"], "Blackened Rhythm");
+        assert_eq!(json["pickup_type"], "humbucker");
+        assert_eq!(json["pickup_electronics"], "passive");
+        assert_eq!(json["kind"], "song", "a tone with a song is a song");
+        assert_eq!(json["tags"][0], "thrash");
+
+        // Nothing typed, nothing sent - and no song makes it an original.
+        let bare = Meta { pickup_type: "mystery".into(), ..Default::default() };
+        let json = bare.for_the_web("Untitled");
+        assert!(json.get("pickup_type").is_none(), "an unmappable pickup is left out");
+        assert!(json.get("description").is_none(), "empty fields are left out");
+        assert_eq!(json["kind"], "original");
     }
 
     #[test]
