@@ -14,3 +14,7 @@ hx-proto.workspace = true
 # hands the app a file descriptor and nothing else.
 nusb = "0.2"
 thiserror.workspace = true
+# A backup bundle's manifest is JSON, so a person can open one and read what it
+# holds without this program.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

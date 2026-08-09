@@ -15,6 +15,7 @@ use nusb::transfer::{Buffer, Bulk, In, Out};
 use nusb::MaybeFuture;
 
 mod commands;
+pub mod backup;
 pub mod replay;
 
 /// The claimed interface and its two bulk endpoints, ready to become a wire.

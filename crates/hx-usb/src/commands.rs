@@ -103,6 +103,64 @@ impl Session {
             .collect())
     }
 
+    /// Read an impulse response back off the device.
+    ///
+    /// The other half of [`upload_ir`](Self::upload_ir), and the piece a backup
+    /// needs: without it an IR that only ever existed on the pedal could not be
+    /// saved anywhere. Two opcodes, the way the editor's own export does it -
+    /// op12 for the descriptor and op11 for the samples.
+    ///
+    /// What comes back is what the device stores rather than what was uploaded:
+    /// always 48 kHz mono `f32`, always 2048 samples, shorter files zero-padded
+    /// and longer or higher-rate ones resampled on the way in. `None` is an
+    /// empty slot.
+    pub fn read_ir(&mut self, slot: i64) -> Result<Option<(String, Vec<f32>)>> {
+        self.bootstrap()?;
+        let descriptor = self.request(
+            ChannelId::CONTROL,
+            rpc::op::IR_DESCRIPTOR,
+            hx_proto::msgmap! { rpc::key::IR_SLOT => Value::Int(slot) },
+        )?;
+        let Some(name) = descriptor.get(rpc::key::NAME).and_then(Value::as_str) else {
+            return Ok(None);
+        };
+        let name = name.to_owned();
+
+        let samples = self.request(
+            ChannelId::CONTROL,
+            rpc::op::IR_SAMPLES,
+            hx_proto::msgmap! {
+                rpc::key::IR_SLOT => Value::Int(slot),
+                rpc::key::ARGS => Value::Int(2),
+            },
+        )?;
+        let Some(bytes) = samples.as_raw() else {
+            return Ok(None);
+        };
+        Ok(Some((
+            name,
+            bytes
+                .chunks_exact(4)
+                .map(|w| f32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+                .collect(),
+        )))
+    }
+
+    /// Rename an impulse response slot, leaving its samples alone.
+    pub fn rename_ir(&mut self, slot: i64, name: &str) -> Result<()> {
+        self.bootstrap()?;
+        self.command(
+            ChannelId::CONTROL,
+            rpc::op::RENAME_IR,
+            hx_proto::msgmap! {
+                rpc::key::IR_SLOT => Value::Int(slot),
+                rpc::key::NAME => Value::Str(name.to_owned()),
+            },
+        )?;
+        self.settle_flash();
+        Ok(())
+    }
+
     /// Bring the control channel up to the state HX Edit leaves it in.
     ///
     /// Opening the service is not enough: HX Edit follows it with a fixed

@@ -156,6 +156,70 @@ fn reading_a_slot_does_not_load_it() {
     assert_healthy(&mut s, "indexed read");
 }
 
+/// Writing a preset straight into a slot, and emptying one again.
+///
+/// This is the restore path, so it has to be right, and it is checked on an
+/// **empty slot** - never one holding someone's tone. It writes a preset there,
+/// reads it back to prove it landed, then empties the slot again, leaving the
+/// pedal exactly as it was found. If no slot is empty the test says so and
+/// stops rather than overwriting anything.
+#[test]
+#[ignore = "needs an HX device"]
+fn writing_a_slot_lands_and_clearing_it_empties_it() {
+    let Some(mut s) = device() else { return };
+    let (setlist, loaded, _) = s.preset_info().expect("preset info");
+
+    // A slot the device reports as holding nothing at all.
+    let names = s.presets(setlist).expect("preset names");
+    let spare = (0..names.len() as i64).find(|i| {
+        matches!(s.read_preset_at(setlist, *i), Ok(None))
+    });
+    let Some(spare) = spare else {
+        eprintln!("SKIPPED: every slot holds a preset, so there is nowhere safe to write");
+        return;
+    };
+
+    // Something recognisable to write there: the first preset that exists.
+    let source = (0..names.len() as i64)
+        .find_map(|i| s.read_preset_at(setlist, i).ok().flatten())
+        .expect("some preset to copy");
+
+    s.write_preset_at(setlist, spare, "STOMPCHAIN TEST", &source)
+        .expect("writing the spare slot");
+
+    let back = s
+        .read_preset_at(setlist, spare)
+        .expect("reading it back")
+        .expect("the slot now holds a preset");
+    let chain = |p: &hx_proto::Preset| -> Vec<_> {
+        p.slots.iter().map(|s| (s.kind, s.model, s.values.clone())).collect()
+    };
+    assert_eq!(chain(&back), chain(&source), "the written preset must land intact");
+    assert_eq!(
+        s.presets(setlist).expect("names")[spare as usize],
+        "STOMPCHAIN TEST",
+        "and under the name it was given"
+    );
+
+    // Put the slot back the way it was found.
+    s.clear_preset_at(setlist, spare).expect("clearing the slot");
+    assert!(
+        matches!(s.read_preset_at(setlist, spare), Ok(None)),
+        "clearing a slot must leave it empty again"
+    );
+
+    assert_eq!(
+        s.preset_info().expect("info").1,
+        loaded,
+        "none of this should have changed the loaded preset"
+    );
+    assert_healthy(&mut s, "writing and clearing a slot");
+    // The device serves one session at a time, so this one has to go before
+    // another can prove the flash writes left it able to open again.
+    drop(s);
+    assert_reconnectable("writing and clearing a slot");
+}
+
 /// A whole setlist read the fast way, which is what a backup does.
 ///
 /// Read-only, and the point is the wall clock: 126 presets used to mean 126

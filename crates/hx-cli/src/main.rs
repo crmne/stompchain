@@ -94,6 +94,30 @@ enum Cmd {
         #[arg(long, default_value_t = 0)]
         setlist: i64,
     },
+    /// Back up the whole pedal: every preset, setting and impulse response.
+    ///
+    /// Writes a bundle directory you can read, copy and restore from. Quick,
+    /// because it reads each slot where it lies instead of loading it, and the
+    /// preset you are playing never changes.
+    BackUp {
+        /// Where to write the bundle.
+        directory: std::path::PathBuf,
+    },
+    /// Put a bundle back onto the pedal.
+    ///
+    /// Restores everything unless you name the parts you want.
+    RestoreAll {
+        directory: std::path::PathBuf,
+        /// Restore only the presets.
+        #[arg(long)]
+        presets: bool,
+        /// Restore only the global settings.
+        #[arg(long)]
+        globals: bool,
+        /// Restore only the impulse responses.
+        #[arg(long)]
+        irs: bool,
+    },
     /// Commit the edit buffer to a preset, making the changes permanent.
     ///
     /// Everything else edits the device's scratch buffer: change a parameter
@@ -294,6 +318,13 @@ fn on_device(cmd: Cmd) -> Result<()> {
         Cmd::CopyBlock { from, to } => copy_block(s, from, to),
         Cmd::CopySnapshot { from, to } => copy_snapshot(s, from, to),
         Cmd::BackupAll { directory, setlist } => backup_all(s, &directory, setlist),
+        Cmd::BackUp { directory } => back_up(s, &directory),
+        Cmd::RestoreAll {
+            directory,
+            presets,
+            globals,
+            irs,
+        } => restore_all(s, &directory, presets, globals, irs),
         Cmd::Slot { position } => {
             let preset = session.read_preset()?;
             match preset.raw_slot(position) {
@@ -708,6 +739,85 @@ fn backup_all(
     session.select_preset(setlist, started_at)?;
     println!("done; the preset you had loaded is back");
     Ok(())
+}
+
+/// Back up the whole pedal into a bundle directory.
+fn back_up(session: &mut hx_usb::Session, directory: &std::path::Path) -> Result<()> {
+    use hx_usb::backup::Step;
+
+    let started = std::time::Instant::now();
+    let manifest = hx_usb::backup::capture(session, directory, now(), |step| match step {
+        Step::Presets { done, total, name } => {
+            if !name.is_empty() {
+                println!("  {}  {name}", hx_proto::rpc::slot_label(done as i64));
+            }
+            let _ = total;
+        }
+        Step::Globals => println!("  settings"),
+        Step::Irs { done, total } => println!("  impulse response {}/{total}", done + 1),
+        Step::Done => {}
+    })
+    .context("backing up the pedal")?;
+
+    let kept = manifest.presets.iter().filter(|n| !n.is_empty()).count();
+    println!(
+        "\nbacked up {kept} presets, {} settings and {} impulse responses to {} in {:.1?}",
+        manifest.globals,
+        manifest.irs.len(),
+        directory.display(),
+        started.elapsed(),
+    );
+    Ok(())
+}
+
+/// Put a bundle back onto the pedal.
+fn restore_all(
+    session: &mut hx_usb::Session,
+    directory: &std::path::Path,
+    presets: bool,
+    globals: bool,
+    irs: bool,
+) -> Result<()> {
+    use hx_usb::backup::{Parts, Step};
+
+    // Naming no part means all of them, which is what a restore usually is.
+    let parts = if presets || globals || irs {
+        Parts { presets, globals, irs }
+    } else {
+        Parts::default()
+    };
+
+    let manifest = hx_usb::backup::open(directory).context("reading the bundle")?;
+    println!(
+        "restoring {} ({}), taken {}",
+        directory.display(),
+        manifest.device,
+        manifest.captured,
+    );
+
+    let started = std::time::Instant::now();
+    hx_usb::backup::restore(directory, session, parts, |step| match step {
+        Step::Presets { done, total, name } => {
+            if done % 10 == 0 || done + 1 == total {
+                println!("  presets {}/{total}", done + 1);
+            }
+            let _ = name;
+        }
+        Step::Globals => println!("  settings"),
+        Step::Irs { done, total } => println!("  impulse response {}/{total}", done + 1),
+        Step::Done => {}
+    })
+    .context("restoring the pedal")?;
+    println!("done in {:.1?}", started.elapsed());
+    Ok(())
+}
+
+/// Seconds since the epoch, for stamping a bundle.
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Make a preset name safe to use as a filename.
