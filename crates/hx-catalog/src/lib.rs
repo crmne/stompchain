@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+pub mod build;
 pub mod extract;
 mod format;
 mod hxb;
@@ -26,6 +27,7 @@ pub use hxb::{
     Container, Favourite,
 };
 pub use inspect::{inspect, ChainContent, OutputTarget, Tone, ToneBlock};
+pub use build::{slots_from_hlx, Built};
 pub use write::{to_hlx, Written};
 
 /// Everything HX Edit knows about models and their parameters.

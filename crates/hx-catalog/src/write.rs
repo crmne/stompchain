@@ -277,9 +277,15 @@ fn emit(
     // Values come in the order the device indexes them; each resolves to a
     // parameter whose symbolic id keys it in the file. A switch is written as a
     // bool, the way the reader folds it back to 0.0/1.0.
+    // Cabs, delays, reverbs and the FX Loop store one value more than the
+    // symbol table names - see PROTOCOL.md on the second count a value array
+    // carries. Dropping it made a `.hlx` of a cab quietly lose a setting, and
+    // made the trip back impossible; it is written under a key of our own,
+    // after the named ones, so nothing that reads by parameter id sees it.
+    let mut unnamed = Vec::new();
     for (index, value) in values.iter().enumerate() {
         let Some(param) = catalog.param(number, index) else {
-            skipped.push(format!("{}: no parameter at index {index}", symbol.symbol));
+            unnamed.push(json!(*value));
             continue;
         };
         let written = if param.kind == crate::Kind::Switch {
@@ -288,6 +294,14 @@ fn emit(
             json!(*value)
         };
         block.insert(param.id.clone(), written);
+    }
+    if !unnamed.is_empty() {
+        skipped.push(format!(
+            "{}: {} value(s) the catalog does not name, kept as @unnamed",
+            symbol.symbol,
+            unnamed.len()
+        ));
+        block.insert("@unnamed".into(), Value::Array(unnamed));
     }
 
     dsp.insert(format!("block{next_block}"), Value::Object(block));
