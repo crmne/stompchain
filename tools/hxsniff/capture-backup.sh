@@ -1,30 +1,47 @@
 #!/bin/bash
-# capture-backup.sh - one-shot capture of HX Edit performing a full backup, so we
-# can reverse-engineer how it reads all 126 presets (the "fast read"), plus its
-# IR and global-settings reads.
+# capture-backup.sh - one-shot capture of HX Edit reading or writing the pedal,
+# so we can reverse-engineer its fast object-transfer protocol (opcode 109).
 #
 # Run this on the Mac with the HX Stomp plugged into the Mac:
 #
-#     bash tools/hxsniff/capture-backup.sh
+#     bash tools/hxsniff/capture-backup.sh            # capture a BACKUP (read)
+#     bash tools/hxsniff/capture-backup.sh restore    # capture a RESTORE (write)
 #
 # It builds the libusb interposer, launches an instrumented copy of HX Edit
-# (logging every USB transfer), waits while you do a backup, then leaves the
-# capture at  captures/mac-backup-capture.log  ready to commit and push back.
+# (logging every USB transfer), waits while you do the operation, then leaves the
+# capture at  captures/mac-<label>-capture.log  ready to commit and push back.
 #
-# Nothing here touches the installed HX Edit or the pedal's contents: HX Edit
-# only *reads* during a backup, and run.sh works on a re-signed copy of the app.
+# run.sh works on a re-signed *copy* of HX Edit; the installed app is untouched.
+# A restore of the .hxb you just made writes the same data back, so it is safe.
 set -euo pipefail
 
+LABEL="${1:-backup}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 WORK="${WORK:-$HOME/.cache/hxsniff}"
 LOG="${HXSNIFF_LOG:-$WORK/hxsniff.log}"
-OUT="$REPO/captures/mac-backup-capture.log"
+OUT="$REPO/captures/mac-${LABEL}-capture.log"
 
 # Build the interposer and launch the instrumented HX Edit (it logs to $LOG and
 # runs in the background; run.sh returns once it is up).
 bash "$HERE/run.sh"
 
+if [ "$LABEL" = "restore" ]; then
+cat <<'STEPS'
+
+================================================================
+  Capture is running. In the HX Edit window that just opened:
+
+    1. Wait for it to connect to the HX Stomp.
+    2. File -> Restore from Backup...  and pick the .hxb you
+       just made (same data, so nothing is lost).
+    3. Let it finish ("transferring data" on the pedal).
+    4. Quit HX Edit  (Cmd-Q)   <-- the capture ends when it quits.
+================================================================
+
+Waiting for HX Edit to quit...
+STEPS
+else
 cat <<'STEPS'
 
 ================================================================
@@ -39,6 +56,7 @@ cat <<'STEPS'
 
 Waiting for HX Edit to quit...
 STEPS
+fi
 
 # Give it a moment to appear, then wait for the instrumented copy to exit.
 sleep 3
