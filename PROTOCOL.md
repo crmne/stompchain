@@ -768,6 +768,28 @@ is the one field of a slot that a `.hlx` does not record.
 `Catalog::type_tag` derives it and `hx-catalog/tests/type_tags.rs` pins the
 derivation against every captured fixture.
 
+### The second count in a value array [confirmed]
+
+A slot's values arrive as `{2: count, 3: count, 4: [values…]}`, and the two
+counts are not always the same. Key 2 is the number of values, always. Key 3 is
+the same number for most models and **one less** for cabs, delays, reverbs and
+the FX Loop.
+
+Keyed by category the difference is 0 or 1 with no category showing both, and
+the one category that did — Send/Return — splits by model exactly as the engine
+class does: the FX Loop takes 1 and Send 0. So these models carry a parameter the
+array holds and this count does not admit to. **Which** parameter is open; that
+it costs exactly one is not, which is enough to write the field correctly.
+
+Rebuilding every fixture's slots from their parsed form and re-encoding is what
+surfaced this: with key 3 set naively to the value count, the presets holding
+only simple effects came back byte-exact and every one holding a cab, a delay or
+a reverb differed. `Catalog::value_count_2` derives it, pinned by the same test
+as the engine class.
+
+Together those two fields are everything a slot carries that a `.hlx` does not,
+which is what the JSON-to-document direction has been waiting on.
+
 ### The slot array is a topology, not a running order [confirmed]
 
 The array is laid out per signal path as:

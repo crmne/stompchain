@@ -377,6 +377,35 @@ impl Catalog {
         self.model(model.cab_link.as_deref()?)
     }
 
+    /// The second count a slot's value array carries — key 3, beside key 2.
+    ///
+    /// Key 2 is the number of values. Key 3 is the same number for most models
+    /// and one less for cabs, delays, reverbs and the FX Loop — the models that
+    /// carry a parameter the array holds but this count does not admit to. What
+    /// that parameter is remains open; what it costs is one, consistently, so a
+    /// written document can carry the right number without knowing why.
+    ///
+    /// Checked over every captured preset: keyed by category, the difference is
+    /// 0 or 1 with no category showing both, and the one category that did -
+    /// Send/Return - splits by model exactly as the engine class does, the FX
+    /// Loop taking 1 and Send 0.
+    ///
+    /// Like [`type_tag`](Self::type_tag), this matters only when *building* a
+    /// document: editing one carries the array through as it came.
+    pub fn value_count_2(&self, model: u32, values: usize) -> Option<i64> {
+        let model = self.model_number(model)?;
+        if model.name.starts_with("Send") {
+            return Some(values as i64);
+        }
+        let category = self
+            .category_of(&model.id)
+            .and_then(|id| self.category(id))
+            .map(|c| c.name.as_str())
+            .unwrap_or("");
+        let short = matches!(category, "Cab" | "Delay" | "Reverb" | "Send/Return");
+        Some(values as i64 - short as i64)
+    }
+
     /// The engine class the device stamps on a slot — key 9 in the document.
     ///
     /// Needed to *build* a preset rather than edit one: every other field of a
