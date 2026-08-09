@@ -40,6 +40,16 @@ enum LoadKind {
     Steps(Vec<session::ApplyBlock>),
 }
 
+/// One row in the library browser: the file, its tone name and a one-line
+/// reading of the chain (both derived from the file), and its saved metadata.
+struct LibEntry {
+    file: std::path::PathBuf,
+    file_name: String,
+    name: String,
+    line: String,
+    meta: library::Meta,
+}
+
 pub struct App {
     to_device: Sender<Cmd>,
     from_device: Receiver<Evt>,
@@ -152,9 +162,17 @@ pub struct App {
     /// Draw the chain without its editing affordances: no insert gaps, no
     /// ghost branch, no drags. The preview runs the renderer this way.
     display_only: bool,
-    /// The kept tones on disk, shown under the preset list when open.
-    show_library: bool,
-    library: Vec<std::path::PathBuf>,
+    /// The library browser along the bottom: a table of kept tones with a tags
+    /// rail and an editable inspector. The one and only library surface.
+    library_panel: bool,
+    lib_entries: Vec<LibEntry>,
+    lib_selected: Option<usize>,
+    /// The metadata draft for the selected entry, saved as it is edited.
+    lib_draft: library::Meta,
+    lib_tag_filter: Option<String>,
+    /// Comma-separated genres and a pending tag, edited in the inspector.
+    lib_genres_buf: String,
+    lib_tag_add: String,
     /// Editable tempo, so typing does not fight the device's value.
     tempo_draft: Option<String>,
     /// A parameter value being typed, by block position and parameter index,
@@ -165,7 +183,9 @@ pub struct App {
     /// Which MIDI CC the "assign bypass" control offers.
     assign_cc: i64,
     /// Editable copy of the preset name, so typing does not fight the device.
-    renaming: Option<String>,
+    /// The preset being renamed - its slot index and the draft name. Drives the
+    /// inline field on both the loaded title and any right-clicked list row.
+    renaming: Option<(i64, String)>,
     log: Vec<String>,
     /// The activity log is a debugging aid, not something to look at while
     /// playing, so it stays out of the way until asked for.
@@ -245,8 +265,13 @@ impl App {
             show_favorites_only: false,
             preview: None,
             display_only: false,
-            show_library: false,
-            library: Vec::new(),
+            library_panel: false,
+            lib_entries: Vec::new(),
+            lib_selected: None,
+            lib_draft: library::Meta::default(),
+            lib_tag_filter: None,
+            lib_genres_buf: String::new(),
+            lib_tag_add: String::new(),
             tempo_draft: None,
             param_draft: None,
             snapshot_draft: None,
@@ -500,6 +525,7 @@ impl eframe::App for App {
         self.status_bar(ctx);
         self.preset_list(ctx);
         self.activity(ctx);
+        self.library_panel(ctx);
         self.signal_chain(ctx);
         // The shelf sits beside the pedal being edited rather than under it,
         // so choosing a different model is plainly a secondary action.
@@ -572,15 +598,26 @@ impl App {
                         self.show_device = !self.show_device;
                     }
                     if !self.firmware.is_empty() {
+                        // Same size as the device name, so the two share a
+                        // baseline instead of the smaller one riding high.
                         ui.label(
-                            RichText::new(format!("firmware {}", self.firmware))
-                                .small()
-                                .color(theme::DIM),
+                            RichText::new(format!("firmware {}", self.firmware)).color(theme::DIM),
                         );
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
+                        if ui
+                            .small_button("Library")
+                            .on_hover_text("browse the tones you have kept")
+                            .clicked()
+                        {
+                            self.library_panel = !self.library_panel;
+                            if self.library_panel {
+                                self.refresh_library();
+                            }
+                        }
+                        ui.separator();
                         match self.connection {
                             Connection::Online => {
                                 if ui.small_button("Disconnect").clicked() {
@@ -787,46 +824,30 @@ impl App {
             // last are worth announcing — a flicker per knob tick is noise.
             ui.spinner().on_hover_text("writing to the pedal…");
         }
-        ui.label(
-            RichText::new(hx_proto::rpc::slot_label(self.preset_index))
-                .strong()
-                .color(theme::DIM),
+        // The slot label and the name go in one galley at one size, so they
+        // share a baseline. As two separate labels of different sizes, egui
+        // centred each in its own box and the slot sat a few pixels high.
+        let mut title = egui::text::LayoutJob::default();
+        title.append(
+            &format!("{}  ", hx_proto::rpc::slot_label(self.preset_index)),
+            0.0,
+            egui::TextFormat {
+                font_id: egui::FontId::proportional(16.0),
+                color: theme::DIM,
+                ..Default::default()
+            },
         );
-
-        match &mut self.renaming {
-            Some(draft) => {
-                let edit = ui.add(
-                    egui::TextEdit::singleline(draft)
-                        .desired_width(170.0)
-                        .hint_text("preset name"),
-                );
-                // Without asking for focus the field never holds it, so it
-                // never loses it either and the edit never commits — which is
-                // exactly how renaming came to look broken.
-                if !edit.has_focus() && !edit.lost_focus() {
-                    edit.request_focus();
-                }
-                if edit.lost_focus() {
-                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        let name = draft.clone();
-                        let index = self.preset_index;
-                        self.renaming = None;
-                        let _ = self.to_device.send(Cmd::Rename { index, name });
-                    } else {
-                        self.renaming = None;
-                    }
-                }
-            }
-            None => {
-                let label = ui.add(
-                    egui::Label::new(RichText::new(&self.preset_name).size(16.0).strong())
-                        .sense(egui::Sense::click()),
-                );
-                if label.on_hover_text("click to rename").clicked() {
-                    self.renaming = Some(self.preset_name.clone());
-                }
-            }
-        }
+        title.append(
+            &self.preset_name,
+            0.0,
+            egui::TextFormat {
+                font_id: egui::FontId::proportional(16.0),
+                color: ui.visuals().strong_text_color(),
+                ..Default::default()
+            },
+        );
+        ui.label(title)
+            .on_hover_text("right-click a preset in the list to rename it");
     }
 
     /// Work out a tempo from the intervals between taps.
@@ -981,8 +1002,6 @@ impl App {
                 });
                 ui.separator();
 
-                self.library_shelf(ui);
-
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
@@ -995,6 +1014,9 @@ impl App {
                         let setlist = self.setlist;
                         let mut load = None;
                         let mut toggle = None;
+                        let mut rename_start = None;
+                        // Some(Some(name)) commits a rename, Some(None) cancels.
+                        let mut rename_result: Option<Option<(i64, String)>> = None;
                         let mut shown_any = false;
                         for index in 0..total {
                             let fav = self.config.is_favorite(setlist, index);
@@ -1021,22 +1043,52 @@ impl App {
                                 {
                                     toggle = Some(index);
                                 }
-                                let text = if selected {
-                                    RichText::new(&label).color(theme::ACCENT).strong()
+                                let renaming_this =
+                                    matches!(&self.renaming, Some((i, _)) if *i == index);
+                                if renaming_this {
+                                    if let Some((_, draft)) = self.renaming.as_mut() {
+                                        let edit = ui.add(
+                                            egui::TextEdit::singleline(draft)
+                                                .desired_width(180.0)
+                                                .hint_text("preset name"),
+                                        );
+                                        if !edit.has_focus() && !edit.lost_focus() {
+                                            edit.request_focus();
+                                        }
+                                        if edit.lost_focus() {
+                                            rename_result = Some(
+                                                ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                                    .then(|| (index, draft.clone())),
+                                            );
+                                        }
+                                    }
                                 } else {
-                                    RichText::new(&label)
-                                };
-                                // A plain, content-sized label: left-aligned as
-                                // before, and never centered (no forced width).
-                                let row = ui.selectable_label(selected, text);
-                                if row.clicked() {
-                                    load = Some(index);
-                                }
-                                // A preset picked on the pedal itself should be in
-                                // view here too, without fighting manual scrolling.
-                                if selected && self.reveal_preset {
-                                    row.scroll_to_me(Some(egui::Align::Center));
-                                    self.reveal_preset = false;
+                                    let text = if selected {
+                                        RichText::new(&label).color(theme::ACCENT).strong()
+                                    } else {
+                                        RichText::new(&label)
+                                    };
+                                    // A plain, content-sized label: left-aligned
+                                    // as before, never centered (no forced width).
+                                    let row = ui.selectable_label(selected, text);
+                                    if row.clicked() {
+                                        load = Some(index);
+                                    }
+                                    // A preset picked on the pedal itself should
+                                    // be in view here too, without fighting
+                                    // manual scrolling.
+                                    if selected && self.reveal_preset {
+                                        row.scroll_to_me(Some(egui::Align::Center));
+                                        self.reveal_preset = false;
+                                    }
+                                    // Right-click a preset to rename it in place,
+                                    // whether or not it is the one loaded.
+                                    row.context_menu(|ui| {
+                                        if ui.button("Rename").clicked() {
+                                            rename_start = Some((index, name.clone()));
+                                            ui.close_menu();
+                                        }
+                                    });
                                 }
                             });
                         }
@@ -1058,6 +1110,15 @@ impl App {
                             self.preset_index = index;
                             self.send(Cmd::SelectPreset(index));
                         }
+                        if let Some(started) = rename_start {
+                            self.renaming = Some(started);
+                        }
+                        if let Some(result) = rename_result {
+                            self.renaming = None;
+                            if let Some((index, name)) = result {
+                                self.send(Cmd::Rename { index, name });
+                            }
+                        }
                     });
             });
     }
@@ -1078,128 +1139,372 @@ impl App {
         };
         match kept {
             Ok(_) => {
-                self.library = library::entries();
-                self.show_library = true;
+                self.library_panel = true;
+                self.refresh_library();
                 self.note(format!("kept {name} in the library"));
             }
             Err(why) => self.note(why),
         }
     }
 
-    /// The kept tones, under the preset list: files, not slots, so they
-    /// outlive any pedal. Closed it is one quiet line; open it lists the
-    /// library, and a click opens the tone's preview.
-    fn library_shelf(&mut self, ui: &mut egui::Ui) {
-        egui::TopBottomPanel::bottom("library")
-            .resizable(false)
-            .show_inside(ui, |ui| {
-                ui.add_space(2.0);
-                // The arrow says this opens; the count says it holds something.
-                let arrow = if self.show_library { "⏷" } else { "⏵" };
-                let title = if self.library.is_empty() {
-                    format!("{arrow} LIBRARY")
-                } else {
-                    format!("{arrow} LIBRARY ({})", self.library.len())
-                };
+    /// Rebuild the library rows from the files and the saved index, keeping the
+    /// current selection pinned to its file across the refresh.
+    fn refresh_library(&mut self) {
+        let meta = library::metadata();
+        let selected_name = self
+            .lib_selected
+            .and_then(|i| self.lib_entries.get(i))
+            .map(|e| e.file_name.clone());
+        let mut entries = Vec::new();
+        for file in library::entries() {
+            let file_name = file
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_owned();
+            let (name, line) = self.library_facts(&file);
+            let meta = meta.get(&file_name).cloned().unwrap_or_default();
+            entries.push(LibEntry {
+                file,
+                file_name,
+                name,
+                line,
+                meta,
+            });
+        }
+        self.lib_entries = entries;
+        self.lib_selected =
+            selected_name.and_then(|n| self.lib_entries.iter().position(|e| e.file_name == n));
+    }
+
+    /// The tone name and a one-line chain reading for a library file, read
+    /// through the same codec the preview uses.
+    fn library_facts(&self, file: &std::path::Path) -> (String, String) {
+        let stem = file
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("tone")
+            .to_owned();
+        let Some(catalog) = self.catalog.as_ref() else {
+            return (stem, String::new());
+        };
+        let tone = if file.extension().is_some_and(|e| e.eq_ignore_ascii_case("hlx")) {
+            std::fs::read_to_string(file)
+                .ok()
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                .map(|json| hx_catalog::inspect(&json, catalog))
+        } else {
+            std::fs::read(file)
+                .ok()
+                .and_then(|b| hx_proto::preset::Preset::parse(&b))
+                .map(|p| {
+                    hx_catalog::inspect(&hx_catalog::to_hlx(&p, catalog, &stem).document, catalog)
+                })
+        };
+        match tone {
+            Some(t) => (t.name.clone(), Self::tone_line(&t)),
+            None => (stem, String::new()),
+        }
+    }
+
+    /// Load a row's metadata into the editable draft.
+    fn select_lib_entry(&mut self, i: usize) {
+        if let Some(e) = self.lib_entries.get(i) {
+            self.lib_selected = Some(i);
+            self.lib_draft = e.meta.clone();
+            self.lib_genres_buf = e.meta.genres.join(", ");
+            self.lib_tag_add.clear();
+        }
+    }
+
+    /// The full library browser along the bottom: tags rail, tone table, and an
+    /// editable inspector. The record-box layout, kept calm.
+    fn library_panel(&mut self, ctx: &egui::Context) {
+        if !self.library_panel {
+            return;
+        }
+        let mut open = true;
+        let mut keep_loaded = false;
+        egui::TopBottomPanel::bottom("library-panel")
+            .resizable(true)
+            .default_height(320.0)
+            .height_range(180.0..=680.0)
+            .show(ctx, |ui| {
+                ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new(title).small().color(theme::DIM))
-                                .frame(false),
-                        )
-                        .on_hover_text("tones kept on this computer")
-                        .clicked()
-                    {
-                        self.show_library = !self.show_library;
-                        if self.show_library {
-                            self.library = library::entries();
-                        }
-                    }
+                    ui.heading("Library");
+                    ui.label(
+                        RichText::new(format!("· {} tones", self.lib_entries.len()))
+                            .color(theme::DIM),
+                    );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Close").clicked() {
+                            open = false;
+                        }
                         let live = matches!(self.connection, Connection::Online)
                             && self.preset_index >= 0;
                         if ui
-                            .add_enabled(
-                                live,
-                                egui::Button::new(RichText::new("KEEP THIS").small()).frame(false),
-                            )
-                            .on_hover_text("keep the loaded preset in the library")
+                            .add_enabled(live, egui::Button::new("＋ Keep loaded preset"))
+                            .on_hover_text("copy the loaded preset into the library as .hlx")
                             .clicked()
                         {
-                            self.pending_copy = CopyTarget::Library;
-                            self.send(Cmd::CopyPreset);
+                            keep_loaded = true;
                         }
                     });
                 });
-                if self.show_library {
-                    let mut opened = None;
-                    let mut removed = None;
-                    egui::ScrollArea::vertical()
-                        .id_salt("library-shelf")
-                        .max_height(180.0)
-                        .show(ui, |ui| {
-                            for path in &self.library {
-                                let name = path
-                                    .file_stem()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("tone");
-                                ui.horizontal(|ui| {
-                                    if ui
-                                        .selectable_label(false, name)
-                                        .on_hover_text("open this tone")
-                                        .clicked()
-                                    {
-                                        opened = Some(path.clone());
-                                    }
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            if ui
-                                                .add(
-                                                    egui::Button::new(
-                                                        RichText::new("✕")
-                                                            .small()
-                                                            .color(theme::DIM),
-                                                    )
-                                                    .frame(false),
-                                                )
-                                                .on_hover_text("remove from the library")
-                                                .clicked()
-                                            {
-                                                removed = Some(path.clone());
-                                            }
-                                        },
-                                    );
-                                });
-                            }
-                            if self.library.is_empty() {
-                                ui.label(
-                                    RichText::new(
-                                        "Nothing kept yet. Keep a tone from its preview.",
-                                    )
-                                    .small()
-                                    .color(theme::DIM),
-                                );
-                            }
-                        });
-                    if let Some(path) = opened {
-                        self.open_tone_file(&path);
-                    }
-                    if let Some(path) = removed {
-                        let name = path
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("tone")
-                            .to_owned();
-                        match library::remove(&path) {
-                            Ok(()) => self.note(format!("removed {name}")),
-                            Err(why) => self.note(why),
-                        }
-                        self.library = library::entries();
-                    }
-                }
-                ui.add_space(2.0);
+                ui.separator();
+                egui::SidePanel::left("lib-tags")
+                    .resizable(false)
+                    .default_width(150.0)
+                    .show_inside(ui, |ui| self.library_tags_rail(ui));
+                egui::SidePanel::right("lib-inspector")
+                    .resizable(true)
+                    .default_width(310.0)
+                    .show_inside(ui, |ui| self.library_inspector(ui));
+                egui::CentralPanel::default().show_inside(ui, |ui| self.library_table(ui));
             });
+        if keep_loaded {
+            self.pending_copy = CopyTarget::Library;
+            self.send(Cmd::CopyPreset);
+        }
+        if !open {
+            self.library_panel = false;
+        }
+    }
+
+    /// The left rail: every tag, click one to filter the table to it.
+    fn library_tags_rail(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(4.0);
+        ui.label(RichText::new("TAGS").small().color(theme::DIM));
+        if ui
+            .selectable_label(self.lib_tag_filter.is_none(), "All tones")
+            .clicked()
+        {
+            self.lib_tag_filter = None;
+        }
+        for tag in library::all_tags() {
+            let on = self.lib_tag_filter.as_deref() == Some(tag.as_str());
+            if ui.selectable_label(on, format!("# {tag}")).clicked() {
+                self.lib_tag_filter = Some(tag);
+            }
+        }
+    }
+
+    /// The middle table: one row per tone, filtered by the chosen tag. Click to
+    /// select for the inspector; double-click to open its preview.
+    fn library_table(&mut self, ui: &mut egui::Ui) {
+        use egui_extras::{Column, TableBuilder};
+
+        if self.lib_entries.is_empty() {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("Nothing kept yet. Keep a tone from a preview, or Keep loaded preset.")
+                    .color(theme::DIM),
+            );
+            return;
+        }
+
+        let filter = self.lib_tag_filter.clone();
+        let rows: Vec<usize> = self
+            .lib_entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| filter.as_ref().is_none_or(|t| e.meta.tags.contains(t)))
+            .map(|(i, _)| i)
+            .collect();
+
+        let mut select = None;
+        let mut open_preview = None;
+        TableBuilder::new(ui)
+            .striped(true)
+            .sense(egui::Sense::click())
+            .column(Column::auto().at_least(150.0).resizable(true))
+            .column(Column::auto().at_least(70.0).resizable(true))
+            .column(Column::auto().at_least(90.0).resizable(true))
+            .column(Column::auto().at_least(110.0).resizable(true))
+            .column(Column::remainder())
+            .header(20.0, |mut header| {
+                for title in ["Name", "Character", "Genre", "Artist", "Chain"] {
+                    header.col(|ui| {
+                        ui.strong(title);
+                    });
+                }
+            })
+            .body(|mut body| {
+                for &i in &rows {
+                    let e = &self.lib_entries[i];
+                    body.row(22.0, |mut row| {
+                        row.set_selected(self.lib_selected == Some(i));
+                        row.col(|ui| {
+                            ui.label(e.name.as_str());
+                        });
+                        row.col(|ui| {
+                            ui.label(e.meta.character.as_str());
+                        });
+                        row.col(|ui| {
+                            ui.label(e.meta.genres.join(", "));
+                        });
+                        row.col(|ui| {
+                            ui.label(e.meta.artist.as_str());
+                        });
+                        row.col(|ui| {
+                            ui.label(RichText::new(e.line.as_str()).color(theme::DIM));
+                        });
+                        let r = row.response();
+                        if r.clicked() {
+                            select = Some(i);
+                        }
+                        if r.double_clicked() {
+                            open_preview = Some(e.file.clone());
+                        }
+                    });
+                }
+            });
+        if let Some(i) = select {
+            self.select_lib_entry(i);
+        }
+        if let Some(file) = open_preview {
+            self.open_tone_file(&file);
+        }
+    }
+
+    /// The right inspector: the selected tone's fields, saved as they are
+    /// edited. The field set is the Tones web schema, so publishing is a copy.
+    fn library_inspector(&mut self, ui: &mut egui::Ui) {
+        fn combo(ui: &mut egui::Ui, id: &str, value: &mut String, options: &[&str]) {
+            egui::ComboBox::from_id_salt(id)
+                .selected_text(if value.is_empty() { "—" } else { value.as_str() })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(value, String::new(), "—");
+                    for o in options {
+                        ui.selectable_value(value, (*o).to_owned(), *o);
+                    }
+                });
+        }
+
+        ui.add_space(4.0);
+        let Some(i) = self.lib_selected else {
+            ui.label(RichText::new("Select a tone to edit its details.").color(theme::DIM));
+            return;
+        };
+        ui.label(RichText::new(&self.lib_entries[i].name).strong());
+        if !self.lib_entries[i].line.is_empty() {
+            ui.label(RichText::new(&self.lib_entries[i].line).small().color(theme::DIM));
+        }
+        ui.add_space(6.0);
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                egui::Grid::new("lib-fields")
+                    .num_columns(2)
+                    .spacing([8.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.label("Artist");
+                        ui.text_edit_singleline(&mut self.lib_draft.artist);
+                        ui.end_row();
+                        ui.label("Song");
+                        ui.text_edit_singleline(&mut self.lib_draft.song);
+                        ui.end_row();
+                        ui.label("Part");
+                        ui.text_edit_singleline(&mut self.lib_draft.part);
+                        ui.end_row();
+                        ui.label("Character");
+                        combo(ui, "char", &mut self.lib_draft.character, &["clean", "drive", "hi-gain", "fuzz", "other"]);
+                        ui.end_row();
+                        ui.label("Genres");
+                        ui.text_edit_singleline(&mut self.lib_genres_buf);
+                        ui.end_row();
+                        ui.label("Guitar");
+                        ui.text_edit_singleline(&mut self.lib_draft.guitar);
+                        ui.end_row();
+                        ui.label("Pickups");
+                        combo(ui, "pt", &mut self.lib_draft.pickup_type, &["single-coil", "humbucker", "P90"]);
+                        ui.end_row();
+                        ui.label("Electronics");
+                        combo(ui, "pe", &mut self.lib_draft.pickup_electronics, &["passive", "active"]);
+                        ui.end_row();
+                        ui.label("Tuning");
+                        ui.text_edit_singleline(&mut self.lib_draft.tuning);
+                        ui.end_row();
+                        ui.label("Gain");
+                        ui.text_edit_singleline(&mut self.lib_draft.gain);
+                        ui.end_row();
+                    });
+                self.lib_draft.genres = self
+                    .lib_genres_buf
+                    .split(',')
+                    .map(|s| s.trim().to_owned())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+
+                ui.add_space(6.0);
+                ui.label(RichText::new("Description").small().color(theme::DIM));
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.lib_draft.description)
+                        .desired_rows(2)
+                        .desired_width(f32::INFINITY),
+                );
+
+                ui.add_space(6.0);
+                ui.label(RichText::new("Tags").small().color(theme::DIM));
+                let mut remove = None;
+                ui.horizontal_wrapped(|ui| {
+                    for (ti, tag) in self.lib_draft.tags.iter().enumerate() {
+                        if ui.button(format!("{tag}  ✕")).clicked() {
+                            remove = Some(ti);
+                        }
+                    }
+                });
+                if let Some(ti) = remove {
+                    self.lib_draft.tags.remove(ti);
+                }
+                ui.horizontal(|ui| {
+                    let field = ui.add(
+                        egui::TextEdit::singleline(&mut self.lib_tag_add)
+                            .hint_text("add a tag")
+                            .desired_width(120.0),
+                    );
+                    let submit =
+                        field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if (ui.button("+").clicked() || submit)
+                        && !self.lib_tag_add.trim().is_empty()
+                    {
+                        let tag = self.lib_tag_add.trim().to_owned();
+                        if !self.lib_draft.tags.contains(&tag) {
+                            self.lib_draft.tags.push(tag);
+                        }
+                        self.lib_tag_add.clear();
+                    }
+                });
+            });
+
+        // Persist as the fields change; one row's metadata, index untouched.
+        if self.lib_draft != self.lib_entries[i].meta {
+            let file_name = self.lib_entries[i].file_name.clone();
+            if let Err(e) = library::save_meta(&file_name, &self.lib_draft) {
+                self.note(e);
+            }
+            self.lib_entries[i].meta = self.lib_draft.clone();
+        }
+
+        ui.add_space(10.0);
+        ui.separator();
+        // Removal drops the file into the library's .trash - recoverable, so no
+        // confirmation ceremony.
+        if ui
+            .add(egui::Button::new(RichText::new("Remove from library").color(theme::DIM)).frame(false))
+            .clicked()
+        {
+            let file = self.lib_entries[i].file.clone();
+            let name = self.lib_entries[i].name.clone();
+            match library::remove(&file) {
+                Ok(()) => self.note(format!("removed {name}")),
+                Err(why) => self.note(why),
+            }
+            self.lib_selected = None;
+            self.refresh_library();
+        }
     }
 
     /// The impulse response slots, mirroring HX Edit's IRs tab.
@@ -1734,10 +2039,9 @@ impl App {
                         match library::keep(&preview.source) {
                             Ok(kept) => {
                                 preview.source = kept;
-                                self.library = library::entries();
-                                // Show the keep landing, or it looks like
-                                // nothing happened.
-                                self.show_library = true;
+                                // Open the library so the keep visibly lands.
+                                self.library_panel = true;
+                                self.refresh_library();
                                 self.note(format!("kept {}", preview.name));
                             }
                             Err(why) => self.note(why),
@@ -3376,7 +3680,14 @@ fn model_picker(
     ui.add_space(4.0);
 
     let searching = !search.is_empty();
-    let showing = browsing.unwrap_or(1);
+    // With no category explicitly chosen, show the one the current block is
+    // already in - not the first category. Otherwise swapping an amp snapped
+    // the browser back to Distortion every time.
+    let showing = browsing.unwrap_or_else(|| {
+        current
+            .and_then(|id| catalog.category_of(id))
+            .unwrap_or(1)
+    });
     ui.horizontal_wrapped(|ui| {
         for category in catalog.categories() {
             if !category.is_effect() || catalog.models_in(category.id).is_empty() {

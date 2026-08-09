@@ -10,6 +10,12 @@ fn main() -> eframe::Result<()> {
         "stompchain",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default().with_inner_size([980.0, 640.0]),
+            // With vsync on, glow blocks in eglSwapBuffers waiting for a frame
+            // callback the compositor stops sending once the window is hidden
+            // (another workspace) - so the app cannot answer the Wayland ping
+            // and is flagged unresponsive. Off, it paints and returns freely;
+            // the 150 ms repaint timer keeps idle cost low.
+            vsync: false,
             ..Default::default()
         },
         Box::new(move |cc| {

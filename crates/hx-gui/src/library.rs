@@ -99,6 +99,69 @@ pub fn remove(path: &Path) -> Result<(), String> {
     std::fs::rename(path, &target).map_err(|e| format!("could not remove the tone: {e}"))
 }
 
+/// A tone's editable metadata. The field set matches the Tones web schema so
+/// publishing to the site is a straight copy, not a translation. The chain
+/// itself - blocks, amps, output - is derived from the file when shown, never
+/// stored here, so it can never drift from the file.
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone, PartialEq)]
+pub struct Meta {
+    pub description: String,
+    pub tags: Vec<String>,
+    pub character: String,          // clean / drive / hi-gain / fuzz / other
+    pub genres: Vec<String>,
+    pub artist: String,
+    pub song: String,
+    pub part: String,               // rhythm / lead / clean / ...
+    pub guitar: String,
+    pub pickup_type: String,        // single-coil / humbucker / P90
+    pub pickup_electronics: String, // passive / active
+    pub tuning: String,
+    pub gain: String,               // a 1-10 feel, kept free-form for now
+}
+
+/// The whole library index: one [`Meta`] per file, keyed by file name.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct Index {
+    entries: std::collections::BTreeMap<String, Meta>,
+}
+
+fn index_path() -> Option<PathBuf> {
+    dir().map(|d| d.join("index.json"))
+}
+
+/// Every entry's metadata, keyed by file name. A missing index reads as empty.
+pub fn metadata() -> std::collections::BTreeMap<String, Meta> {
+    let Some(path) = index_path() else {
+        return Default::default();
+    };
+    std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Index>(&b).ok())
+        .map(|i| i.entries)
+        .unwrap_or_default()
+}
+
+/// Save one file's metadata, leaving the rest of the index untouched.
+pub fn save_meta(file_name: &str, meta: &Meta) -> Result<(), String> {
+    let dir = dir().ok_or("no library to save into")?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create the library: {e}"))?;
+    let mut entries = metadata();
+    entries.insert(file_name.to_owned(), meta.clone());
+    let json = serde_json::to_vec_pretty(&Index { entries }).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("index.json"), json).map_err(|e| e.to_string())
+}
+
+/// Every distinct tag across the library, sorted, for the browse rail.
+pub fn all_tags() -> Vec<String> {
+    let mut tags: Vec<String> = metadata()
+        .values()
+        .flat_map(|m| m.tags.iter().cloned())
+        .collect();
+    tags.sort();
+    tags.dedup();
+    tags
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
