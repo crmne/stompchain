@@ -58,6 +58,16 @@ pub enum Cmd {
         file: std::path::PathBuf,
     },
     ClearIr(i64),
+    /// Read the device's favourite blocks.
+    ListFavourites,
+    /// Keep the block at this position as a favourite.
+    SaveFavourite {
+        block: i64,
+        index: i64,
+        name: String,
+    },
+    /// Forget a favourite.
+    ClearFavourite(i64),
     /// Read an impulse response off the device and write it out as a WAV.
     SaveIr {
         slot: i64,
@@ -212,6 +222,8 @@ pub enum Evt {
         blob: Vec<u8>,
     },
     Irs(Vec<(i64, String)>),
+    /// The device's favourite blocks, as (index, name).
+    Favourites(Vec<(i64, String)>),
     Setlists(Vec<String>),
     Activity(String),
     Failed(String),
@@ -765,6 +777,22 @@ impl Worker {
                 });
                 if loaded.is_some() {
                     self.handle(Cmd::ListIrs);
+                }
+            }
+            Cmd::ListFavourites => {
+                if let Some(list) = self.try_on_device(|d| d.favourites()) {
+                    self.send(Evt::Favourites(list));
+                }
+            }
+            Cmd::SaveFavourite { block, index, name } => {
+                if self.run_on_device(|d| d.save_favourite(block, index, &name)) {
+                    self.send(Evt::Activity(format!("kept {name}")));
+                    self.handle(Cmd::ListFavourites);
+                }
+            }
+            Cmd::ClearFavourite(index) => {
+                if self.run_on_device(|d| d.clear_favourite(index)) {
+                    self.handle(Cmd::ListFavourites);
                 }
             }
             Cmd::SaveIr { slot, file } => {

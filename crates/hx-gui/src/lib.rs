@@ -197,6 +197,8 @@ pub struct App {
     settings: std::collections::BTreeMap<i64, f32>,
     /// The IR slot being renamed in place, and the name so far.
     renaming_ir: Option<(i64, String)>,
+    /// The device's favourite blocks, as (index, name).
+    favourites: Vec<(i64, String)>,
     current_snapshot: usize,
 }
 
@@ -302,6 +304,7 @@ impl App {
             working: None,
             settings: Default::default(),
             renaming_ir: None,
+            favourites: Vec::new(),
             current_snapshot: 0,
         };
         // Without the model data there is nothing to edit with, so the
@@ -446,6 +449,7 @@ impl App {
                     }
                 }
                 Ok(Evt::Irs(slots)) => self.irs = slots,
+                Ok(Evt::Favourites(list)) => self.favourites = list,
                 Ok(Evt::Setlists(names)) => self.setlists = names,
                 Ok(Evt::Activity(line)) => self.note(line),
                 Ok(Evt::Failed(e)) => {
@@ -503,6 +507,17 @@ impl App {
     /// Model 0 is treated as "no model": the endpoints report it because they
     /// carry no model reference, and the symbol table's entry 0 is a real amp,
     /// so resolving it names the wrong thing entirely.
+    /// The block the chain has selected, as `(position, model name)` - what a
+    /// favourite would be made from. `None` when the selection is an input,
+    /// output or junction, which are not blocks anyone would keep.
+    fn selected_block(&self) -> Option<(i64, String)> {
+        let block = self.chain.get(self.selected)?;
+        if !self.is_effect(block) {
+            return None;
+        }
+        Some((block.position, self.model_name(block.model)))
+    }
+
     fn model_name(&self, model: u32) -> String {
         if model == 0 {
             return String::new();
@@ -650,6 +665,7 @@ impl App {
                         self.show_device = !self.show_device;
                         if self.show_device {
                             self.send(Cmd::ReadSettings);
+                            self.send(Cmd::ListFavourites);
                         }
                     }
                     if !self.firmware.is_empty() {
@@ -1842,6 +1858,55 @@ impl App {
                         .small()
                         .color(theme::DIM),
                 );
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.heading("Favourites");
+                ui.label(
+                    RichText::new(
+                        "Blocks the pedal keeps with their settings, ready to drop into \
+                         any preset. Select a block in the chain to keep it here.",
+                    )
+                    .small()
+                    .color(theme::DIM),
+                );
+                ui.add_space(4.0);
+                if self.favourites.is_empty() {
+                    ui.label(RichText::new("no favourites kept").color(theme::DIM));
+                }
+                let favourites = self.favourites.clone();
+                let mut forget = None;
+                for (index, name) in &favourites {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("{:>3}", index + 1)).monospace());
+                        ui.label(name);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("forget").clicked() {
+                                forget = Some(*index);
+                            }
+                        });
+                    });
+                }
+                if let Some(index) = forget {
+                    self.send(Cmd::ClearFavourite(index));
+                }
+                // Keeping one needs a block to keep and somewhere to put it.
+                let selected = self.selected_block();
+                let free = (0..16).find(|i| !favourites.iter().any(|(n, _)| n == i));
+                let can_keep = selected.is_some() && free.is_some();
+                if ui
+                    .add_enabled(can_keep, egui::Button::new("Keep the selected block"))
+                    .on_disabled_hover_text(if selected.is_none() {
+                        "select a block in the chain first"
+                    } else {
+                        "every favourite slot is in use"
+                    })
+                    .clicked()
+                {
+                    if let (Some((block, name)), Some(index)) = (selected, free) {
+                        self.send(Cmd::SaveFavourite { block, index, name });
+                    }
+                }
 
                 ui.add_space(10.0);
                 ui.separator();
