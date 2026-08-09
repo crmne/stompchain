@@ -15,6 +15,7 @@ use nusb::transfer::{Buffer, Bulk, In, Out};
 use nusb::MaybeFuture;
 
 mod commands;
+pub mod replay;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -108,13 +109,14 @@ impl Channel {
 
 pub struct Session {
     /// Held purely to keep the interface claimed: dropping it releases the
-    /// claim and the endpoints stop working.
+    /// claim and the endpoints stop working. `None` for a replay session,
+    /// which has no hardware to hold.
     #[allow(dead_code)]
-    interface: nusb::Interface,
-    ep_out: nusb::Endpoint<Bulk, Out>,
-    ep_in: nusb::Endpoint<Bulk, In>,
+    interface: Option<nusb::Interface>,
+    /// The raw byte transport under the frame protocol: the USB endpoints in a
+    /// live session, a recorded transcript in a replay.
+    wire: Box<dyn Wire>,
     channels: BTreeMap<u16, Channel>,
-    read_posted: bool,
     /// Set when a transfer failed part-way through a message.
     ///
     /// A stream message that is only half-sent leaves the device waiting for
@@ -124,6 +126,55 @@ pub struct Session {
     /// session refuses further work and says why.
     poisoned: Option<String>,
     pub profile: DeviceProfile,
+}
+
+/// The raw byte transport beneath the frame protocol.
+///
+/// The live transport is the pair of USB bulk endpoints. Abstracting it lets a
+/// session run against a recorded transcript instead of hardware, so the
+/// command layer stays regression-testable offline - the point being to keep
+/// it correct after the device is sold. See the `replay` module.
+pub trait Wire: Send {
+    /// Send one frame's encoded bytes, blocking until the write completes.
+    fn send(&mut self, bytes: &[u8]) -> Result<()>;
+    /// Receive the device's next chunk of bytes. An empty vec is a zero-length
+    /// transfer (no payload); a timeout is an error.
+    fn recv(&mut self, timeout: Duration) -> Result<Vec<u8>>;
+}
+
+/// The live USB transport. Exactly one read is kept posted so the device's
+/// unsolicited notifications are never dropped.
+struct UsbWire {
+    ep_out: nusb::Endpoint<Bulk, Out>,
+    ep_in: nusb::Endpoint<Bulk, In>,
+    read_posted: bool,
+}
+
+impl Wire for UsbWire {
+    fn send(&mut self, bytes: &[u8]) -> Result<()> {
+        self.ep_out.submit(Buffer::from(bytes.to_vec()));
+        let completion = self
+            .ep_out
+            .wait_next_complete(Session::WRITE)
+            .ok_or_else(|| Error::Usb("write timed out".into()))?;
+        completion
+            .into_result()
+            .map_err(|e| Error::Usb(e.to_string()))?;
+        Ok(())
+    }
+
+    fn recv(&mut self, timeout: Duration) -> Result<Vec<u8>> {
+        if !self.read_posted {
+            self.ep_in.submit(Buffer::new(512));
+            self.read_posted = true;
+        }
+        let Some(c) = self.ep_in.wait_next_complete(timeout) else {
+            return Err(Error::Usb("read timed out".into()));
+        };
+        self.read_posted = false;
+        let data = c.into_result().map_err(|e| Error::Usb(e.to_string()))?;
+        Ok(data.to_vec())
+    }
 }
 
 impl Found {
@@ -144,6 +195,36 @@ impl Found {
     }
 
     fn open_once(&self) -> Result<Session> {
+        let (interface, ep_out, ep_in) = self.claim()?;
+        let wire: Box<dyn Wire> = Box::new(UsbWire {
+            ep_out,
+            ep_in,
+            read_posted: false,
+        });
+        Session::bring_up(Some(interface), wire, self.profile)
+    }
+
+    /// Open the device with every transfer copied into `log`, to capture a
+    /// transcript that can be replayed offline later. See the `replay` module.
+    pub fn open_recording(&self, log: replay::Log) -> Result<Session> {
+        let (interface, ep_out, ep_in) = self.claim()?;
+        let usb: Box<dyn Wire> = Box::new(UsbWire {
+            ep_out,
+            ep_in,
+            read_posted: false,
+        });
+        let wire: Box<dyn Wire> = Box::new(replay::RecordingWire::new(usb, log));
+        Session::bring_up(Some(interface), wire, self.profile)
+    }
+
+    /// Claim the interface and open its bulk endpoints, cleared and ready.
+    fn claim(
+        &self,
+    ) -> Result<(
+        nusb::Interface,
+        nusb::Endpoint<Bulk, Out>,
+        nusb::Endpoint<Bulk, In>,
+    )> {
         let device = self
             .info
             .open()
@@ -178,29 +259,41 @@ impl Found {
         // each session a known-clean starting point.
         let _ = ep_out.clear_halt().wait();
         let _ = ep_in.clear_halt().wait();
-
-        let mut s = Session {
-            interface,
-            ep_out,
-            ep_in,
-            channels: BTreeMap::new(),
-            read_posted: false,
-            poisoned: None,
-            profile: self.profile,
-        };
-        s.handshake()?;
-
-        // A handshake can complete and the session still be deaf: the device
-        // ignores a reconnecting client on roughly every other attempt, and the
-        // symptom is the *first request* timing out rather than the handshake
-        // failing. Prove the session works before handing it over, so the retry
-        // above has something to react to.
-        s.preset_info()?;
-        Ok(s)
+        Ok((interface, ep_out, ep_in))
     }
 }
 
 impl Session {
+    /// Construct a session over `wire` and bring it up: handshake, then a
+    /// liveness read. Shared by a live open, a recording open, and a replay.
+    fn bring_up(
+        interface: Option<nusb::Interface>,
+        wire: Box<dyn Wire>,
+        profile: DeviceProfile,
+    ) -> Result<Session> {
+        let mut s = Session {
+            interface,
+            wire,
+            channels: BTreeMap::new(),
+            poisoned: None,
+            profile,
+        };
+        s.handshake()?;
+        // A handshake can complete and the session still be deaf: the device
+        // ignores a reconnecting client on roughly every other attempt, and the
+        // symptom is the *first request* timing out rather than the handshake
+        // failing. Prove the session works before handing it over.
+        s.preset_info()?;
+        Ok(s)
+    }
+
+    /// A session that talks to `wire` - a recorded transcript - instead of
+    /// hardware. Runs the same handshake and liveness read a live open does,
+    /// against the recorded responses, so replaying reproduces a real session.
+    pub fn replaying(wire: Box<dyn Wire>, profile: DeviceProfile) -> Result<Session> {
+        Session::bring_up(None, wire, profile)
+    }
+
     /// Payload of the channel handshake, taken verbatim from HX Edit. The
     /// trailing fields look like a capability exchange but have not been
     /// decoded, so they are replayed rather than constructed.
@@ -334,34 +427,16 @@ impl Session {
     }
 
     fn write(&mut self, f: &Frame) -> Result<()> {
+        let bytes = f.encode();
         if debug() {
-            eprintln!("TX {:#06x}->{:#06x} {}", f.src, f.dst, hex(&f.encode()));
+            eprintln!("TX {:#06x}->{:#06x} {}", f.src, f.dst, hex(&bytes));
         }
-        self.ep_out.submit(Buffer::from(f.encode()));
-        let completion = self
-            .ep_out
-            .wait_next_complete(Self::WRITE)
-            .ok_or_else(|| Error::Usb("write timed out".into()))?;
-        completion
-            .into_result()
-            .map_err(|e| Error::Usb(e.to_string()))?;
-        Ok(())
+        self.wire.send(&bytes)
     }
 
     /// Read one frame and route its payload into the owning channel.
     fn read_once(&mut self, timeout: Duration) -> Result<Option<Frame>> {
-        // Keep exactly one read outstanding: the device streams unsolicited
-        // notifications, so there must always be a buffer posted or they are
-        // lost, but more than one in flight would reorder the stream.
-        if !self.read_posted {
-            self.ep_in.submit(Buffer::new(512));
-            self.read_posted = true;
-        }
-        let Some(c) = self.ep_in.wait_next_complete(timeout) else {
-            return Err(Error::Usb("read timed out".into()));
-        };
-        self.read_posted = false;
-        let data = c.into_result().map_err(|e| Error::Usb(e.to_string()))?;
+        let data = self.wire.recv(timeout)?;
         if data.is_empty() {
             return Ok(None);
         }
