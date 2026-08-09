@@ -17,6 +17,13 @@ use nusb::MaybeFuture;
 mod commands;
 pub mod replay;
 
+/// The claimed interface and its two bulk endpoints, ready to become a wire.
+type Endpoints = (
+    nusb::Interface,
+    nusb::Endpoint<Bulk, Out>,
+    nusb::Endpoint<Bulk, In>,
+);
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
@@ -218,13 +225,7 @@ impl Found {
     }
 
     /// Claim the interface and open its bulk endpoints, cleared and ready.
-    fn claim(
-        &self,
-    ) -> Result<(
-        nusb::Interface,
-        nusb::Endpoint<Bulk, Out>,
-        nusb::Endpoint<Bulk, In>,
-    )> {
+    fn claim(&self) -> Result<Endpoints> {
         let device = self
             .info
             .open()

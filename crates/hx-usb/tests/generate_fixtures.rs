@@ -66,7 +66,11 @@ struct Block {
 }
 
 fn b(model: u32) -> Block {
-    Block { model, enabled: true, params: Vec::new() }
+    Block {
+        model,
+        enabled: true,
+        params: Vec::new(),
+    }
 }
 
 /// Build a linear chain in the edit buffer and return the bytes.
@@ -102,7 +106,11 @@ fn write_fixture(name: &str, bytes: &[u8]) {
     // Confirm it round-trips before we trust it.
     let preset = Preset::parse(bytes).expect("generated preset parses");
     assert_eq!(preset.encode(), bytes, "{name} does not round-trip");
-    println!("  wrote {name} ({} bytes, {} blocks)", bytes.len(), preset.blocks().count());
+    println!(
+        "  wrote {name} ({} bytes, {} blocks)",
+        bytes.len(),
+        preset.blocks().count()
+    );
 }
 
 #[test]
@@ -128,12 +136,22 @@ fn generate_our_own_fixtures() {
     // 4. A full linear rig.
     let full = build(
         &mut session,
-        &[b(DRIVE_MINOTAUR), b(AMP_US_DOUBLE), b(CAB_2X12), b(EQ_SHELF), b(DELAY_BUCKET), b(REVERB_PLATE)],
+        &[
+            b(DRIVE_MINOTAUR),
+            b(AMP_US_DOUBLE),
+            b(CAB_2X12),
+            b(EQ_SHELF),
+            b(DELAY_BUCKET),
+            b(REVERB_PLATE),
+        ],
     );
     write_fixture("gen-04-full-rig", &full);
 
     // 5. Effects only, no amp or cab.
-    let fx = build(&mut session, &[b(DRIVE_SCREAM), b(DELAY_BUCKET), b(REVERB_PLATE)]);
+    let fx = build(
+        &mut session,
+        &[b(DRIVE_SCREAM), b(DELAY_BUCKET), b(REVERB_PLATE)],
+    );
     write_fixture("gen-05-effects-only", &fx);
 
     // 6. An amp with several parameters pushed off their defaults.
@@ -151,16 +169,27 @@ fn generate_our_own_fixtures() {
     let bypassed = build(
         &mut session,
         &[
-            Block { model: DRIVE_MINOTAUR, enabled: false, params: vec![] },
+            Block {
+                model: DRIVE_MINOTAUR,
+                enabled: false,
+                params: vec![],
+            },
             b(AMP_US_DOUBLE),
             b(CAB_2X12),
-            Block { model: DELAY_BUCKET, enabled: false, params: vec![] },
+            Block {
+                model: DELAY_BUCKET,
+                enabled: false,
+                params: vec![],
+            },
         ],
     );
     write_fixture("gen-07-bypassed", &bypassed);
 
     // 8. Snapshots: the same chain with the delay mix moved per snapshot.
-    build(&mut session, &[b(AMP_US_DOUBLE), b(CAB_2X12), b(DELAY_BUCKET)]);
+    build(
+        &mut session,
+        &[b(AMP_US_DOUBLE), b(CAB_2X12), b(DELAY_BUCKET)],
+    );
     let (base, _) = block_span(&mut session);
     let delay = (base + 2) as i64;
     for (snap, mix) in [(0i64, 0.1f32), (1, 0.5), (2, 0.9)] {
@@ -174,7 +203,9 @@ fn generate_our_own_fixtures() {
 
     // Put the buffer back exactly as it was.
     if let Some(preset) = Preset::parse(&original) {
-        session.write_preset(&preset).expect("restore original buffer");
+        session
+            .write_preset(&preset)
+            .expect("restore original buffer");
     }
     println!("done; edit buffer restored");
 }
