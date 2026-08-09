@@ -299,26 +299,6 @@ fn reading_every_preset_is_quick() {
     assert_healthy(&mut s, "reading every preset");
 }
 
-/// Probe: does any LIST_PRESETS selector return preset bodies, not just names?
-/// Names come at args=2; a bigger reply at some other selector would be a
-/// one-request backup. Read-only; reports the size of each reply.
-#[test]
-#[ignore = "needs an HX device"]
-fn list_presets_selectors_probe() {
-    let Some(mut s) = device() else { return };
-    for args in [0i64, 1, 2, 3, 4, 5, 6] {
-        match s.list_presets_raw(0, args) {
-            Ok(v) => {
-                let dbg = format!("{v:?}");
-                let peek: String = dbg.chars().take(140).collect();
-                eprintln!("PROBE LIST_PRESETS args={args}: {} debug-bytes | {peek}", dbg.len());
-            }
-            Err(e) => eprintln!("PROBE LIST_PRESETS args={args}: error {e}"),
-        }
-    }
-    assert_healthy(&mut s, "list_presets selector probe");
-}
-
 /// The exact sequence that wedged the device: clicking through blocks quickly.
 ///
 /// Selecting a block used to move the device's own cursor, so every click was a

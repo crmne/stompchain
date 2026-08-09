@@ -44,23 +44,6 @@ impl Session {
             .collect())
     }
 
-    /// Probe LIST_PRESETS with an arbitrary selector, returning the raw reply.
-    ///
-    /// Names come back at `args == 2`. A selector that returned preset *bodies*
-    /// would turn a whole-pedal backup into one request instead of 126 loads,
-    /// so this exists to find out whether one does. Not for ordinary use.
-    #[doc(hidden)]
-    pub fn list_presets_raw(&mut self, setlist: i64, args: i64) -> Result<Value> {
-        self.request(
-            ChannelId::CONTROL,
-            rpc::op::LIST_PRESETS,
-            hx_proto::msgmap! {
-                rpc::key::SETLIST => Value::Int(setlist),
-                rpc::key::ARGS => Value::Int(args),
-            },
-        )
-    }
-
     /// Set one parameter on one block.
     ///
     /// The value is in the parameter's own units; `hx-catalog` knows the range
