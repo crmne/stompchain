@@ -209,6 +209,9 @@ bash tools/hxsniff/capture.sh backup     # a full read  (opcode 109)
 bash tools/hxsniff/capture.sh restore    # a full write (op 109's inverse)
 bash tools/hxsniff/capture.sh ir         # IR import, export, copy, clear
 bash tools/hxsniff/capture.sh globals    # every device setting HX Edit exposes
+bash tools/hxsniff/capture.sh enums      # the value lists those two only sampled
+bash tools/hxsniff/capture.sh partition  # restore one kind of object at a time
+bash tools/hxsniff/capture.sh library    # favorites, setlists, preset files
 DRY=1 bash tools/hxsniff/capture.sh ir   # read the steps through first
 ```
 

@@ -7,6 +7,12 @@
 #     bash tools/hxsniff/capture.sh ir         # IR import, export, copy, clear
 #     bash tools/hxsniff/capture.sh globals    # every device setting HX Edit exposes
 #
+# Three more finish what those two left half-known, and each is short:
+#
+#     bash tools/hxsniff/capture.sh enums      # the value lists we only sampled
+#     bash tools/hxsniff/capture.sh partition  # restore one kind of thing at a time
+#     bash tools/hxsniff/capture.sh library    # favorites, setlists, preset files
+#
 # It builds the libusb interposer, launches an instrumented copy of HX Edit
 # (logging every USB transfer), walks you through the scenario one step at a
 # time, and leaves the capture at  captures/mac-<scenario>-capture.log.
@@ -73,6 +79,15 @@ step() {
     return 0
 }
 
+# A dropdown entry's name, as something safe to read back out of a mark:
+# "FS Mode >" becomes "fs-mode-fwd".
+slug() {
+    printf '%s' "$1" |
+        tr '[:upper:]' '[:lower:]' |
+        sed -E -e 's/>/fwd/g' -e 's/</back/g' \
+            -e 's/[^a-z0-9]+/-/g' -e 's/^-+//' -e 's/-+$//'
+}
+
 # freeform <prefix> - for panels whose controls depend on the connected device,
 # which we cannot know from here. You name each control, we mark and wait.
 freeform() {
@@ -88,9 +103,10 @@ freeform() {
 }
 
 case "$SCENARIO" in
-backup | restore | ir | globals) ;;
+backup | restore | ir | globals | enums | partition | library) ;;
 *)
-    echo "!! unknown scenario '$SCENARIO' (backup, restore, ir, globals)" >&2
+    echo "!! unknown scenario '$SCENARIO'" >&2
+    echo "   try: backup restore ir globals enums partition library" >&2
     exit 2
     ;;
 esac
@@ -303,7 +319,117 @@ globals)
     step "globals/restore-globals-only" "Optional, and worth it: File -> Restore from Backup," \
         "pick a .hxb you made, tick ONLY Global Settings, and restore." \
         "That is the same values going back, and it isolates exactly which" \
-        "objects the globals half of a restore writes. Skip with 's'."
+        "objects the globals half of a restore writes. Skip with 's'." \
+        "(The 'partition' scenario does this properly.)"
+    ;;
+
+# -----------------------------------------------------------------------------
+# The value lists the globals run only sampled. Everything here is a dropdown
+# entry or a number: no risk, and it finishes the settings map.
+#
+#   - ids 198 and 200 are inferred from op76's array by position and have never
+#     been seen written;
+#   - id 14 (tempo source) showed one of its four values;
+#   - ids 97/98/99 showed six function values between them, out of roughly ten
+#     each.
+enums)
+    step "enums/connect" "Wait for HX Edit to finish connecting to the pedal."
+
+    step "enums/eq-open" "Open the Global EQ window from the menu."
+    step "enums/eq-enable" "Click the power button, top right, so the EQ is switched on."
+    step "enums/eq-highpeak-gain" "High Peak -> Gain: 0.0 -> +6.0 dB." \
+        "(Expect id 198. This is one of the two never seen written.)"
+    step "enums/eq-highcut-freq" "High Cut -> Freq: from Off to 12.3 kHz." \
+        "(Expect id 200, the other one.)"
+    step "enums/eq-reset" "Press RESET."
+    step "enums/eq-disable" "Switch the EQ back off, and close the window."
+
+    # Four values under id 14, one mark each.
+    for mode in "Per Snapshot" "Per Preset" "Global" "Host Sync"; do
+        step "enums/tempo-$(slug "$mode")" "Tempo readout menu: pick $mode."
+    done
+    step "enums/tempo-restore" "Put the tempo source back to what it was."
+
+    step "enums/devsettings-tab" "Preferences (Cmd-,) -> Device Settings tab."
+
+    # Every entry of each function dropdown, one at a time. FS3 is the short
+    # list; FS4 and FS5 add banking and the FS Mode pair.
+    fs3=("Tap/Tuner" "Stomp 3" "Preset Up" "Preset Down" "Snapshot Up"
+        "Snapshot Down" "All Bypass" "Toggle EXP")
+    fs45=("Tap/Tuner" "Preset Up" "Preset Down" "Snapshot Up" "Snapshot Down"
+        "Bank Up" "Bank Down" "FS Mode >" "< FS Mode" "All Bypass" "Toggle EXP")
+
+    for entry in "${fs3[@]}"; do
+        step "enums/fs3-$(slug "$entry")" "FS3 Function: pick $entry."
+    done
+    for switch in 4 5; do
+        step "enums/fs${switch}-stomp-${switch}" "FS${switch} Function: pick Stomp ${switch}."
+        for entry in "${fs45[@]}"; do
+            step "enums/fs${switch}-$(slug "$entry")" "FS${switch} Function: pick $entry."
+        done
+    done
+
+    step "enums/dev-restore" "Put FS3, FS4 and FS5 back where they were:" \
+        "Tap/Tuner, All Bypass, Toggle EXP unless you have changed them since."
+    ;;
+
+# -----------------------------------------------------------------------------
+# Which opcode-109 object ids are presets, which are globals, which are IRs.
+#
+# The backup capture showed 803 objects going past with nothing to tell them
+# apart. Restore lets you tick what to put back, so restoring one kind at a
+# time is the partition — and restoring a backup you took minutes earlier is
+# the same data going back, which costs the pedal nothing.
+partition)
+    step "partition/connect" "Wait for HX Edit to finish connecting to the pedal."
+    step "partition/fresh-backup" "File -> Create Backup... , save as partition.hxb." \
+        "Taking it now is what makes the three restores below harmless: every" \
+        "one of them writes back exactly what is on the pedal already."
+
+    step "partition/open-restore" "File -> Restore from Backup... , select partition.hxb," \
+        "and stop. Do not restore yet - opening it reads the file's contents."
+
+    step "partition/globals-only" "Tick ONLY Global Settings. Restore. Let it finish." \
+        "*** these objects are the globals ***"
+    step "partition/presets-only" "Reopen the dialog, tick ONLY the presets/setlists" \
+        "entry, restore, and let it finish. This one takes a while."
+    step "partition/irs-only" "Reopen, tick ONLY IRs, restore." \
+        "If your pedal has no IRs this writes nothing - use irs-present.hxb" \
+        "instead, which does, and clear the slots again afterwards."
+    step "partition/everything" "Reopen, tick everything, restore." \
+        "The whole-object-store write, to compare the three against."
+    ;;
+
+# -----------------------------------------------------------------------------
+# The two panels no capture has touched, and preset files.
+#
+# Favorites are in the op-109 object store, so they are part of a complete
+# backup whether or not we understand them. The setlist buttons are simply
+# unknown - worth knowing before a restore path is built on top of them.
+library)
+    step "library/connect" "Wait for HX Edit to finish connecting to the pedal."
+
+    step "library/favorites-tab" "Click the Favorites tab in the left panel."
+    step "library/save-favorite" "In the editor, pick a block and press the star to save it" \
+        "as a favorite."
+    step "library/rename-favorite" "Right-click that favorite -> Rename -> favtest"
+    step "library/copy-paste-favorite" "Copy it, select another slot, Paste."
+    step "library/export-favorite" "Select it, EXPORT, save the file somewhere."
+    step "library/import-favorite" "IMPORT that same file into a free slot."
+    step "library/clear-favorite" "Clear the favorites you just made, leaving the list as found."
+
+    step "library/presets-tab" "Click the Presets tab."
+    step "library/setlist-export" "Press EXPORT on the SETLIST row, save the file." \
+        "(Read-only, so this one is free.)"
+    step "library/setlist-import" "Press IMPORT on the SETLIST row and choose the file you" \
+        "just exported. Same data going back." \
+        "Skip with 's' if you would rather not rewrite all 126 slots."
+
+    step "library/preset-export" "Select one preset, press EXPORT under PRESETS, save it."
+    step "library/preset-copy" "Select a preset, COPY, select an empty slot, PASTE."
+    step "library/preset-import" "IMPORT the file you exported into that same empty slot."
+    step "library/preset-restore" "Put that slot back to New Preset - rename it back, or" \
+        "restore it from a backup afterwards. Skip with 's' if it was empty."
     ;;
 esac
 

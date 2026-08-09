@@ -127,6 +127,14 @@ bash tools/hxsniff/capture.sh ir         # import, export, rename, copy, clear
 bash tools/hxsniff/capture.sh globals    # every device setting HX Edit exposes
 ```
 
+Three more finish what those left half-known, each one sitting:
+
+```sh
+bash tools/hxsniff/capture.sh enums      # ids 198 and 200, and the enums of 14, 97-99
+bash tools/hxsniff/capture.sh partition  # which op-109 objects are presets/globals/IRs
+bash tools/hxsniff/capture.sh library    # favorites and the setlist buttons
+```
+
 ### What the IR capture settled [confirmed]
 
 Reading an IR back is **not** part of the op-109 object store. It is its own
@@ -254,5 +262,15 @@ going back, so it costs nothing to run.
 - **Globals id ↔ name.** The 19 ids HX Edit writes are named above. The rest of
   the 154 still want correlating with the `GLOB` block's 156 named fields by
   value — they are reachable only from the pedal's own menu, so no capture can
-  name them. Also unfinished: the FS3/FS4/FS5 function enums (six of roughly ten
-  values each), and the tempo source enum (one of four).
+  name them. What a capture *can* still finish is in `capture.sh enums`: ids 198
+  and 200, which are inferred rather than seen, the FS3/FS4/FS5 function enums
+  (six of roughly ten values between them), and the tempo source enum (one of
+  four).
+- **Which op-109 objects are what.** `capture.sh partition` restores one kind at
+  a time from a backup taken minutes earlier, so each restore writes back what
+  is already there and the object ids sort themselves into presets, globals and
+  IRs.
+- **Favorites and setlists.** Never captured. Favorites ride in the op-109 store
+  so a full backup holds them regardless, but the setlist IMPORT/EXPORT buttons
+  are simply unknown, which is worth fixing before a restore path leans on them.
+  `capture.sh library`.
