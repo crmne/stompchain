@@ -228,10 +228,15 @@ fn writing_a_slot_lands_and_clearing_it_empties_it() {
         .read_preset_at(setlist, spare)
         .expect("reading it back")
         .expect("the slot now holds a preset");
-    let chain = |p: &hx_proto::Preset| -> Vec<_> {
-        p.slots.iter().map(|s| (s.kind, s.model, s.values.clone())).collect()
-    };
-    assert_eq!(chain(&back), chain(&source), "the written preset must land intact");
+    // Byte for byte, not merely the same tone. A restore that quietly
+    // normalises anything is a restore that does not restore: the split and
+    // join attach points used to be rewritten on the way out, and this is what
+    // catches that.
+    assert_eq!(
+        back.encode(),
+        source.encode(),
+        "a preset written into a slot must come back byte for byte"
+    );
     assert_eq!(
         s.presets(setlist).expect("names")[spare as usize],
         "STOMPCHAIN TEST",

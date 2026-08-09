@@ -954,6 +954,14 @@ impl Session {
     /// preset: the document goes to the slot in one message, with no edit
     /// buffer and no separate save. It is a flash write, so it is paced like
     /// every other one - see `settle_flash`.
+    ///
+    /// The bytes go out **exactly as given**. [`write_preset`](Self::write_preset)
+    /// settles empty branches first, because a non-zero attach over an empty
+    /// branch makes the device wipe its *edit buffer* - but that is a rule about
+    /// the edit buffer, and this writes to flash instead. Settling here would
+    /// mean a restored preset did not match the backup it came from: presets
+    /// come off the device with those attach points set, so normalising them
+    /// would quietly rewrite what it is this function's whole job to preserve.
     pub fn write_preset_at(
         &mut self,
         setlist: i64,
@@ -961,12 +969,6 @@ impl Session {
         name: &str,
         preset: &Preset,
     ) -> Result<()> {
-        // Normalised the same way `write_preset` does: an empty branch has to go
-        // out with its attach points zeroed or the document contradicts itself.
-        let mut settled = Preset::parse(&preset.encode())
-            .ok_or_else(|| Error::Protocol("the document to write does not re-parse".into()))?;
-        settled.settle_branches();
-
         self.request(
             ChannelId::DATA,
             rpc::op::WRITE_SLOT_NAMED,
@@ -974,7 +976,7 @@ impl Session {
                 rpc::key::SETLIST => Value::Int(setlist),
                 rpc::key::PRESET_INDEX => Value::Int(index),
                 rpc::key::NAME => Value::Str(name.to_owned()),
-                rpc::key::DOCUMENT => Value::Bin(settled.encode(), 2),
+                rpc::key::DOCUMENT => Value::Bin(preset.encode(), 2),
             },
         )?;
         self.settle_flash();
