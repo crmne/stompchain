@@ -32,11 +32,16 @@ added once the faithful converter exists. We already **read** `.hxb`
   so today's backups are complete without them either way.
 - **Favorites** — stompchain-local.
 
-## Cadence
+## Cadence [built]
 
-Full backup on demand / on quit / nightly (~114 s, disruptive: it loads each
-preset). **Incremental after every save** (instant, one preset) for continuous
-safety. Not on every connect, until a fast read exists.
+The fast read changed this. A full capture is **~4 s** and never moves the
+loaded preset, so it runs **on every connect** - one automatic bundle, kept at
+`~/.local/share/stompchain/backups/automatic.hxbundle`. Every **save** then
+refreshes just the preset it changed, which is milliseconds and silent. On top
+of that, **Back up…** and **Restore…** on the preset list do it on demand.
+
+So the copy on disk is never older than the last thing you did, and nothing
+ever interrupts playing.
 
 ## The `.hxb` container (AF6L) — decoded
 

@@ -1320,6 +1320,8 @@ version = "0.2.1"
 dependencies = [
  "hx-proto",
  "nusb",
+ "serde",
+ "serde_json",
  "thiserror 2.0.19",
 ]
 

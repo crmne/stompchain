@@ -191,6 +191,8 @@ pub struct App {
     /// playing, so it stays out of the way until asked for.
     show_activity: bool,
     status: String,
+    /// A backup or restore in flight: what it is doing, and how far along.
+    working: Option<(String, f32)>,
     current_snapshot: usize,
 }
 
@@ -201,6 +203,19 @@ enum CopyTarget {
     File(std::path::PathBuf),
     /// Into the library, as a portable .hlx named after the preset.
     Library,
+}
+
+/// What a preset's right-click menu can do to it.
+///
+/// One preset, never all of them: the whole-pedal operations are Back up and
+/// Restore, and they live on the list's header rather than on a preset.
+#[derive(Clone, Copy)]
+enum RowAction {
+    Copy,
+    Paste,
+    Export,
+    Import,
+    Keep,
 }
 
 #[derive(Debug, PartialEq)]
@@ -280,6 +295,7 @@ impl App {
             log: Vec::new(),
             show_activity: false,
             status: "Looking for a device…".into(),
+            working: None,
             current_snapshot: 0,
         };
         // Without the model data there is nothing to edit with, so the
@@ -317,6 +333,13 @@ impl App {
                     self.status = "Connected".into();
                     let _ = self.to_device.send(Cmd::ListIrs);
                     let _ = self.to_device.send(Cmd::ListSetlists);
+                    // One automatic backup per session, taken as soon as the
+                    // pedal is there. It costs a few seconds and means the copy
+                    // on disk is never older than the day's work; every save
+                    // after this refreshes just the preset it changed.
+                    if let Some(dir) = session::automatic_dir() {
+                        let _ = self.to_device.send(Cmd::BackUp(dir));
+                    }
                 }
                 Ok(Evt::Disconnected) => {
                     self.connection = Connection::Offline;
@@ -325,6 +348,26 @@ impl App {
                     self.status = "Disconnected".into();
                 }
                 Ok(Evt::Presets(names)) => self.presets = names,
+                Ok(Evt::Working { what, progress }) => {
+                    self.working = if what.is_empty() {
+                        None
+                    } else {
+                        Some((what, progress))
+                    };
+                }
+                Ok(Evt::BackedUp {
+                    dir,
+                    presets,
+                    settings,
+                    irs,
+                }) => {
+                    self.working = None;
+                    self.note(format!(
+                        "backed up {presets} presets, {settings} settings and {irs} \
+                         impulse responses to {}",
+                        dir.display()
+                    ));
+                }
                 Ok(Evt::Loaded {
                     index,
                     name,
@@ -604,6 +647,16 @@ impl App {
                             RichText::new(format!("firmware {}", self.firmware)).color(theme::DIM),
                         );
                     }
+                    // A backup reads all 126 presets. That is seconds rather
+                    // than minutes now, but silence for seconds still reads as
+                    // a window that has stopped answering.
+                    if let Some((what, progress)) = self.working.clone() {
+                        ui.add(
+                            egui::ProgressBar::new(progress)
+                                .desired_width(120.0)
+                                .text(RichText::new(what).small()),
+                        );
+                    }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
@@ -746,11 +799,121 @@ impl App {
         }
     }
 
+    /// Carry out what the right-click menu asked for.
+    ///
+    /// Each of these acts on one preset. Anything that needs the device's own
+    /// document - copy, export - selects the preset first, because the device
+    /// hands back the loaded one; the rest are local.
+    fn row_action(&mut self, index: i64, action: RowAction) {
+        match action {
+            RowAction::Copy => {
+                self.select_for_action(index);
+                self.pending_copy = CopyTarget::Clipboard;
+                self.send(Cmd::CopyPreset);
+            }
+            RowAction::Paste => {
+                if let Some((name, blob)) = self.clipboard.clone() {
+                    self.select_for_action(index);
+                    self.note(format!("pasting {name}"));
+                    self.send(Cmd::PastePreset(blob));
+                }
+            }
+            RowAction::Export => {
+                let name = self
+                    .presets
+                    .get(index as usize)
+                    .cloned()
+                    .unwrap_or_else(|| "preset".to_owned());
+                if let Some(path) = rfd::FileDialog::new()
+                    .set_file_name(format!("{}.hxpreset", sanitise(&name)))
+                    .add_filter("HX preset", &["hxpreset"])
+                    .save_file()
+                {
+                    self.select_for_action(index);
+                    self.pending_copy = CopyTarget::File(path);
+                    self.send(Cmd::CopyPreset);
+                }
+            }
+            RowAction::Import => {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("HX tone", &["hxpreset", "hlx"])
+                    .pick_file()
+                {
+                    self.select_for_action(index);
+                    self.open_tone_file(&path);
+                }
+            }
+            RowAction::Keep => {
+                self.select_for_action(index);
+                self.pending_copy = CopyTarget::Library;
+                self.send(Cmd::CopyPreset);
+            }
+        }
+    }
+
+    /// Put the device on a preset a menu action is about to work on.
+    fn select_for_action(&mut self, index: i64) {
+        if self.preset_index != index {
+            self.loading = true;
+            self.preset_index = index;
+            self.send(Cmd::SelectPreset(index));
+        }
+    }
+
+    /// Back up and restore, on the preset list.
+    ///
+    /// These act on the **whole pedal**, which is why they are here and named
+    /// this way. What you can do to one preset - rename, copy, save to a file -
+    /// lives on that preset's own right-click menu, where an action cannot be
+    /// mistaken for one that touches all 126.
+    fn backup_actions(&mut self, ui: &mut egui::Ui) {
+        let live = matches!(self.connection, Connection::Online);
+        let small = |ui: &mut egui::Ui, label: &str, on: bool| {
+            ui.add_enabled(
+                on,
+                egui::Button::new(RichText::new(label).small()).frame(false),
+            )
+        };
+
+        if small(ui, "RESTORE…", live)
+            .on_hover_text("put a backup back onto the pedal")
+            .clicked()
+        {
+            if let Some(dir) = rfd::FileDialog::new()
+                .set_title("Choose a backup to restore")
+                .pick_folder()
+            {
+                match hx_usb::backup::open(&dir) {
+                    Ok(m) => {
+                        let kept = m.presets.iter().filter(|n| !n.is_empty()).count();
+                        self.note(format!("restoring {kept} presets from {}", dir.display()));
+                        self.send(Cmd::RestoreAll(dir));
+                    }
+                    Err(e) => self.note(format!("that is not a backup: {e}")),
+                }
+            }
+        }
+        if small(ui, "BACK UP…", live)
+            .on_hover_text("save every preset, setting and impulse response")
+            .clicked()
+        {
+            if let Some(dir) = rfd::FileDialog::new()
+                .set_title("Where to put the backup")
+                .set_file_name(format!("{}.hxbundle", sanitise(&self.device)))
+                .save_file()
+            {
+                self.note("backing up the pedal".to_owned());
+                self.send(Cmd::BackUp(dir));
+            }
+        }
+    }
+
     /// Copy, paste, import and export, on the preset list itself.
     ///
     /// A preset travels as the device's own document, byte for byte, so what
     /// comes back is what was there — including the parts this editor does not
     /// model. Rebuilding one from what the UI shows would quietly drop them.
+    #[allow(dead_code)]
     fn preset_actions(&mut self, ui: &mut egui::Ui) {
         let live = matches!(self.connection, Connection::Online) && self.preset_index >= 0;
         let small = |ui: &mut egui::Ui, label: &str, on: bool| {
@@ -997,7 +1160,7 @@ impl App {
                         self.show_favorites_only = !self.show_favorites_only;
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        self.preset_actions(ui);
+                        self.backup_actions(ui);
                     });
                 });
                 ui.separator();
@@ -1015,6 +1178,7 @@ impl App {
                         let mut load = None;
                         let mut toggle = None;
                         let mut rename_start = None;
+                        let mut menu_action = None;
                         // Some(Some(name)) commits a rename, Some(None) cancels.
                         let mut rename_result: Option<Option<(i64, String)>> = None;
                         let mut shown_any = false;
@@ -1083,9 +1247,39 @@ impl App {
                                     }
                                     // Right-click a preset to rename it in place,
                                     // whether or not it is the one loaded.
+                                    // Everything that acts on this one preset,
+                                    // on the preset itself. The header's Back up
+                                    // and Restore act on all 126, and keeping the
+                                    // two apart is what stops either being
+                                    // mistaken for the other.
                                     row.context_menu(|ui| {
                                         if ui.button("Rename").clicked() {
                                             rename_start = Some((index, name.clone()));
+                                            ui.close_menu();
+                                        }
+                                        if ui.button("Copy").clicked() {
+                                            menu_action = Some((index, RowAction::Copy));
+                                            ui.close_menu();
+                                        }
+                                        let can_paste = self.clipboard.is_some();
+                                        if ui
+                                            .add_enabled(can_paste, egui::Button::new("Paste"))
+                                            .clicked()
+                                        {
+                                            menu_action = Some((index, RowAction::Paste));
+                                            ui.close_menu();
+                                        }
+                                        ui.separator();
+                                        if ui.button("Save to file…").clicked() {
+                                            menu_action = Some((index, RowAction::Export));
+                                            ui.close_menu();
+                                        }
+                                        if ui.button("Load from file…").clicked() {
+                                            menu_action = Some((index, RowAction::Import));
+                                            ui.close_menu();
+                                        }
+                                        if ui.button("Keep in library").clicked() {
+                                            menu_action = Some((index, RowAction::Keep));
                                             ui.close_menu();
                                         }
                                     });
@@ -1109,6 +1303,9 @@ impl App {
                             self.loading = true;
                             self.preset_index = index;
                             self.send(Cmd::SelectPreset(index));
+                        }
+                        if let Some((index, action)) = menu_action {
+                            self.row_action(index, action);
                         }
                         if let Some(started) = rename_start {
                             self.renaming = Some(started);

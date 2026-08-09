@@ -12,6 +12,10 @@ use std::time::{Duration, Instant};
 pub enum Cmd {
     Connect,
     Disconnect,
+    /// Read the whole pedal into a bundle directory.
+    BackUp(std::path::PathBuf),
+    /// Write a bundle back onto the pedal.
+    RestoreAll(std::path::PathBuf),
     Rename {
         index: i64,
         name: String,
@@ -157,6 +161,18 @@ pub enum Evt {
     },
     /// The edit buffer has been committed to the preset.
     Saved,
+    /// A backup or restore is running, and how far along it is (0.0 to 1.0).
+    Working {
+        what: String,
+        progress: f32,
+    },
+    /// A backup finished, with where it went and what it holds.
+    BackedUp {
+        dir: std::path::PathBuf,
+        presets: usize,
+        settings: usize,
+        irs: usize,
+    },
     /// Whether the worker is in the middle of a device conversation. Edits
     /// take real round trips — a document write near a second — and a window
     /// that does nothing for a second looks broken.
@@ -549,6 +565,8 @@ impl Worker {
                     self.send(Evt::Activity(format!("setting {id} is now {on}")));
                 }
             }
+            Cmd::BackUp(dir) => self.back_up(&dir),
+            Cmd::RestoreAll(dir) => self.restore_all(&dir),
             Cmd::SavePreset => {
                 let Some((setlist, index, name)) =
                     self.device.as_mut().and_then(|d| d.preset_info().ok())
@@ -561,6 +579,10 @@ impl Worker {
                     self.send(Evt::Saved);
                     // The saved state is the new baseline to undo back to.
                     self.snapshot_taken = false;
+                    // And the automatic backup follows the save, so the copy on
+                    // disk is never older than the last thing you did. One
+                    // preset is milliseconds, which is why this can be silent.
+                    self.back_up_one(index);
                 }
             }
             Cmd::CopyPreset => {
@@ -1034,6 +1056,60 @@ impl Worker {
     }
 
     /// Read the preset back from the device and show it.
+    /// Read the whole pedal into a bundle directory.
+    fn back_up(&mut self, dir: &std::path::Path) {
+        let stamp = now();
+        let events = self.events.clone();
+        let outcome = self.try_on_device(|d| {
+            hx_usb::backup::capture(d, dir, stamp, |step| {
+                if let Some(evt) = working(&step) {
+                    let _ = events.send(evt);
+                }
+            })
+        });
+        if let Some(manifest) = outcome {
+            self.send(Evt::BackedUp {
+                dir: dir.to_owned(),
+                presets: manifest.presets.iter().filter(|n| !n.is_empty()).count(),
+                settings: manifest.globals,
+                irs: manifest.irs.len(),
+            });
+        }
+    }
+
+    /// Write a bundle back onto the pedal, then show what is there now.
+    fn restore_all(&mut self, dir: &std::path::Path) {
+        let events = self.events.clone();
+        let done = self.run_on_device(|d| {
+            hx_usb::backup::restore(dir, d, hx_usb::backup::Parts::default(), |step| {
+                if let Some(evt) = working(&step) {
+                    let _ = events.send(evt);
+                }
+            })
+        });
+        if done {
+            self.send(Evt::Activity("restored from backup".into()));
+            let setlist = self.setlist;
+            if let Some(names) = self.try_on_device(|d| d.presets(setlist)) {
+                self.send(Evt::Presets(names));
+            }
+            self.reload();
+        }
+    }
+
+    /// Keep the automatic backup current after a save.
+    ///
+    /// Silent on purpose: it costs milliseconds and nobody asked for it, so it
+    /// should not interrupt. A missing backup directory simply means automatic
+    /// backups are not set up yet, which is not an error worth reporting.
+    fn back_up_one(&mut self, index: i64) {
+        let Some(dir) = automatic_dir() else { return };
+        if !dir.join("manifest.json").exists() {
+            return;
+        }
+        let _ = self.try_on_device(|d| hx_usb::backup::capture_one(d, &dir, index));
+    }
+
     fn reload(&mut self) {
         let Some(preset) = self.read_settled() else {
             return;
@@ -1145,4 +1221,40 @@ impl Worker {
     fn send(&self, evt: Evt) {
         let _ = self.events.send(evt);
     }
+}
+
+/// Seconds since the epoch, for stamping a bundle.
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Where the automatic backup lives: one bundle, kept current.
+pub fn automatic_dir() -> Option<std::path::PathBuf> {
+    hx_usb::backup::default_dir().map(|d| d.join("automatic.hxbundle"))
+}
+
+/// Turn a capture or restore step into something to show.
+fn working(step: &hx_usb::backup::Step) -> Option<Evt> {
+    use hx_usb::backup::Step;
+    Some(match step {
+        Step::Presets { done, total, .. } => Evt::Working {
+            what: "presets".into(),
+            progress: *done as f32 / (*total).max(1) as f32,
+        },
+        Step::Globals => Evt::Working {
+            what: "settings".into(),
+            progress: 0.9,
+        },
+        Step::Irs { done, total } => Evt::Working {
+            what: "impulse responses".into(),
+            progress: 0.9 + 0.1 * (*done as f32 / (*total).max(1) as f32),
+        },
+        Step::Done => Evt::Working {
+            what: String::new(),
+            progress: 1.0,
+        },
+    })
 }
