@@ -58,6 +58,16 @@ pub enum Cmd {
         file: std::path::PathBuf,
     },
     ClearIr(i64),
+    /// Read an impulse response off the device and write it out as a WAV.
+    SaveIr {
+        slot: i64,
+        file: std::path::PathBuf,
+    },
+    /// Rename an impulse response slot, leaving its samples alone.
+    RenameIr {
+        slot: i64,
+        name: String,
+    },
     SelectPreset(i64),
     SelectSetlist(i64),
     /// Load a preset document into a chosen preset's edit buffer: put the
@@ -754,6 +764,26 @@ impl Worker {
                     d.upload_ir(slot, &name, &wav.samples)
                 });
                 if loaded.is_some() {
+                    self.handle(Cmd::ListIrs);
+                }
+            }
+            Cmd::SaveIr { slot, file } => {
+                match self.try_on_device(|d| d.read_ir(slot)) {
+                    Some(Some((name, samples))) => {
+                        match crate::wav::write(&file, &samples, 48_000) {
+                            Ok(()) => self.send(Evt::Activity(format!(
+                                "saved {name} to {}",
+                                file.display()
+                            ))),
+                            Err(e) => self.send(Evt::Failed(e.to_string())),
+                        }
+                    }
+                    Some(None) => self.send(Evt::Failed("that slot is empty".into())),
+                    None => {}
+                }
+            }
+            Cmd::RenameIr { slot, name } => {
+                if self.run_on_device(|d| d.rename_ir(slot, &name)) {
                     self.handle(Cmd::ListIrs);
                 }
             }

@@ -195,6 +195,8 @@ pub struct App {
     working: Option<(String, f32)>,
     /// Current value of each named global setting, by object id.
     settings: std::collections::BTreeMap<i64, f32>,
+    /// The IR slot being renamed in place, and the name so far.
+    renaming_ir: Option<(i64, String)>,
     current_snapshot: usize,
 }
 
@@ -299,6 +301,7 @@ impl App {
             status: "Looking for a device…".into(),
             working: None,
             settings: Default::default(),
+            renaming_ir: None,
             current_snapshot: 0,
         };
         // Without the model data there is nothing to edit with, so the
@@ -1757,6 +1760,9 @@ impl App {
                     ui.label(RichText::new("no impulse responses loaded").color(theme::DIM));
                 }
                 let irs = self.irs.clone();
+                let mut ir_save = None;
+                let mut ir_rename_start = None;
+                let mut ir_rename: Option<Option<(i64, String)>> = None;
                 egui::ScrollArea::vertical()
                     .max_height(170.0)
                     .id_salt("irs")
@@ -1764,18 +1770,73 @@ impl App {
                         for (slot, name) in &irs {
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new(format!("{:>3}", slot + 1)).monospace());
-                                ui.label(name);
+                                // Renaming happens in place: the name is the
+                                // only thing about a slot you can edit, so
+                                // clicking it is where you would try.
+                                match &mut self.renaming_ir {
+                                    Some((editing, draft)) if editing == slot => {
+                                        let field = ui.add(
+                                            egui::TextEdit::singleline(draft)
+                                                .desired_width(180.0),
+                                        );
+                                        field.request_focus();
+                                        if field.lost_focus() {
+                                            let done = ui.input(|i| {
+                                                i.key_pressed(egui::Key::Enter)
+                                            });
+                                            ir_rename = Some(done.then(|| {
+                                                (*slot, draft.clone())
+                                            }));
+                                        }
+                                    }
+                                    _ => {
+                                        if ui
+                                            .add(egui::Button::new(name).frame(false))
+                                            .on_hover_text("click to rename")
+                                            .clicked()
+                                        {
+                                            ir_rename_start = Some((*slot, name.clone()));
+                                        }
+                                    }
+                                }
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
                                         if ui.small_button("clear").clicked() {
                                             self.send(Cmd::ClearIr(*slot));
                                         }
+                                        // An IR that only ever existed on the
+                                        // pedal can now come back off it.
+                                        if ui
+                                            .small_button("save…")
+                                            .on_hover_text("write this IR out as a WAV")
+                                            .clicked()
+                                        {
+                                            ir_save = Some((*slot, name.clone()));
+                                        }
                                     },
                                 );
                             });
                         }
                     });
+                if let Some((slot, name)) = ir_save {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_file_name(format!("{}.wav", sanitise(&name)))
+                        .add_filter("WAV", &["wav"])
+                        .save_file()
+                    {
+                        self.send(Cmd::SaveIr { slot, file: path });
+                    }
+                }
+                if let Some(started) = ir_rename_start {
+                    self.renaming_ir = Some(started);
+                }
+                if let Some(result) = ir_rename {
+                    self.renaming_ir = None;
+                    if let Some((slot, name)) = result {
+                        self.send(Cmd::RenameIr { slot, name });
+                    }
+                }
                 ui.label(
                     RichText::new("Drop a mono WAV on the window to load one.")
                         .small()

@@ -111,9 +111,9 @@ impl Session {
     /// op12 for the descriptor and op11 for the samples.
     ///
     /// What comes back is what the device stores rather than what was uploaded:
-    /// always 48 kHz mono `f32`, always 2048 samples, shorter files zero-padded
-    /// and longer or higher-rate ones resampled on the way in. `None` is an
-    /// empty slot.
+    /// 48 kHz mono `f32`, as many samples as the upload declared - the size code
+    /// rounds up to 1024 or 2048 - with anything longer or at a higher rate
+    /// resampled on the way in. `None` is an empty slot.
     pub fn read_ir(&mut self, slot: i64) -> Result<Option<(String, Vec<f32>)>> {
         self.bootstrap()?;
         let descriptor = self.request(

@@ -1,4 +1,4 @@
-//! Just enough WAV to read an impulse response.
+//! Just enough WAV to read and write an impulse response.
 //!
 //! IRs are short mono files, and the device wants plain `f32` samples. A full
 //! audio library would bring a dependency tree for one job: find the `fmt ` and
@@ -106,5 +106,55 @@ impl Format {
                 )))
             }
         })
+    }
+}
+
+/// Write samples out as a mono 32-bit float WAV.
+///
+/// What comes off the device is 48 kHz mono `f32` and nothing else, so this
+/// writes exactly that: a canonical 44-byte header and the samples. The point
+/// is that an IR rescued from a pedal lands as a file any editor will open,
+/// rather than as a blob only this program understands.
+pub fn write(path: &Path, samples: &[f32], sample_rate: u32) -> Result<()> {
+    const HEADER: u32 = 36;
+    let data = (samples.len() * 4) as u32;
+
+    let mut out = Vec::with_capacity(HEADER as usize + 8 + data as usize);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(HEADER + data).to_le_bytes());
+    out.extend_from_slice(b"WAVE");
+
+    out.extend_from_slice(b"fmt ");
+    out.extend_from_slice(&16u32.to_le_bytes()); // chunk size
+    out.extend_from_slice(&3u16.to_le_bytes()); // 3 is IEEE float
+    out.extend_from_slice(&1u16.to_le_bytes()); // mono
+    out.extend_from_slice(&sample_rate.to_le_bytes());
+    out.extend_from_slice(&(sample_rate * 4).to_le_bytes()); // bytes per second
+    out.extend_from_slice(&4u16.to_le_bytes()); // bytes per frame
+    out.extend_from_slice(&32u16.to_le_bytes()); // bits per sample
+
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data.to_le_bytes());
+    for s in samples {
+        out.extend_from_slice(&s.to_le_bytes());
+    }
+
+    std::fs::write(path, out).map_err(|e| Error::Protocol(format!("writing {path:?}: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_is_written_reads_back_the_same() {
+        let path = std::env::temp_dir().join("stompchain-wav-roundtrip.wav");
+        let samples: Vec<f32> = (0..2048).map(|i| i as f32 / 4096.0).collect();
+        write(&path, &samples, 48_000).expect("writes");
+
+        let back = read(&path).expect("reads");
+        assert_eq!(back.sample_rate, 48_000);
+        assert_eq!(back.samples, samples);
+        let _ = std::fs::remove_file(path);
     }
 }

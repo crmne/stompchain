@@ -204,6 +204,12 @@ under op 9, checksum included — and `op11` returns the **samples**. Op 10
 renames a slot. A copy between slots is op12+op11 followed by op 9: the samples
 travel to the host and back rather than moving inside the device.
 
+**Both implemented and verified on hardware** (`read_ir`, `rename_ir`): a ramp
+whose every sample is its own index goes up and comes back bit-identical. One
+correction to the note below: what comes back is as many samples as the *upload
+declared*, not always 2048 — our uploader declares the 1024 size code for
+anything that fits it, and the device then stores and returns 1024.
+
 The probe IRs say what the device does to what it is given. Everything comes
 back **48 kHz mono 32-bit float, always 2048 samples**, whatever went in:
 `ramp1024` returns as its exact `i/4096` ramp zero-padded to 2048, `steps2048`

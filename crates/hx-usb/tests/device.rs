@@ -156,6 +156,43 @@ fn reading_a_slot_does_not_load_it() {
     assert_healthy(&mut s, "indexed read");
 }
 
+/// An impulse response comes back off the device the same as it went on.
+///
+/// Reading an IR is what makes a backup complete: an IR uploaded once and never
+/// kept exists nowhere else. The check uses a ramp whose every sample is its own
+/// index over 4096, so what comes back says outright whether it is the same
+/// data, in the right order, at the right offsets. The slot is emptied again.
+#[test]
+#[ignore = "needs an HX device"]
+fn an_impulse_response_survives_the_round_trip() {
+    let Some(mut s) = device() else { return };
+
+    // Only ever an empty slot, so nobody's cab loses its IR.
+    let used: Vec<i64> = s.irs().expect("ir list").iter().map(|(n, _)| *n).collect();
+    let Some(slot) = (0..8).find(|n| !used.contains(n)) else {
+        eprintln!("SKIPPED: every IR slot is in use");
+        return;
+    };
+
+    // s[i] = i / 4096, exact in f32, so a sample *is* its index.
+    let sent: Vec<f32> = (0..1024).map(|i| i as f32 / 4096.0).collect();
+    s.upload_ir(slot, "STOMPCHAIN TEST", &sent)
+        .expect("uploading the probe");
+
+    let (name, back) = s
+        .read_ir(slot)
+        .expect("reading it back")
+        .expect("the slot now holds an IR");
+    assert_eq!(name, "STOMPCHAIN TEST");
+    // The stored length is the one the upload declared - 1024 here, the size
+    // code for anything up to 1024 - and the samples inside it are untouched.
+    assert_eq!(back.len(), sent.len(), "as many samples as were declared");
+    assert_eq!(back, sent, "the samples come back unchanged");
+
+    s.clear_ir(slot).expect("clearing the slot");
+    assert_control_healthy(&mut s, "an impulse response round trip");
+}
+
 /// Writing a preset straight into a slot, and emptying one again.
 ///
 /// This is the restore path, so it has to be right, and it is checked on an
