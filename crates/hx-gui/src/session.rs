@@ -568,8 +568,20 @@ impl Worker {
                 }
             }
             Cmd::Rename { index, name } => {
-                if self.run_on_device(|d| d.rename_preset(0, index, &name)) {
-                    self.reload();
+                let setlist = self.setlist;
+                if self.run_on_device(|d| d.rename_preset(setlist, index, &name)) {
+                    // rename_preset paces the flash commit itself, so this list
+                    // read lands on a settled device. Crucially there is no
+                    // reload: a rename changes only a slot's label, never the
+                    // loaded document, and reloading here raced the commit - a
+                    // burst of renames stacking read-backs onto in-flight writes
+                    // is exactly what once wedged the pedal into a factory reset.
+                    if let Some(names) = self.try_on_device(|d| d.presets(setlist)) {
+                        self.send(Evt::Presets(names));
+                    }
+                    if self.shown.0 == index {
+                        self.shown.1 = name.clone();
+                    }
                 }
             }
             Cmd::MoveBlock { from, to } => {

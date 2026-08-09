@@ -98,6 +98,74 @@ fn reading_repeatedly_is_safe() {
     assert_healthy(&mut session, "eight preset reads");
 }
 
+/// Probe: does READ_PRESET with a slot argument read that slot from flash
+/// without loading it? If so, a full backup is seconds, not two minutes.
+///
+/// Read-only: it selects a couple of presets to get a reference and puts the
+/// original back; it never saves. Reports what the device actually does and
+/// only *insists* that the loaded preset is untouched by the indexed read.
+#[test]
+#[ignore = "needs an HX device"]
+fn read_preset_at_reads_a_slot_without_loading() {
+    let Some(mut s) = device() else { return };
+    let (setlist, loaded, name) = s.preset_info().expect("preset info");
+    let target = if loaded == 0 { 5 } else { 0 };
+
+    // References the honest way: the loaded document, and the target's document
+    // via an actual load, then back to where we started.
+    let loaded_doc = s.read_preset().expect("read loaded").encode();
+    s.select_preset(setlist, target).expect("select target");
+    let target_doc = s.read_preset().expect("read target").encode();
+    s.select_preset(setlist, loaded).expect("select back");
+    assert_eq!(
+        s.preset_info().expect("info").1,
+        loaded,
+        "should be back on the original preset before probing"
+    );
+
+    // The probe itself.
+    match s.read_preset_at(setlist, target) {
+        Ok(p) => {
+            let got = p.encode();
+            let still = s.preset_info().expect("info after probe").1;
+            eprintln!(
+                "PROBE read_preset_at(slot {target}) while {loaded} {name:?} loaded: \
+                 {} bytes | ==target:{} | ==loaded:{} | loaded-still:{}",
+                got.len(),
+                got == target_doc,
+                got == loaded_doc,
+                still,
+            );
+            assert_eq!(
+                still, loaded,
+                "SAFETY: an indexed read must not change the loaded preset"
+            );
+        }
+        Err(e) => eprintln!("PROBE read_preset_at rejected by device: {e}"),
+    }
+    assert_healthy(&mut s, "indexed read probe");
+}
+
+/// Probe: does any LIST_PRESETS selector return preset bodies, not just names?
+/// Names come at args=2; a bigger reply at some other selector would be a
+/// one-request backup. Read-only; reports the size of each reply.
+#[test]
+#[ignore = "needs an HX device"]
+fn list_presets_selectors_probe() {
+    let Some(mut s) = device() else { return };
+    for args in [0i64, 1, 2, 3, 4, 5, 6] {
+        match s.list_presets_raw(0, args) {
+            Ok(v) => {
+                let dbg = format!("{v:?}");
+                let peek: String = dbg.chars().take(140).collect();
+                eprintln!("PROBE LIST_PRESETS args={args}: {} debug-bytes | {peek}", dbg.len());
+            }
+            Err(e) => eprintln!("PROBE LIST_PRESETS args={args}: error {e}"),
+        }
+    }
+    assert_healthy(&mut s, "list_presets selector probe");
+}
+
 /// The exact sequence that wedged the device: clicking through blocks quickly.
 ///
 /// Selecting a block used to move the device's own cursor, so every click was a

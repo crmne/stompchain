@@ -912,6 +912,30 @@ impl Session {
         Preset::parse(blob)
             .ok_or_else(|| Error::Protocol("preset blob was not an l6-helix document".into()))
     }
+
+    /// Read a preset by slot, if the device will do it without loading it.
+    ///
+    /// [`read_preset`](Self::read_preset) with no argument returns the loaded
+    /// preset; this asks the same opcode for a specific slot. A backup that
+    /// could read any slot straight from flash would not have to load all 126
+    /// presets one at a time - the two-minute part of a full backup. Whether the
+    /// device honours the argument, and whether it leaves the loaded preset
+    /// alone, is what the `read_preset_at` probe test settles against hardware.
+    pub fn read_preset_at(&mut self, setlist: i64, index: i64) -> Result<Preset> {
+        let v = self.request(
+            ChannelId::DATA,
+            rpc::op::READ_PRESET,
+            hx_proto::msgmap! {
+                rpc::key::SETLIST => Value::Int(setlist),
+                rpc::key::PRESET_INDEX => Value::Int(index),
+            },
+        )?;
+        let blob = v
+            .as_raw()
+            .ok_or_else(|| Error::Protocol("preset response was not a blob".into()))?;
+        Preset::parse(blob)
+            .ok_or_else(|| Error::Protocol("preset blob was not an l6-helix document".into()))
+    }
 }
 
 /// The field accompanying an IR upload: the samples summed as little-endian

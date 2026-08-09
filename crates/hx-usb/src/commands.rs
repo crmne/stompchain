@@ -44,6 +44,23 @@ impl Session {
             .collect())
     }
 
+    /// Probe LIST_PRESETS with an arbitrary selector, returning the raw reply.
+    ///
+    /// Names come back at `args == 2`. A selector that returned preset *bodies*
+    /// would turn a whole-pedal backup into one request instead of 126 loads,
+    /// so this exists to find out whether one does. Not for ordinary use.
+    #[doc(hidden)]
+    pub fn list_presets_raw(&mut self, setlist: i64, args: i64) -> Result<Value> {
+        self.request(
+            ChannelId::CONTROL,
+            rpc::op::LIST_PRESETS,
+            hx_proto::msgmap! {
+                rpc::key::SETLIST => Value::Int(setlist),
+                rpc::key::ARGS => Value::Int(args),
+            },
+        )
+    }
+
     /// Set one parameter on one block.
     ///
     /// The value is in the parameter's own units; `hx-catalog` knows the range
@@ -283,6 +300,22 @@ impl Session {
         }
     }
 
+    /// Give a flash write time to commit before the next one is sent.
+    ///
+    /// Rename and save are flash writes: the device replies at once but commits
+    /// a moment later, and firing the next flash write into that window stacks
+    /// racing commits until the transfer state machine jams. That is not a
+    /// theoretical edge - a burst of renames once corrupted a whole setlist past
+    /// what a power cycle could clear, and only a factory reset recovered it. A
+    /// pause here paces flash writes the way HX Edit's own gaps do. Captured
+    /// commits take about 300 ms; this is generous over that. Verifying by
+    /// reading the result back, the way [`write_preset`](Self::write_preset)
+    /// does, is stronger still and is the next step once the command transcript
+    /// can be re-captured against hardware.
+    fn settle_flash(&self) {
+        std::thread::sleep(Duration::from_millis(750));
+    }
+
     /// Commit the edit buffer to a preset slot.
     ///
     /// Everything else in this API edits the device's *edit buffer*: change a
@@ -298,7 +331,11 @@ impl Session {
                 rpc::key::PRESET_INDEX => Value::Int(index),
                 rpc::key::NAME => Value::Str(name.to_owned()),
             },
-        )
+        )?;
+        // A save landing back-to-back with the next slot's save - as a restore
+        // writes preset after preset - must not stack its commit onto this one.
+        self.settle_flash();
+        Ok(())
     }
 
     /// Read one device object — a global setting, by numeric id.
@@ -365,6 +402,15 @@ impl Session {
     }
 
     /// Rename a preset.
+    ///
+    /// This is a flash write, and an unpaced one is what corrupted a setlist
+    /// into needing a factory reset: the GUI fired a rename and immediately read
+    /// the list and the document back, and a burst of them stacked commits until
+    /// the device jammed. So the write is paced - see [`settle_flash`] - and the
+    /// caller must not follow it with a document reload; a rename changes a
+    /// slot's label, never its tone.
+    ///
+    /// [`settle_flash`]: Self::settle_flash
     pub fn rename_preset(&mut self, setlist: i64, index: i64, name: &str) -> Result<()> {
         self.command(
             ChannelId::DATA,
@@ -374,7 +420,9 @@ impl Session {
                 rpc::key::PRESET_INDEX => Value::Int(index),
                 rpc::key::NAME => Value::Str(name.to_owned()),
             },
-        )
+        )?;
+        self.settle_flash();
+        Ok(())
     }
 
     /// Change what a block is.
