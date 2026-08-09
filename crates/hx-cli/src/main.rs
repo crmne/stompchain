@@ -150,6 +150,16 @@ enum Cmd {
         input: std::path::PathBuf,
         output: std::path::PathBuf,
     },
+    /// Lift every tone out of an HX Edit backup bundle (.hxb) into .hlx files,
+    /// touching no hardware.
+    ///
+    /// Writes one `NNL Name.hlx` per occupied slot; empty and never-edited
+    /// slots are skipped. The bundle is never modified.
+    ExtractBackup {
+        file: std::path::PathBuf,
+        /// Directory to write the .hlx files into; created if missing.
+        output: std::path::PathBuf,
+    },
     /// Report a WAV impulse response and whether the device will accept it,
     /// touching no hardware.
     IrInfo { file: std::path::PathBuf },
@@ -188,6 +198,7 @@ fn main() -> Result<()> {
         } => show_import(&file),
         Cmd::Inspect { file } => inspect_hlx(&file),
         Cmd::ExportHlx { input, output } => export_hlx(&input, &output),
+        Cmd::ExtractBackup { file, output } => extract_backup(&file, &output),
         Cmd::IrInfo { file } => ir_info(&file),
         Cmd::List => list_devices(),
         // Reject a malformed preset address before opening anything: failing
@@ -405,6 +416,7 @@ fn on_device(cmd: Cmd) -> Result<()> {
         Cmd::Models { category, model } => browse_models(category, model),
         Cmd::Inspect { file } => inspect_hlx(&file),
         Cmd::ExportHlx { input, output } => export_hlx(&input, &output),
+        Cmd::ExtractBackup { file, output } => extract_backup(&file, &output),
         Cmd::IrInfo { file } => ir_info(&file),
     }
 }
@@ -988,6 +1000,30 @@ fn export_hlx(input: &std::path::Path, output: &std::path::Path) -> Result<()> {
     for skipped in &written.skipped {
         eprintln!("  skipped: {skipped}");
     }
+    Ok(())
+}
+
+/// Lift every occupied tone out of an HX Edit `.hxb` backup into `.hlx` files.
+fn extract_backup(file: &std::path::Path, output: &std::path::Path) -> Result<()> {
+    let bytes = std::fs::read(file).with_context(|| format!("reading {file:?}"))?;
+    let backup =
+        hx_catalog::read_backup(&bytes).with_context(|| format!("reading the backup {file:?}"))?;
+    std::fs::create_dir_all(output).with_context(|| format!("creating {output:?}"))?;
+
+    let mut kept = 0;
+    for preset in backup.occupied() {
+        let name = format!("{} {}", preset.label(), sanitise(&preset.name));
+        let path = output.join(format!("{name}.hlx"));
+        std::fs::write(&path, preset.to_hlx_string())
+            .with_context(|| format!("writing {path:?}"))?;
+        println!("  {}  {}", preset.label(), preset.name);
+        kept += 1;
+    }
+    println!(
+        "\nextracted {kept} presets from \"{}\" into {}",
+        backup.name,
+        output.display()
+    );
     Ok(())
 }
 

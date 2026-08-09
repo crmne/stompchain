@@ -15,11 +15,13 @@ use std::path::{Path, PathBuf};
 
 pub mod extract;
 mod format;
+mod hxb;
 mod inspect;
 mod load;
 mod write;
 
 pub use format::Display;
+pub use hxb::{read_backup, Backup, BackupPreset, Block, Container};
 pub use inspect::{inspect, ChainContent, OutputTarget, Tone, ToneBlock};
 pub use write::{to_hlx, Written};
 
@@ -112,6 +114,26 @@ pub struct Category {
     /// Model ids in the order HX Edit lists them, flattened across
     /// subcategories.
     pub models: Vec<String>,
+    /// The same models split into HX Edit's shelves - Mono / Stereo / Legacy on
+    /// the effects, Guitar / Bass on amps, Single / Dual on cabs. Empty for a
+    /// category with no second level. `models` stays the flat union of these, so
+    /// nothing that ignores shelves has to change.
+    pub subcategories: Vec<Subcategory>,
+}
+
+/// A second-level grouping within a category.
+///
+/// HX Edit shelves its block browser this way - Distortion splits into Mono,
+/// Stereo and Legacy; Cab into Single and Dual - and keeping the shelves lets a
+/// picker offer the same structure instead of one long flattened list. The
+/// shelf ids HX Edit uses repeat across categories (Stereo is the same id
+/// everywhere), so the name is what identifies a shelf, not an id.
+#[derive(Debug, Clone)]
+pub struct Subcategory {
+    /// The shelf label, e.g. "Stereo" or "Legacy".
+    pub name: String,
+    /// Model ids on this shelf, in HX Edit's order.
+    pub models: Vec<String>,
 }
 
 impl Category {
@@ -160,6 +182,10 @@ pub enum Error {
         #[source]
         source: serde_json::Error,
     },
+    /// An `.hxb` backup bundle could not be read - not the expected container,
+    /// or holding no setlist.
+    #[error("{0}")]
+    Backup(String),
 }
 
 impl Catalog {
@@ -555,6 +581,38 @@ pub(crate) mod tests {
                 "{structural} is not something you browse for"
             );
         }
+    }
+
+    /// HX Edit shelves each category into Mono / Stereo / Legacy and the like.
+    /// The loader used to flatten those away; this keeps them, and the flat
+    /// `models` stays the union so nothing that ignores shelves changes.
+    #[test]
+    fn categories_keep_hx_edits_shelves() {
+        let Some(c) = catalog() else { return };
+        let by_name = |n: &str| c.categories().iter().find(|c| c.name == n).unwrap();
+
+        let distortion = by_name("Distortion");
+        let shelves: Vec<&str> = distortion
+            .subcategories
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(shelves, ["Mono", "Stereo", "Legacy"]);
+
+        // The flat list is exactly the shelves' union, in order.
+        let from_shelves: Vec<String> = distortion
+            .subcategories
+            .iter()
+            .flat_map(|s| s.models.iter().cloned())
+            .collect();
+        assert_eq!(distortion.models, from_shelves);
+        assert!(!from_shelves.is_empty());
+
+        // Amps shelve by instrument, cabs by count - not everything is Mono/Stereo.
+        assert!(by_name("Amp")
+            .subcategories
+            .iter()
+            .any(|s| s.name == "Guitar"));
     }
 
     #[test]

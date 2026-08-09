@@ -14,3 +14,6 @@ hx-proto.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror.workspace = true
+# Inflating the zlib blocks inside an HX Edit `.hxb` backup. The pure-Rust
+# backend keeps this free of a system libz, so the reader builds anywhere.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }

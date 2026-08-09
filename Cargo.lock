@@ -1265,6 +1265,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 name = "hx-catalog"
 version = "0.2.1"
 dependencies = [
+ "flate2",
  "hx-proto",
  "serde",
  "serde_json",

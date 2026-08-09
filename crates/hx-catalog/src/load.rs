@@ -10,7 +10,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::{Catalog, Category, Display, Error, Kind, Model, Param, Symbol};
+use crate::{Catalog, Category, Display, Error, Kind, Model, Param, Subcategory, Symbol};
 
 pub(crate) fn catalog(dir: &Path) -> Result<Catalog, Error> {
     let mut models: HashMap<String, Model> = HashMap::new();
@@ -110,26 +110,48 @@ fn categories(dir: &Path) -> Result<Vec<Category>, Error> {
     Ok(raw
         .categories
         .into_iter()
-        .map(|c| Category {
-            id: c.id,
-            short_name: if c.short_name.is_empty() {
+        .map(|c| {
+            // The shelves HX Edit shows - Mono / Stereo / Legacy and the like -
+            // kept as their own list. Named, because the shelf ids repeat across
+            // categories and so cannot tell one shelf from another.
+            let subcategories = c
+                .subcategories
+                .iter()
+                .map(|s| Subcategory {
+                    name: s.name.clone(),
+                    models: s.models.iter().map(|m| m.id.clone()).collect(),
+                })
+                .collect();
+            // A category lists models directly or splits them across shelves;
+            // both flatten to the same browse order for anyone ignoring shelves.
+            let models = c
+                .models
+                .iter()
+                .map(|m| m.id.clone())
+                .chain(
+                    c.subcategories
+                        .iter()
+                        .flat_map(|s| s.models.iter().map(|m| m.id.clone())),
+                )
+                .collect();
+            let short_name = if c.short_name.is_empty() {
                 c.name.clone()
             } else {
-                c.short_name
-            },
+                c.short_name.clone()
+            };
             // "0xf5901e" — a hex string, not a number. A category with no
             // colour falls back to plain white rather than black, which would
             // be indistinguishable from an unpainted block.
-            colour: u32::from_str_radix(c.color.trim_start_matches("0x"), 16).unwrap_or(0xff_ff_ff),
-            name: c.name,
-            // A category lists models directly or splits them across mono and
-            // stereo subcategories; both flatten to the same browse order.
-            models: c
-                .models
-                .into_iter()
-                .chain(c.subcategories.into_iter().flat_map(|s| s.models))
-                .map(|m| m.id)
-                .collect(),
+            let colour =
+                u32::from_str_radix(c.color.trim_start_matches("0x"), 16).unwrap_or(0xff_ff_ff);
+            Category {
+                id: c.id,
+                name: c.name,
+                short_name,
+                colour,
+                models,
+                subcategories,
+            }
         })
         .collect())
 }
@@ -169,6 +191,10 @@ struct RawCategory {
 
 #[derive(Deserialize)]
 struct RawSubcategory {
+    /// The shelf label - "Mono", "Stereo", "Legacy", "Guitar", "Single". This
+    /// is the field the loader used to drop, flattening the shelves away.
+    #[serde(default)]
+    name: String,
     #[serde(default)]
     models: Vec<RawCatalogModel>,
 }
