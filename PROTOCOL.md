@@ -304,14 +304,29 @@ nothing can be chosen". A scroll event over the closed dropdown steps its
 selection and sends the traffic, which is how the whole source list was mapped
 one entry at a time.
 
-### An opcode-20 reply of 1 is not a failure [confirmed]
+### A reply of `103: 1` means "accepted", not "failed" [confirmed]
 
-Selecting a preset answers `{103: 1}` on the control channel and then reports
-`{103: 0}` a millisecond later as an `ev20` notification, followed by the ev8 /
-ev39 / ev4 sequence of the preset actually loading. So `103` on opcode 20 is not
-the error field it is everywhere else — 1 means the request was taken and will
-finish asynchronously. A client that treats a non-zero `103` as a refusal will
-decide every preset change failed, and then reload nothing.
+Some opcodes on the control channel do not finish inside their reply. They
+answer `{103: 1}` immediately and report the real outcome a millisecond later as
+a notification carrying **the same transaction id under key 102**, with
+`103: 0`:
+
+```
+--> op6  {102: 1005, 100: 6, 101: {107: 0, 108: 66, 109: 'DIR:Relief1'}}
+<-- rsp  {102: 1005, 103: 1, 104: None}          # accepted
+<-- ev6  {105: 6,  106: {…, 106: {107: 0, 108: 66, 109: 'DIR:Relief1'}}}
+<-- ev1  {105: 1,  106: {102: 1005, 103: 0, 104: None}}   # done
+```
+
+Selecting a preset (opcode 20) behaves the same way, and there the completion
+arrives as `ev20` rather than `ev1`, ahead of the ev8 / ev39 / ev4 sequence of
+the preset loading. **The notification's own id varies with the operation, so
+the transaction id is the only reliable link** — match on key 102, not on the
+event number.
+
+This matters because `103` is the error field everywhere else. A client that
+reads a non-zero `103` as a refusal decides every rename and every preset change
+failed, and then does not reload.
 
 ### Identifying a flag by patching the reply [method]
 
@@ -421,10 +436,10 @@ they are in the assignment table above with their real arguments. Opcode 112 is
 now known too — it lists favorites, and the session-setup call is
 just the editor populating that tab. Opcodes 0, 23, 76, 99 and 254 are still
 only observed during session setup, and need hardware that exposes them: the Command Center opcodes are
-inert on an HX Stomp, so a Helix Floor or LT is the prerequisite. Opcodes 6, 68 and 78 still come from the `kempline/helix_usb` project rather
-than our own captures. **[inferred]** — and opcode 68 in particular now looks
-doubtful: a whole session of setting MIDI In on the assign page never sent it
-(see below). Its "opcode 25, set footswitch function" is our own opcode 25 with
+inert on an HX Stomp, so a Helix Floor or LT is the prerequisite. Opcode **68 alone** is still `kempline/helix_usb`'s rather than ours
+**[inferred]**, and it looks doubtful: a whole session of setting MIDI In on the
+assign page never sent it (see below). Every other opcode that entry listed has
+since been caught on this wire — 6, 25, 59, 61 and 78. Its "opcode 25, set footswitch function" is our own opcode 25 with
 `{118: 97|98|99}`: a device setting like any other, not a separate operation.
 
 Common argument keys: `107` setlist, `108` preset index, `109` name, `118` object
