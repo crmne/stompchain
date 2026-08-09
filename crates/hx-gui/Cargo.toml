@@ -30,6 +30,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # calls need; the tokio flavour panics with "no reactor running" the moment
 # any dialog opens outside a tokio runtime, which is everywhere in this app.
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
+ureq = { version = "3.4.0", default-features = false, features = ["rustls", "platform-verifier"] }
 
 [lib]
 name = "hx_gui"

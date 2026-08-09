@@ -10,6 +10,63 @@ pub const DIM: Color32 = Color32::from_rgb(0x7d, 0x84, 0x92);
 /// The amber HX Edit uses for values and the selected preset.
 pub const ACCENT: Color32 = Color32::from_rgb(0xd8, 0xa8, 0x3b);
 
+/// The name of the semibold family, for the few places that want real weight
+/// rather than egui's `strong()` — which only brightens the colour.
+pub const SEMIBOLD: &str = "semibold";
+
+/// A font id in the semibold family.
+pub fn semibold(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name(SEMIBOLD.into()))
+}
+
+/// The typeface: IBM Plex.
+///
+/// A tone editor is a panel of numbers that change while you look at them, so
+/// the figures matter more than the letters. Plex has proper tabular figures —
+/// 0.0 and 8.8 occupy the same width, so a value does not shuffle sideways as
+/// a knob turns — a one that cannot be mistaken for an l, and a slashed zero in
+/// the mono cut for the slot labels. It was drawn for machinery, which is what
+/// this is, and it is OFL, so it ships with the binaries.
+///
+/// egui's own fonts stay on behind it as the fallback: Plex has no ★, ☆ or ●,
+/// and a missing glyph draws as an empty box.
+pub fn fonts(ctx: &egui::Context) {
+    use egui::{FontData, FontFamily};
+
+    let mut fonts = egui::FontDefinitions::default();
+    for (name, bytes) in [
+        ("plex", &include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf")[..]),
+        ("plex-semibold", &include_bytes!("../assets/fonts/IBMPlexSans-SemiBold.ttf")[..]),
+        ("plex-mono", &include_bytes!("../assets/fonts/IBMPlexMono-Regular.ttf")[..]),
+    ] {
+        fonts
+            .font_data
+            .insert(name.to_owned(), FontData::from_static(bytes));
+    }
+
+    // First in the list is the primary; what follows is the fallback chain, so
+    // egui's bundled fonts still answer for the glyphs Plex does not carry.
+    fonts
+        .families
+        .entry(FontFamily::Proportional)
+        .or_default()
+        .insert(0, "plex".to_owned());
+    fonts
+        .families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .insert(0, "plex-mono".to_owned());
+    // The semibold cut is its own family: `RichText::strong()` in egui changes
+    // colour, not weight, so anything that wants weight has to ask for it.
+    let mut heavy = vec!["plex-semibold".to_owned()];
+    heavy.extend(fonts.families[&FontFamily::Proportional].iter().cloned());
+    fonts
+        .families
+        .insert(FontFamily::Name(SEMIBOLD.into()), heavy);
+
+    ctx.set_fonts(fonts);
+}
+
 pub fn apply(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
     let v = &mut style.visuals;
@@ -27,6 +84,20 @@ pub fn apply(ctx: &egui::Context) {
     v.selection.bg_fill = Color32::from_rgb(0x2c, 0x3a, 0x52);
     v.selection.stroke = Stroke::new(1.0_f32, ACCENT);
 
+    // A deliberate scale rather than egui's defaults. Plex carries a large
+    // x-height, so these read a size bigger than the numbers suggest; Small in
+    // particular does a lot of work here as the colour-dimmed second voice, and
+    // at egui's 9.0 it was a squint.
+    use egui::{FontFamily::Monospace, FontFamily::Proportional, FontId, TextStyle};
+    style.text_styles = [
+        (TextStyle::Small, FontId::new(10.0, Proportional)),
+        (TextStyle::Body, FontId::new(13.0, Proportional)),
+        (TextStyle::Button, FontId::new(13.0, Proportional)),
+        (TextStyle::Heading, FontId::new(16.0, Proportional)),
+        (TextStyle::Monospace, FontId::new(12.0, Monospace)),
+    ]
+    .into();
+
     style.spacing.item_spacing = Vec2::new(8.0, 6.0);
     style.spacing.slider_width = 180.0;
     ctx.set_style(style);
@@ -38,6 +109,11 @@ pub fn apply(ctx: &egui::Context) {
 /// The artwork is what makes a chain readable at a glance — the same reason HX
 /// Edit draws it. Models without a picture fall back to the name alone rather
 /// than leaving a hole.
+/// A colour written as the three bytes it is.
+pub fn rgb((r, g, b): (u8, u8, u8)) -> Color32 {
+    Color32::from_rgb(r, g, b)
+}
+
 /// Turn HX Edit's `0xRRGGBB` category colour into something paintable.
 pub fn category_colour(rgb: u32) -> Color32 {
     Color32::from_rgb(
@@ -124,6 +200,170 @@ pub fn status_dot(ui: &mut Ui, colour: Color32) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(14.0, 14.0), Sense::hover());
     if ui.is_rect_visible(rect) {
         ui.painter().circle_filled(rect.center(), 5.0, colour);
+    }
+    response
+}
+
+/// The actions that live in the header, drawn rather than typed.
+///
+/// Typing them was the obvious route and the wrong one: no single font carries
+/// ⧉, ⎘ and ⌫, so the set would have come from three fallbacks at three weights
+/// on a good day and as empty boxes on a bad one. Drawn from coordinates they
+/// are one set, they scale with the window, and they cannot go missing.
+///
+/// The shapes follow the Feather icon vocabulary, which is what a person has
+/// seen ten thousand times and so does not have to read.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Icon {
+    Save,
+    Undo,
+    Redo,
+    Copy,
+    Paste,
+    Remove,
+    Gear,
+    Sliders,
+}
+
+impl Icon {
+    /// The strokes, as polylines on a 24×24 grid.
+    fn strokes(self) -> &'static [&'static [(f32, f32)]] {
+        match self {
+            // A floppy disk: body with the corner taken off, shutter, label.
+            Icon::Save => &[
+                &[
+                    (3.0, 3.0),
+                    (16.0, 3.0),
+                    (21.0, 8.0),
+                    (21.0, 19.0),
+                    (3.0, 19.0),
+                    (3.0, 3.0),
+                ],
+                &[(7.0, 19.0), (7.0, 12.0), (17.0, 12.0), (17.0, 19.0)],
+                &[(7.0, 3.0), (7.0, 8.0), (15.0, 8.0)],
+            ],
+            // An arrow turning back on itself, left for undo and right for redo.
+            Icon::Undo => &[
+                &[(9.0, 14.0), (4.0, 9.0), (9.0, 4.0)],
+                &[(20.0, 20.0), (20.0, 13.0), (16.0, 9.0), (4.0, 9.0)],
+            ],
+            Icon::Redo => &[
+                &[(15.0, 14.0), (20.0, 9.0), (15.0, 4.0)],
+                &[(4.0, 20.0), (4.0, 13.0), (8.0, 9.0), (20.0, 9.0)],
+            ],
+            // Two sheets, one behind the other.
+            Icon::Copy => &[
+                &[
+                    (9.0, 9.0),
+                    (21.0, 9.0),
+                    (21.0, 21.0),
+                    (9.0, 21.0),
+                    (9.0, 9.0),
+                ],
+                &[(5.0, 15.0), (3.0, 15.0), (3.0, 3.0), (15.0, 3.0), (15.0, 5.0)],
+            ],
+            // A clipboard, with its clip.
+            Icon::Paste => &[
+                &[
+                    (4.0, 5.0),
+                    (20.0, 5.0),
+                    (20.0, 22.0),
+                    (4.0, 22.0),
+                    (4.0, 5.0),
+                ],
+                &[(9.0, 5.0), (9.0, 2.0), (15.0, 2.0), (15.0, 5.0)],
+            ],
+            // A bin: lid, body, handle.
+            Icon::Remove => &[
+                &[(3.0, 6.0), (21.0, 6.0)],
+                &[(5.0, 6.0), (5.0, 22.0), (19.0, 22.0), (19.0, 6.0)],
+                &[(9.0, 6.0), (9.0, 3.0), (15.0, 3.0), (15.0, 6.0)],
+            ],
+            // The cog is two circles and eight teeth, drawn in `paint` rather
+            // than listed here: as a traced rim it came out as a muddy blob at
+            // the size it is actually used, because a 26-point outline has no
+            // room to be a cog in seventeen pixels.
+            Icon::Gear => &[],
+            // Three faders, each with its cap at a different place: an EQ.
+            Icon::Sliders => &[
+                &[(6.0, 3.0), (6.0, 9.0)],
+                &[(6.0, 14.0), (6.0, 21.0)],
+                &[(3.0, 11.5), (9.0, 11.5)],
+                &[(12.0, 3.0), (12.0, 15.0)],
+                &[(9.0, 17.5), (15.0, 17.5)],
+                &[(12.0, 20.0), (12.0, 21.0)],
+                &[(18.0, 3.0), (18.0, 5.0)],
+                &[(15.0, 7.5), (21.0, 7.5)],
+                &[(18.0, 10.0), (18.0, 21.0)],
+            ],
+        }
+    }
+
+    /// Paint into a square, at whatever size the square is.
+    pub fn paint(self, painter: &egui::Painter, box_: egui::Rect, colour: Color32) {
+        let scale = box_.width() / 24.0;
+        let stroke = Stroke::new((1.6 * scale).max(1.0), colour);
+        let at = |(x, y): (f32, f32)| box_.min + Vec2::new(x * scale, y * scale);
+        for line in self.strokes() {
+            painter.add(egui::Shape::line(
+                line.iter().map(|&p| at(p)).collect(),
+                stroke,
+            ));
+        }
+        if self == Icon::Gear {
+            // A rim, a hub, and eight teeth standing off the rim. Circles drawn
+            // as circles stay round at any size, which a traced outline does
+            // not.
+            let centre = box_.center();
+            painter.circle_stroke(centre, 6.5 * scale, stroke);
+            painter.circle_stroke(centre, 2.6 * scale, stroke);
+            for i in 0..8 {
+                let angle = std::f32::consts::TAU * i as f32 / 8.0;
+                let (sin, cos) = angle.sin_cos();
+                let dir = Vec2::new(cos, sin);
+                painter.line_segment(
+                    [centre + dir * 6.0 * scale, centre + dir * 10.0 * scale],
+                    stroke,
+                );
+            }
+        }
+    }
+}
+
+/// One drawn action, as a frameless button.
+///
+/// Dim at rest and bright under the pointer, so a row of them reads as one
+/// quiet group until you go looking — the header should show the preset, not
+/// an inventory of the program.
+pub fn icon_button(ui: &mut Ui, icon: Icon, enabled: bool) -> Response {
+    const BOX: f32 = 24.0;
+    // Sensing hover only, when off, is what makes the button unclickable: a
+    // hand-allocated widget has no `add_enabled` to fall back on, and a
+    // greyed-out icon that still fires is worse than one that is not greyed.
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(BOX), sense);
+    if ui.is_rect_visible(rect) {
+        let colour = if !enabled {
+            DIM.gamma_multiply(0.4)
+        } else if response.hovered() {
+            ACCENT
+        } else {
+            TEXT
+        };
+        if enabled && response.hovered() {
+            ui.painter().rect_filled(
+                rect,
+                Rounding::same(4.0),
+                Color32::from_rgb(0x25, 0x29, 0x31),
+            );
+        }
+        // The glyph sits inside the hit box, so neighbours do not crowd it.
+        let inset = egui::Rect::from_center_size(rect.center(), Vec2::splat(BOX - 7.0));
+        icon.paint(ui.painter(), inset, colour);
     }
     response
 }
@@ -227,6 +467,43 @@ pub fn category_chip(
         egui::pos2(left + art_width, rect.center().y - galley.size().y / 2.0),
         galley,
         TEXT,
+    );
+    response
+}
+
+/// A subcategory, as a smaller pill under the category it belongs to.
+///
+/// Deliberately quieter than [`category_chip`]: no icon, no colour of its own,
+/// and shorter. Mono / Stereo / Legacy is a second question you only ask after
+/// the first one, and a pill that shouted as loud as Distortion would make the
+/// row above it look like a sibling rather than a parent.
+pub fn shelf_pill(ui: &mut Ui, name: &str, on: bool) -> Response {
+    let ink = if on { Color32::BLACK } else { DIM };
+    let galley = ui
+        .painter()
+        .layout_no_wrap(name.to_owned(), egui::FontId::proportional(11.0), ink);
+    let size = Vec2::new(galley.size().x + 14.0, 18.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let painter = ui.painter();
+    if on {
+        painter.rect_filled(rect, Rounding::same(9.0), TEXT);
+    } else if response.hovered() {
+        painter.rect_filled(
+            rect,
+            Rounding::same(9.0),
+            Color32::from_rgb(0x25, 0x29, 0x31),
+        );
+    }
+    painter.galley(
+        egui::pos2(
+            rect.center().x - galley.size().x / 2.0,
+            rect.center().y - galley.size().y / 2.0,
+        ),
+        galley,
+        ink,
     );
     response
 }

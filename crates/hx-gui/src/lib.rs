@@ -9,9 +9,11 @@ use egui::RichText;
 use hx_catalog::{Catalog, Kind};
 
 mod config;
+mod eq;
 mod library;
 mod session;
 mod theme;
+mod update;
 mod wav;
 
 pub use session::{spawn, ApplyBlock, Cmd, Evt};
@@ -80,8 +82,19 @@ pub struct App {
     clipboard: Option<(String, Vec<u8>)>,
     /// Where the bytes should go once `Cmd::CopyPreset` answers.
     pending_copy: CopyTarget,
-    /// Whether the device window is open.
+    /// Whether the device window is open. It holds the pedal's own libraries —
+    /// impulse responses and favourite blocks — and nothing else; the global EQ
+    /// and the preferences have their own windows behind their own buttons,
+    /// because one window holding all four was a scroll, not a panel.
     show_device: bool,
+    /// Whether the global EQ panel is open.
+    show_eq: bool,
+    /// Whether the preferences window is open.
+    show_preferences: bool,
+    /// When the EQ last wrote to the device. Dragging a band across the curve
+    /// is sixty changes a second and the pedal does not want sixty writes; it
+    /// wants to be heard moving, so the writes are paced rather than deferred.
+    eq_wrote_at: Option<std::time::Instant>,
     /// The device's global EQ switch, as last read.
     global_eq: bool,
     /// How many steps the worker can undo and redo, for enabling the buttons.
@@ -140,6 +153,10 @@ pub struct App {
     selected: usize,
     /// Category chosen in the browser, or none to follow the current block.
     browsing: Option<u32>,
+    /// Subcategory chosen under it, by name. Cleared when the category
+    /// changes, because "Mono" means a different set in every category that
+    /// has one.
+    browsing_shelf: Option<String>,
     /// Scroll the preset list to the selection on the next frame — set when a
     /// different preset loads, so following along from the pedal's own
     /// front panel keeps the list in view without fighting manual scrolling.
@@ -162,9 +179,16 @@ pub struct App {
     /// Draw the chain without its editing affordances: no insert gaps, no
     /// ghost branch, no drags. The preview runs the renderer this way.
     display_only: bool,
-    /// The library browser along the bottom: a table of kept tones with a tags
-    /// rail and an editable inspector. The one and only library surface.
-    library_panel: bool,
+    /// Which half of the library the strip is showing.
+    lib_showing: LibraryView,
+    /// The setlists in the library, with the file each came from.
+    lib_setlists: Vec<(std::path::PathBuf, library::Setlist)>,
+    /// Which setlist is open, and the draft of its details while it is edited.
+    lib_setlist: Option<usize>,
+    lib_setlist_draft: library::Setlist,
+    /// A setlist waiting on an answer about being written to the pedal. It is
+    /// 126 flash writes and it overwrites everything, so it asks first.
+    confirm_push: Option<usize>,
     lib_entries: Vec<LibEntry>,
     lib_selected: Option<usize>,
     /// The metadata draft for the selected entry, saved as it is edited.
@@ -200,6 +224,32 @@ pub struct App {
     /// The device's favourite blocks, as (index, name).
     favourites: Vec<(i64, String)>,
     current_snapshot: usize,
+    /// A preset the Remove button is waiting on an answer about. Emptying a
+    /// slot writes flash and there is no undo for it, so it asks first.
+    confirm_clear: Option<i64>,
+    /// The version check: the answer while it is still coming, then the newer
+    /// release's tag once it has. Both stay `None` when there is nothing to
+    /// say, which is the common case and the quiet one.
+    update_check: Option<std::sync::mpsc::Receiver<String>>,
+    update_available: Option<String>,
+}
+
+/// The global settings the EQ panel drives, by the object id the device holds
+/// them under. Named here so the panel reads as an EQ rather than as a handful
+/// of magic numbers; `hx_proto::settings` is where they were identified.
+mod id {
+    pub const EQ_ON: i64 = 203;
+    pub const LOW_CUT: i64 = 199;
+    pub const LOW_FREQ: i64 = 190;
+    pub const LOW_Q: i64 = 191;
+    pub const LOW_GAIN: i64 = 192;
+    pub const MID_FREQ: i64 = 193;
+    pub const MID_Q: i64 = 194;
+    pub const MID_GAIN: i64 = 195;
+    pub const HIGH_FREQ: i64 = 196;
+    pub const HIGH_Q: i64 = 197;
+    pub const HIGH_GAIN: i64 = 198;
+    pub const HIGH_CUT: i64 = 200;
 }
 
 /// Where a copied preset should end up. Reading it is the same round trip
@@ -209,6 +259,19 @@ enum CopyTarget {
     File(std::path::PathBuf),
     /// Into the library, as a portable .hlx named after the preset.
     Library,
+}
+
+/// The two halves of the computer's library.
+///
+/// Not tabs on the window: the strip along the bottom *is* the library, and a
+/// selector inside it says which of its own two views you are looking at. The
+/// pedal's own libraries — impulse responses, favourite blocks — are not here
+/// at all. They belong to the device, and they live behind the device's button,
+/// which is the distinction HX Edit's tabs blur.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LibraryView {
+    Tones,
+    Setlists,
 }
 
 /// What a preset's right-click menu can do to it.
@@ -222,6 +285,7 @@ enum RowAction {
     Export,
     Import,
     Keep,
+    Remove,
 }
 
 #[derive(Debug, PartialEq)]
@@ -235,6 +299,7 @@ impl App {
     /// Styling is applied once here rather than per frame: it clones and
     /// rewrites the whole `Style`, which is pure waste sixty times a second.
     pub fn new(ctx: &egui::Context, to_device: Sender<Cmd>, from_device: Receiver<Evt>) -> Self {
+        theme::fonts(ctx);
         theme::apply(ctx);
         let mut app = App {
             to_device,
@@ -259,6 +324,9 @@ impl App {
             pending_copy: CopyTarget::Clipboard,
             dirty: false,
             show_device: false,
+            show_eq: false,
+            show_preferences: false,
+            eq_wrote_at: None,
             global_eq: false,
             undo_depth: 0,
             redo_depth: 0,
@@ -278,6 +346,7 @@ impl App {
             ghost_target: None,
             selected: 0,
             browsing: None,
+            browsing_shelf: None,
             reveal_preset: false,
             irs: Vec::new(),
             setlists: Vec::new(),
@@ -286,7 +355,11 @@ impl App {
             show_favorites_only: false,
             preview: None,
             display_only: false,
-            library_panel: false,
+            lib_showing: LibraryView::Tones,
+            lib_setlists: Vec::new(),
+            lib_setlist: None,
+            lib_setlist_draft: library::Setlist::default(),
+            confirm_push: None,
             lib_entries: Vec::new(),
             lib_selected: None,
             lib_draft: library::Meta::default(),
@@ -306,7 +379,13 @@ impl App {
             renaming_ir: None,
             favourites: Vec::new(),
             current_snapshot: 0,
+            confirm_clear: None,
+            update_check: Some(update::check()),
+            update_available: None,
         };
+        // The library is on screen from the first frame, so it is read before
+        // the first frame rather than when something happens to refresh it.
+        app.refresh_library();
         // Without the model data there is nothing to edit with, so the
         // welcome window opens immediately and stays until the data exists.
         app.show_onboarding = app.catalog.is_none();
@@ -339,7 +418,11 @@ impl App {
                     self.connection = Connection::Online;
                     self.device = device;
                     self.preset_count = presets;
-                    self.status = "Connected".into();
+                    // Nothing to say: the lit dot, the device's own name, its
+                    // firmware and a Disconnect button already say it, and
+                    // saying it again in the far corner only puts distance
+                    // between the word and the button.
+                    self.status.clear();
                     let _ = self.to_device.send(Cmd::ListIrs);
                     let _ = self.to_device.send(Cmd::ListSetlists);
                     // One automatic backup per session, taken as soon as the
@@ -354,7 +437,8 @@ impl App {
                     self.connection = Connection::Offline;
                     self.chain.clear();
                     self.presets.clear();
-                    self.status = "Disconnected".into();
+                    // Likewise: "No device" and a Connect button say this.
+                    self.status.clear();
                 }
                 Ok(Evt::Presets(names)) => self.presets = names,
                 Ok(Evt::Working { what, progress }) => {
@@ -451,6 +535,7 @@ impl App {
                 Ok(Evt::Irs(slots)) => self.irs = slots,
                 Ok(Evt::Favourites(list)) => self.favourites = list,
                 Ok(Evt::Setlists(names)) => self.setlists = names,
+                Ok(Evt::CapturedSetlist(slots)) => self.keep_setlist(slots),
                 Ok(Evt::Activity(line)) => self.note(line),
                 Ok(Evt::Failed(e)) => {
                     self.status = e.clone();
@@ -590,9 +675,12 @@ impl eframe::App for App {
         self.dropped_files(ctx);
         self.top_bar(ctx);
         self.status_bar(ctx);
+        // Before the preset list on purpose: an egui panel claims its edge
+        // from what is left, so the library has to be laid out first to run the
+        // full width of the window rather than stopping at the preset list.
+        self.library_strip(ctx);
         self.preset_list(ctx);
         self.activity(ctx);
-        self.library_panel(ctx);
         self.signal_chain(ctx);
         // The shelf sits beside the pedal being edited rather than under it,
         // so choosing a different model is plainly a secondary action.
@@ -600,6 +688,8 @@ impl eframe::App for App {
         self.editor(ctx);
         self.insert_picker(ctx);
         self.device_window(ctx);
+        self.eq_window(ctx);
+        self.preferences_window(ctx);
         self.preview_window(ctx);
         // Over everything: the one step the app cannot work without.
         self.onboarding_modal(ctx);
@@ -618,20 +708,119 @@ impl App {
             .exact_height(46.0)
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
+                    // What preset, which of its three states, and what you can
+                    // do to it — in that order, because that is the order the
+                    // question comes in. Tempo is not part of that question, so
+                    // it is not in the middle of it.
                     ui.add_space(8.0);
                     self.preset_title(ui);
                     ui.add_space(12.0);
-                    self.tempo_control(ui);
-                    ui.add_space(12.0);
                     self.snapshot_bar(ui);
+                    ui.add_space(12.0);
+                    self.preset_tools(ui);
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
-                        self.save_button(ui);
-                        self.history_buttons(ui);
+                        self.tempo_control(ui);
                     });
                 });
             });
+        self.confirm_clear_window(ctx);
+    }
+
+    /// What you can do to the loaded preset, as drawn actions beside its name.
+    ///
+    /// Only the three that act on the preset as a whole live here. Copy, paste
+    /// and remove are on the things they act on — a block's own header, and a
+    /// preset's own right-click menu — because a Remove button sitting next to
+    /// Save, one that writes flash and cannot be undone, is a trap.
+    fn preset_tools(&mut self, ui: &mut egui::Ui) {
+        if self.preset_index < 0 {
+            return;
+        }
+        let live = matches!(self.connection, Connection::Online);
+        let hint =
+            |ui: &egui::Ui, m, k| ui.ctx().format_shortcut(&egui::KeyboardShortcut::new(m, k));
+        let save_hint = hint(ui, egui::Modifiers::COMMAND, egui::Key::S);
+        let undo_hint = hint(ui, egui::Modifiers::COMMAND, egui::Key::Z);
+        let redo_hint = hint(
+            ui,
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            egui::Key::Z,
+        );
+
+        // Undo and redo step through what you did; save is what you do at the
+        // end of it. Left to right in that order is the order they are reached
+        // for.
+        if theme::icon_button(ui, theme::Icon::Undo, live && self.undo_depth > 0)
+            .on_hover_text(format!("Undo — step back through changes ({undo_hint})"))
+            .clicked()
+        {
+            self.send(Cmd::Undo);
+        }
+        if theme::icon_button(ui, theme::Icon::Redo, live && self.redo_depth > 0)
+            .on_hover_text(format!("Redo — put back what undo took away ({redo_hint})"))
+            .clicked()
+        {
+            self.send(Cmd::Redo);
+        }
+        if theme::icon_button(ui, theme::Icon::Save, self.dirty)
+            .on_hover_text(format!(
+                "Save — write these changes into the preset ({save_hint})"
+            ))
+            .on_disabled_hover_text("Save — no changes to save")
+            .clicked()
+        {
+            self.send(Cmd::SavePreset);
+        }
+    }
+
+    /// Emptying a slot writes flash and cannot be undone, so it asks. The
+    /// question names the preset: "are you sure" answers nothing on its own.
+    fn confirm_clear_window(&mut self, ctx: &egui::Context) {
+        let Some(index) = self.confirm_clear else {
+            return;
+        };
+        let name = self
+            .presets
+            .get(index as usize)
+            .filter(|n| !n.is_empty())
+            .cloned()
+            .unwrap_or_else(|| "this preset".to_owned());
+        let mut decided = None;
+        egui::Window::new("Remove preset")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_max_width(320.0);
+                ui.label(format!(
+                    "Empty {} — “{name}” — back to a blank preset?",
+                    hx_proto::rpc::slot_label(index)
+                ));
+                ui.label(
+                    RichText::new("This writes the pedal's flash. Undo does not reach it.")
+                        .small()
+                        .color(theme::DIM),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        decided = Some(false);
+                    }
+                    if ui.button("Remove").clicked() {
+                        decided = Some(true);
+                    }
+                });
+            });
+        match decided {
+            Some(true) => {
+                self.confirm_clear = None;
+                self.send(Cmd::ClearPreset(index));
+            }
+            Some(false) => self.confirm_clear = None,
+            None => {}
+        }
     }
 
     /// The device, along the bottom, where a status bar belongs.
@@ -659,7 +848,7 @@ impl App {
                             matches!(self.connection, Connection::Online),
                             egui::Button::new(RichText::new(name).strong()).frame(false),
                         )
-                        .on_hover_text("impulse responses and device settings")
+                        .on_hover_text("the pedal's impulse responses and favourite blocks")
                         .clicked()
                     {
                         self.show_device = !self.show_device;
@@ -675,6 +864,56 @@ impl App {
                             RichText::new(format!("firmware {}", self.firmware)).color(theme::DIM),
                         );
                     }
+                    // The other two things that belong to the pedal rather than
+                    // to a preset, each behind its own button rather than
+                    // stacked under the impulse responses in one long scroll.
+                    let live = matches!(self.connection, Connection::Online);
+                    if theme::icon_button(ui, theme::Icon::Sliders, live)
+                        .on_hover_text("Global EQ")
+                        .clicked()
+                    {
+                        self.show_eq = !self.show_eq;
+                        if self.show_eq {
+                            self.send(Cmd::ReadSettings);
+                        }
+                    }
+                    if theme::icon_button(ui, theme::Icon::Gear, live)
+                        .on_hover_text("Preferences")
+                        .clicked()
+                    {
+                        self.show_preferences = !self.show_preferences;
+                        if self.show_preferences {
+                            self.send(Cmd::ReadSettings);
+                        }
+                    }
+
+                    // Connecting belongs with the device it connects to, not in
+                    // the far corner: "no device" and the button that does
+                    // something about it should be within a glance of each other.
+                    match self.connection {
+                        Connection::Online => {
+                            if ui
+                                .small_button("Disconnect")
+                                .on_hover_text("let the pedal go, so another editor can have it")
+                                .clicked()
+                            {
+                                self.send(Cmd::Disconnect);
+                            }
+                        }
+                        Connection::Connecting => {
+                            ui.spinner();
+                        }
+                        Connection::Offline => {
+                            if ui
+                                .small_button("Connect")
+                                .on_hover_text("look for a pedal on USB")
+                                .clicked()
+                            {
+                                self.connection = Connection::Connecting;
+                                self.send(Cmd::Connect);
+                            }
+                        }
+                    }
                     // A backup reads all 126 presets. That is seconds rather
                     // than minutes now, but silence for seconds still reads as
                     // a window that has stopped answering.
@@ -686,65 +925,66 @@ impl App {
                         );
                     }
 
+                    // Laid out right to left, so what is added first sits
+                    // furthest right: the version in the corner, where a
+                    // version goes.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
-                        if ui
-                            .small_button("Library")
-                            .on_hover_text("browse the tones you have kept")
-                            .clicked()
-                        {
-                            self.library_panel = !self.library_panel;
-                            if self.library_panel {
-                                self.refresh_library();
-                            }
-                        }
-                        ui.separator();
-                        match self.connection {
-                            Connection::Online => {
-                                if ui.small_button("Disconnect").clicked() {
-                                    self.send(Cmd::Disconnect);
-                                }
-                            }
-                            Connection::Connecting => {
-                                ui.spinner();
-                            }
-                            Connection::Offline => {
-                                if ui.small_button("Connect").clicked() {
-                                    self.connection = Connection::Connecting;
-                                    self.send(Cmd::Connect);
-                                }
-                            }
-                        }
-                        ui.label(RichText::new(&self.status).small().color(theme::DIM));
-
-                        ui.separator();
-                        if ui
-                            .small_button(RichText::new("♥ Sponsor").small())
-                            .on_hover_text("support stompchain's development")
-                            .clicked()
-                        {
-                            ui.ctx().open_url(egui::OpenUrl::new_tab(
-                                "https://github.com/sponsors/crmne",
-                            ));
-                        }
-                        if ui
-                            .add(
-                                egui::Label::new(
-                                    RichText::new("made with ♥ by Carmine Paolino")
-                                        .small()
-                                        .color(theme::DIM),
-                                )
-                                .sense(egui::Sense::click()),
-                            )
-                            .on_hover_text("paolino.me")
-                            .clicked()
-                        {
-                            ui.ctx()
-                                .open_url(egui::OpenUrl::new_tab("https://paolino.me"));
+                        self.version_label(ui);
+                        // Only failures reach here now, and a failure earns its
+                        // separator. Silence is the healthy state.
+                        if !self.status.is_empty() {
+                            ui.separator();
+                            ui.label(RichText::new(&self.status).small().color(theme::DIM));
                         }
                     });
                 });
             });
+    }
+
+    /// Which stompchain this is, in the corner where a version belongs.
+    ///
+    /// It says nothing at all until there is something to say. When a newer
+    /// release exists the label picks up the accent and gains a clause, which
+    /// is enough — a modal on startup would be an editor interrupting a person
+    /// to talk about itself.
+    fn version_label(&mut self, ui: &mut egui::Ui) {
+        // The answer arrives on its own schedule, and the receiver is dropped
+        // once it has spoken or hung up, so this costs nothing thereafter.
+        if let Some(rx) = &self.update_check {
+            match rx.try_recv() {
+                Ok(tag) => {
+                    self.update_available = Some(tag);
+                    self.update_check = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.update_check = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+
+        let (text, hover, url) = match &self.update_available {
+            Some(tag) => (
+                RichText::new(format!("stompchain {} · {tag} available", update::VERSION))
+                    .small()
+                    .color(theme::ACCENT),
+                "a newer stompchain is out — click for the release".to_owned(),
+                update::RELEASES,
+            ),
+            None => (
+                RichText::new(format!("stompchain {}", update::VERSION))
+                    .small()
+                    .color(theme::DIM),
+                format!("stompchain {} · click for the releases page", update::VERSION),
+                update::RELEASES,
+            ),
+        };
+        if ui
+            .add(egui::Label::new(text).sense(egui::Sense::click()))
+            .on_hover_text(hover)
+            .clicked()
+        {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+        }
     }
 
     /// The editing keys every editor answers to. Skipped while something has
@@ -775,58 +1015,6 @@ impl App {
     }
 
     /// Undo and redo, where you can see them.
-    fn history_buttons(&mut self, ui: &mut egui::Ui) {
-        let live = matches!(self.connection, Connection::Online);
-        let hint =
-            |ui: &egui::Ui, m, k| ui.ctx().format_shortcut(&egui::KeyboardShortcut::new(m, k));
-        let redo_hint = hint(
-            ui,
-            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
-            egui::Key::Z,
-        );
-        let undo_hint = hint(ui, egui::Modifiers::COMMAND, egui::Key::Z);
-        if ui
-            .add_enabled(live && self.redo_depth > 0, egui::Button::new("Redo"))
-            .on_hover_text(format!("put back what undo took away ({redo_hint})"))
-            .clicked()
-        {
-            self.send(Cmd::Redo);
-        }
-        if ui
-            .add_enabled(live && self.undo_depth > 0, egui::Button::new("Undo"))
-            .on_hover_text(format!("step back through changes ({undo_hint})"))
-            .clicked()
-        {
-            self.send(Cmd::Undo);
-        }
-    }
-
-    /// Commit the edit buffer, and say when there is something to commit.
-    ///
-    /// The device edits a scratch copy of the preset: changes are audible
-    /// immediately but are lost on reload unless they are saved. HX Edit has
-    /// this on File > Save Preset; putting it beside the name makes the state
-    /// visible rather than something you have to remember.
-    fn save_button(&mut self, ui: &mut egui::Ui) {
-        if self.preset_index < 0 {
-            return;
-        }
-        if self.dirty {
-            theme::status_dot(ui, theme::ACCENT).on_hover_text("unsaved changes");
-        }
-        let hint = ui.ctx().format_shortcut(&egui::KeyboardShortcut::new(
-            egui::Modifiers::COMMAND,
-            egui::Key::S,
-        ));
-        let hit = ui
-            .add_enabled(self.dirty, egui::Button::new("Save"))
-            .on_hover_text(format!("write these changes into the preset ({hint})"))
-            .on_disabled_hover_text("no changes to save");
-        if hit.clicked() {
-            self.send(Cmd::SavePreset);
-        }
-    }
-
     /// Carry out what the right-click menu asked for.
     ///
     /// Each of these acts on one preset. Anything that needs the device's own
@@ -876,6 +1064,9 @@ impl App {
                 self.pending_copy = CopyTarget::Library;
                 self.send(Cmd::CopyPreset);
             }
+            // The only row action that asks first, and the only one that cannot
+            // be taken back.
+            RowAction::Remove => self.confirm_clear = Some(index),
         }
     }
 
@@ -903,7 +1094,7 @@ impl App {
             )
         };
 
-        if small(ui, "RESTORE…", live)
+        if small(ui, "RESTORE", live)
             .on_hover_text("put a backup back onto the pedal")
             .clicked()
         {
@@ -921,7 +1112,7 @@ impl App {
                 }
             }
         }
-        if small(ui, "BACK UP…", live)
+        if small(ui, "BACKUP", live)
             .on_hover_text("save every preset, setting and impulse response")
             .clicked()
         {
@@ -933,70 +1124,6 @@ impl App {
                 self.note("backing up the pedal".to_owned());
                 self.send(Cmd::BackUp(dir));
             }
-        }
-    }
-
-    /// Copy, paste, import and export, on the preset list itself.
-    ///
-    /// A preset travels as the device's own document, byte for byte, so what
-    /// comes back is what was there — including the parts this editor does not
-    /// model. Rebuilding one from what the UI shows would quietly drop them.
-    #[allow(dead_code)]
-    fn preset_actions(&mut self, ui: &mut egui::Ui) {
-        let live = matches!(self.connection, Connection::Online) && self.preset_index >= 0;
-        let small = |ui: &mut egui::Ui, label: &str, on: bool| {
-            ui.add_enabled(
-                on,
-                egui::Button::new(RichText::new(label).small()).frame(false),
-            )
-        };
-
-        if small(ui, "EXPORT", live)
-            .on_hover_text("save this preset to a file")
-            .clicked()
-        {
-            let suggested = format!("{}.hxpreset", sanitise(&self.preset_name));
-            if let Some(path) = rfd::FileDialog::new()
-                .set_file_name(suggested)
-                .add_filter("HX preset", &["hxpreset"])
-                .save_file()
-            {
-                self.pending_copy = CopyTarget::File(path);
-                self.send(Cmd::CopyPreset);
-            }
-        }
-        // Import always shows the tone first - drawn as its chain - and loads
-        // only when asked. One door for both file kinds; reading needs the
-        // catalog, not a device, so looking works offline too.
-        if small(ui, "IMPORT", self.catalog.is_some())
-            .on_hover_text("open a tone file; you see it before it goes to the pedal")
-            .clicked()
-        {
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter("HX tone", &["hxpreset", "hlx"])
-                .pick_file()
-            {
-                self.open_tone_file(&path);
-            }
-        }
-        if small(ui, "PASTE", live && self.clipboard.is_some())
-            .on_hover_text(match &self.clipboard {
-                Some((name, _)) => format!("paste “{name}” over this preset"),
-                None => "nothing copied yet".to_owned(),
-            })
-            .clicked()
-        {
-            if let Some((name, blob)) = self.clipboard.clone() {
-                self.note(format!("pasting {name} over {}", self.preset_name));
-                self.send(Cmd::PastePreset(blob));
-            }
-        }
-        if small(ui, "COPY", live)
-            .on_hover_text("copy this preset")
-            .clicked()
-        {
-            self.pending_copy = CopyTarget::Clipboard;
-            self.send(Cmd::CopyPreset);
         }
     }
 
@@ -1015,6 +1142,13 @@ impl App {
             // last are worth announcing — a flicker per knob tick is noise.
             ui.spinner().on_hover_text("writing to the pedal…");
         }
+        // The dot keeps its place whether or not it is painted, so the name
+        // does not jump sideways the first time a knob is turned.
+        let (dot, _) = ui.allocate_exact_size(egui::Vec2::new(10.0, 14.0), egui::Sense::hover());
+        if self.dirty {
+            ui.painter().circle_filled(dot.center(), 4.0, theme::ACCENT);
+        }
+
         // The slot label and the name go in one galley at one size, so they
         // share a baseline. As two separate labels of different sizes, egui
         // centred each in its own box and the slot sat a few pixels high.
@@ -1032,13 +1166,19 @@ impl App {
             &self.preset_name,
             0.0,
             egui::TextFormat {
-                font_id: egui::FontId::proportional(16.0),
+                // Real weight, not egui's `strong()`, which only brightens the
+                // colour. The preset name is the one thing on this bar that
+                // should carry.
+                font_id: theme::semibold(16.0),
                 color: ui.visuals().strong_text_color(),
                 ..Default::default()
             },
         );
-        ui.label(title)
-            .on_hover_text("right-click a preset in the list to rename it");
+        ui.label(title).on_hover_text(if self.dirty {
+            "unsaved changes — right-click a preset in the list to rename it"
+        } else {
+            "right-click a preset in the list to rename it"
+        });
     }
 
     /// Work out a tempo from the intervals between taps.
@@ -1067,8 +1207,23 @@ impl App {
         (20.0..=999.0).contains(&bpm).then_some(bpm)
     }
 
+    /// Laid out right to left, in the corner it sits in: Tap goes on first so
+    /// it ends up rightmost, and the reading lands to its left.
     fn tempo_control(&mut self, ui: &mut egui::Ui) {
         let Some(tempo) = self.tempo else { return };
+
+        // Tap it in, which is how anyone actually finds a tempo.
+        if ui
+            .button("Tap")
+            .on_hover_text("tap in time to set the tempo")
+            .clicked()
+        {
+            if let Some(bpm) = self.tap_tempo() {
+                self.tempo = Some(bpm);
+                self.edit(Cmd::SetTempo(bpm));
+            }
+        }
+
         match &mut self.tempo_draft {
             Some(draft) => {
                 let edit = ui.add(egui::TextEdit::singleline(draft).desired_width(52.0));
@@ -1092,18 +1247,6 @@ impl App {
                 if label.on_hover_text("click to change tempo").clicked() {
                     self.tempo_draft = Some(format!("{tempo:.1}"));
                 }
-            }
-        }
-
-        // Tap it in, which is how anyone actually finds a tempo.
-        if ui
-            .button("Tap")
-            .on_hover_text("tap in time to set the tempo")
-            .clicked()
-        {
-            if let Some(bpm) = self.tap_tempo() {
-                self.tempo = Some(bpm);
-                self.edit(Cmd::SetTempo(bpm));
             }
         }
     }
@@ -1310,6 +1453,14 @@ impl App {
                                             menu_action = Some((index, RowAction::Keep));
                                             ui.close_menu();
                                         }
+                                        ui.separator();
+                                        // Last, alone, below a line: it empties
+                                        // the slot in flash and undo does not
+                                        // reach it. It asks before it does.
+                                        if ui.button("Remove").clicked() {
+                                            menu_action = Some((index, RowAction::Remove));
+                                            ui.close_menu();
+                                        }
                                     });
                                 }
                             });
@@ -1350,21 +1501,18 @@ impl App {
 
     /// Keep the loaded preset's document in the library: as portable .hlx
     /// when the catalog can name its models, as the exact bytes otherwise.
+    /// Keep the loaded preset's document in the library, as the device's own
+    /// bytes.
+    ///
+    /// It used to keep `.hlx` where the catalog could name the models, which
+    /// reads nicely and loses things: `.hlx` is a list of parameter values, so
+    /// the snapshots and the routing did not survive the trip. A library whose
+    /// tones come back different from what went in is not a library. The bytes
+    /// go in verbatim, and `.hlx` stays available on export for anyone who
+    /// wants the readable form.
     fn keep_document(&mut self, name: &str, blob: &[u8]) {
-        let stem = sanitise(name);
-        let kept = match (hx_proto::preset::Preset::parse(blob), self.catalog.as_ref()) {
-            (Some(preset), Some(catalog)) => {
-                let written = hx_catalog::to_hlx(&preset, catalog, name);
-                for skipped in &written.skipped {
-                    self.note(format!("kept without {skipped}"));
-                }
-                library::keep_bytes(&stem, "hlx", written.to_pretty_string().as_bytes())
-            }
-            _ => library::keep_bytes(&stem, "hxpreset", blob),
-        };
-        match kept {
+        match library::keep_bytes(&sanitise(name), "hxpreset", blob) {
             Ok(_) => {
-                self.library_panel = true;
                 self.refresh_library();
                 self.note(format!("kept {name} in the library"));
             }
@@ -1372,9 +1520,97 @@ impl App {
         }
     }
 
+    /// Keep a captured pedal in the library as a setlist.
+    ///
+    /// Every preset becomes a library tone in its own right — they are the
+    /// library's now, not the setlist's, and any of them can be dropped into
+    /// any other slot later. The setlist records the order, which is the part
+    /// that was only ever on the pedal.
+    fn keep_setlist(&mut self, slots: Vec<(String, Option<Vec<u8>>)>) {
+        let mut kept = Vec::with_capacity(slots.len());
+        let mut failures = 0;
+        for (name, bytes) in slots {
+            let Some(bytes) = bytes else {
+                kept.push(library::Slot::default());
+                continue;
+            };
+            match library::keep_bytes(&sanitise(&name), "hxpreset", &bytes) {
+                Ok(path) => kept.push(library::Slot {
+                    file: path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or_default()
+                        .to_owned(),
+                    name,
+                }),
+                Err(_) => {
+                    failures += 1;
+                    kept.push(library::Slot::default());
+                }
+            }
+        }
+
+        let setlist = library::Setlist {
+            name: self.setlist_draft_name(),
+            slots: kept,
+            ..Default::default()
+        };
+        let filled = setlist.filled();
+        match library::save_setlist(&setlist) {
+            Ok(_) => {
+                self.note(format!("kept {filled} presets as “{}”", setlist.name));
+                if failures > 0 {
+                    self.note(format!("{failures} could not be written to the library"));
+                }
+                self.lib_showing = LibraryView::Setlists;
+                self.refresh_library();
+                self.lib_setlist = library::setlists()
+                    .iter()
+                    .position(|(_, s)| s.name == setlist.name);
+            }
+            Err(why) => self.note(why),
+        }
+    }
+
+    /// A name for a freshly captured setlist that does not collide with one
+    /// already in the library — capturing twice should give you two, not
+    /// silently replace the first.
+    fn setlist_draft_name(&self) -> String {
+        let base = if self.device.is_empty() {
+            "Setlist".to_owned()
+        } else {
+            self.device.clone()
+        };
+        let taken: Vec<String> = library::setlists()
+            .into_iter()
+            .map(|(_, s)| s.name)
+            .collect();
+        if !taken.contains(&base) {
+            return base;
+        }
+        (2..)
+            .map(|n| format!("{base} {n}"))
+            .find(|name| !taken.contains(name))
+            .unwrap_or(base)
+    }
+
     /// Rebuild the library rows from the files and the saved index, keeping the
     /// current selection pinned to its file across the refresh.
     fn refresh_library(&mut self) {
+        // The setlists come along: they are the same library, and a capture
+        // that did not appear until something else refreshed would read as a
+        // capture that failed.
+        let open = self
+            .lib_setlist
+            .and_then(|i| self.lib_setlists.get(i))
+            .map(|(_, s)| s.name.clone());
+        self.lib_setlists = library::setlists();
+        self.lib_setlist = open.and_then(|name| {
+            self.lib_setlists
+                .iter()
+                .position(|(_, s)| s.name == name)
+        });
+
         let meta = library::metadata();
         let selected_name = self
             .lib_selected
@@ -1442,59 +1678,384 @@ impl App {
         }
     }
 
-    /// The full library browser along the bottom: tags rail, tone table, and an
-    /// editable inspector. The record-box layout, kept calm.
-    fn library_panel(&mut self, ctx: &egui::Context) {
-        if !self.library_panel {
-            return;
-        }
-        let mut open = true;
+    /// The computer's library, along the bottom of the window.
+    ///
+    /// Always open and the full width of the window, under the preset list as
+    /// well as under the chain — because the pedal is the top half and this is
+    /// the other half, not a drawer that belongs to the editor. Drag its edge
+    /// to give it more or less room; it does not close, the same way the pedal
+    /// does not close.
+    fn library_strip(&mut self, ctx: &egui::Context) {
         let mut keep_loaded = false;
-        egui::TopBottomPanel::bottom("library-panel")
+        let mut capture = false;
+        egui::TopBottomPanel::bottom("library")
             .resizable(true)
-            .default_height(320.0)
-            .height_range(180.0..=680.0)
+            .default_height(260.0)
+            .height_range(96.0..=680.0)
             .show(ctx, |ui| {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    ui.heading("Library");
-                    ui.label(
-                        RichText::new(format!("· {} tones", self.lib_entries.len()))
-                            .color(theme::DIM),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Close").clicked() {
-                            open = false;
+                    ui.label(RichText::new("LIBRARY").small().color(theme::DIM));
+                    ui.add_space(6.0);
+                    // The selector, rather than tabs on the window: this is one
+                    // library with two views of itself.
+                    for (view, label, count) in [
+                        (LibraryView::Tones, "Tones", self.lib_entries.len()),
+                        (LibraryView::Setlists, "Setlists", self.lib_setlists.len()),
+                    ] {
+                        let on = self.lib_showing == view;
+                        if theme::shelf_pill(ui, &format!("{label} {count}"), on).clicked() {
+                            self.lib_showing = view;
                         }
-                        let live = matches!(self.connection, Connection::Online)
-                            && self.preset_index >= 0;
-                        if ui
-                            .add_enabled(live, egui::Button::new("＋ Keep loaded preset"))
-                            .on_hover_text("copy the loaded preset into the library as .hlx")
-                            .clicked()
-                        {
-                            keep_loaded = true;
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let live = matches!(self.connection, Connection::Online);
+                        match self.lib_showing {
+                            LibraryView::Tones => {
+                                if ui
+                                    .add_enabled(
+                                        live && self.preset_index >= 0,
+                                        egui::Button::new("Keep loaded preset"),
+                                    )
+                                    .on_hover_text(
+                                        "copy the loaded preset into the library, \
+                                         snapshots and routing and all",
+                                    )
+                                    .clicked()
+                                {
+                                    keep_loaded = true;
+                                }
+                            }
+                            LibraryView::Setlists => {
+                                if ui
+                                    .add_enabled(live, egui::Button::new("Capture the pedal"))
+                                    .on_hover_text(
+                                        "keep every preset on the pedal, in order, \
+                                         as a setlist",
+                                    )
+                                    .clicked()
+                                {
+                                    capture = true;
+                                }
+                            }
                         }
                     });
                 });
                 ui.separator();
-                egui::SidePanel::left("lib-tags")
-                    .resizable(false)
-                    .default_width(150.0)
-                    .show_inside(ui, |ui| self.library_tags_rail(ui));
-                egui::SidePanel::right("lib-inspector")
-                    .resizable(true)
-                    .default_width(310.0)
-                    .show_inside(ui, |ui| self.library_inspector(ui));
-                egui::CentralPanel::default().show_inside(ui, |ui| self.library_table(ui));
+                match self.lib_showing {
+                    LibraryView::Tones => {
+                        egui::SidePanel::left("lib-tags")
+                            .resizable(false)
+                            .default_width(150.0)
+                            .show_inside(ui, |ui| self.library_tags_rail(ui));
+                        egui::SidePanel::right("lib-inspector")
+                            .resizable(true)
+                            .default_width(310.0)
+                            .show_inside(ui, |ui| self.library_inspector(ui));
+                        egui::CentralPanel::default()
+                            .show_inside(ui, |ui| self.library_table(ui));
+                    }
+                    LibraryView::Setlists => {
+                        egui::SidePanel::left("lib-setlists")
+                            .resizable(false)
+                            .default_width(190.0)
+                            .show_inside(ui, |ui| self.setlist_rail(ui));
+                        egui::SidePanel::right("lib-setlist-details")
+                            .resizable(true)
+                            .default_width(310.0)
+                            .show_inside(ui, |ui| self.setlist_details(ui));
+                        egui::CentralPanel::default()
+                            .show_inside(ui, |ui| self.setlist_slots(ui));
+                    }
+                }
             });
         if keep_loaded {
             self.pending_copy = CopyTarget::Library;
             self.send(Cmd::CopyPreset);
         }
-        if !open {
-            self.library_panel = false;
+        if capture {
+            self.note("reading the whole setlist off the pedal".to_owned());
+            self.send(Cmd::CaptureSetlist);
         }
+        self.confirm_push_window(ctx);
+    }
+
+    /// Every setlist in the library, by name.
+    fn setlist_rail(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(4.0);
+        if self.lib_setlists.is_empty() {
+            ui.label(
+                RichText::new("No setlists yet. Capture the pedal to make one.")
+                    .small()
+                    .color(theme::DIM),
+            );
+            return;
+        }
+        let mut pick = None;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for (i, (_, setlist)) in self.lib_setlists.iter().enumerate() {
+                    let on = self.lib_setlist == Some(i);
+                    let text = if on {
+                        RichText::new(&setlist.name).color(theme::ACCENT).strong()
+                    } else {
+                        RichText::new(&setlist.name)
+                    };
+                    ui.horizontal(|ui| {
+                        if ui.selectable_label(on, text).clicked() {
+                            pick = Some(i);
+                        }
+                        ui.label(
+                            RichText::new(format!("{}", setlist.filled()))
+                                .small()
+                                .color(theme::DIM),
+                        );
+                    });
+                }
+            });
+        if let Some(i) = pick {
+            self.select_setlist_entry(i);
+        }
+    }
+
+    /// The chosen setlist, slot by slot, in the pedal's own order.
+    fn setlist_slots(&mut self, ui: &mut egui::Ui) {
+        let Some(i) = self.lib_setlist else {
+            ui.add_space(8.0);
+            ui.label(RichText::new("Choose a setlist to see what is in it.").color(theme::DIM));
+            return;
+        };
+        let Some((_, setlist)) = self.lib_setlists.get(i).cloned() else {
+            return;
+        };
+        let live = matches!(self.connection, Connection::Online);
+        let mut send_one = None;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for (slot, entry) in setlist.slots.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(hx_proto::rpc::slot_label(slot as i64))
+                                .monospace()
+                                .color(theme::DIM),
+                        );
+                        if entry.is_empty() {
+                            ui.label(RichText::new("empty").color(theme::DIM.gamma_multiply(0.7)));
+                            return;
+                        }
+                        ui.label(&entry.name);
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                // One preset at a time, into the slot it came
+                                // from: the common repair is one preset, not
+                                // the whole pedal.
+                                if ui
+                                    .add_enabled(live, egui::Button::new("Send").small())
+                                    .on_hover_text(format!(
+                                        "put “{}” back in {}",
+                                        entry.name,
+                                        hx_proto::rpc::slot_label(slot as i64)
+                                    ))
+                                    .clicked()
+                                {
+                                    send_one = Some((slot as i64, entry.clone()));
+                                }
+                            },
+                        );
+                    });
+                }
+            });
+        if let Some((slot, entry)) = send_one {
+            self.send_one_slot(slot, &entry);
+        }
+    }
+
+    /// Put one preset out of a setlist back into its slot.
+    fn send_one_slot(&mut self, slot: i64, entry: &library::Slot) {
+        let Some(dir) = library::dir() else { return };
+        match std::fs::read(dir.join(&entry.file)) {
+            Ok(bytes) => {
+                self.note(format!(
+                    "writing {} to {}",
+                    entry.name,
+                    hx_proto::rpc::slot_label(slot)
+                ));
+                self.send(Cmd::PushSetlist(vec![(
+                    slot,
+                    Some((entry.name.clone(), bytes)),
+                )]));
+            }
+            Err(e) => self.note(format!("could not read {}: {e}", entry.file)),
+        }
+    }
+
+    /// The chosen setlist's details, and the button that puts it on the pedal.
+    fn setlist_details(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(4.0);
+        let Some(i) = self.lib_setlist else {
+            ui.label(RichText::new("Select a setlist to edit its details.").color(theme::DIM));
+            return;
+        };
+        let mut changed = false;
+        for (label, field) in [
+            ("Name", &mut self.lib_setlist_draft.name),
+            ("Venue", &mut self.lib_setlist_draft.venue),
+            ("Date", &mut self.lib_setlist_draft.date),
+        ] {
+            ui.label(RichText::new(label).small().color(theme::DIM));
+            changed |= ui
+                .add(egui::TextEdit::singleline(field).desired_width(f32::INFINITY))
+                .changed();
+        }
+        ui.label(RichText::new("Notes").small().color(theme::DIM));
+        changed |= ui
+            .add(
+                egui::TextEdit::multiline(&mut self.lib_setlist_draft.description)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(3),
+            )
+            .changed();
+
+        if changed {
+            self.save_setlist_draft();
+        }
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(6.0);
+        let live = matches!(self.connection, Connection::Online);
+        let filled = self.lib_setlists.get(i).map_or(0, |(_, s)| s.filled());
+        if ui
+            .add_enabled(live, egui::Button::new("Put this setlist on the pedal"))
+            .on_hover_text(format!(
+                "write all {filled} presets, in order, over what is on the pedal now"
+            ))
+            .clicked()
+        {
+            self.confirm_push = Some(i);
+        }
+        ui.add_space(4.0);
+        if ui
+            .button("Remove this setlist")
+            .on_hover_text("the setlist goes; its tones stay in the library")
+            .clicked()
+        {
+            if let Some((path, _)) = self.lib_setlists.get(i).cloned() {
+                match library::remove_setlist(&path) {
+                    Ok(()) => {
+                        self.lib_setlist = None;
+                        self.refresh_library();
+                    }
+                    Err(why) => self.note(why),
+                }
+            }
+        }
+    }
+
+    /// Load a setlist into the editable draft.
+    fn select_setlist_entry(&mut self, i: usize) {
+        if let Some((_, setlist)) = self.lib_setlists.get(i) {
+            self.lib_setlist = Some(i);
+            self.lib_setlist_draft = setlist.clone();
+        }
+    }
+
+    /// Write the draft back, and re-read so the rail follows a rename.
+    fn save_setlist_draft(&mut self) {
+        let Some(i) = self.lib_setlist else { return };
+        let Some((path, old)) = self.lib_setlists.get(i).cloned() else {
+            return;
+        };
+        // A rename writes a new file, so the old one has to go or the library
+        // would show the setlist twice.
+        let renamed = old.name != self.lib_setlist_draft.name;
+        if let Err(why) = library::save_setlist(&self.lib_setlist_draft) {
+            self.note(why);
+            return;
+        }
+        if renamed {
+            let _ = library::remove_setlist(&path);
+        }
+        let name = self.lib_setlist_draft.name.clone();
+        self.lib_setlists = library::setlists();
+        self.lib_setlist = self.lib_setlists.iter().position(|(_, s)| s.name == name);
+    }
+
+    /// Writing a setlist replaces every preset on the pedal, in flash, and
+    /// there is no undo for that. It asks, and it says how many.
+    fn confirm_push_window(&mut self, ctx: &egui::Context) {
+        let Some(i) = self.confirm_push else { return };
+        let Some((_, setlist)) = self.lib_setlists.get(i).cloned() else {
+            self.confirm_push = None;
+            return;
+        };
+        let mut decided = None;
+        egui::Window::new("Put the setlist on the pedal")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_max_width(360.0);
+                ui.label(format!(
+                    "Write “{}” — {} presets — over everything on the pedal?",
+                    setlist.name,
+                    setlist.filled()
+                ));
+                ui.label(
+                    RichText::new(
+                        "Every slot is a flash write and undo does not reach them. \
+                         Capture the pedal first if you want what is on it now.",
+                    )
+                    .small()
+                    .color(theme::DIM),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        decided = Some(false);
+                    }
+                    if ui.button("Write it").clicked() {
+                        decided = Some(true);
+                    }
+                });
+            });
+        match decided {
+            Some(true) => {
+                self.confirm_push = None;
+                self.push_setlist(&setlist);
+            }
+            Some(false) => self.confirm_push = None,
+            None => {}
+        }
+    }
+
+    /// Read every tone the setlist names and send the lot to the pedal.
+    fn push_setlist(&mut self, setlist: &library::Setlist) {
+        let Some(dir) = library::dir() else { return };
+        let mut slots = Vec::with_capacity(setlist.slots.len());
+        let mut missing = 0;
+        for (index, entry) in setlist.slots.iter().enumerate() {
+            if entry.is_empty() {
+                slots.push((index as i64, None));
+                continue;
+            }
+            match std::fs::read(dir.join(&entry.file)) {
+                Ok(bytes) => slots.push((index as i64, Some((entry.name.clone(), bytes)))),
+                // A tone that is gone leaves its slot alone rather than
+                // emptying it: losing a file should not also lose the preset
+                // that is still on the pedal.
+                Err(_) => missing += 1,
+            }
+        }
+        if missing > 0 {
+            self.note(format!("{missing} tones are missing and were skipped"));
+        }
+        self.note(format!("writing “{}” to the pedal", setlist.name));
+        self.send(Cmd::PushSetlist(slots));
     }
 
     /// The left rail: every tag, click one to filter the table to it.
@@ -1910,7 +2471,27 @@ impl App {
 
                 ui.add_space(10.0);
                 ui.separator();
-                ui.heading("Preferences");
+                ui.checkbox(&mut self.show_activity, "Show what the device reports");
+            });
+        self.show_device = open;
+    }
+
+    /// The device's preferences, behind the cogwheel.
+    ///
+    /// Everything global except the EQ, which is a shape rather than a list and
+    /// has a panel of its own.
+    fn preferences_window(&mut self, ctx: &egui::Context) {
+        if !self.show_preferences {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("Preferences")
+            .open(&mut open)
+            .default_width(420.0)
+            .default_height(440.0)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                ui.set_max_width(400.0);
                 ui.label(
                     RichText::new(
                         "The device's own global settings — the same ones HX Edit's \
@@ -1919,14 +2500,437 @@ impl App {
                     .small()
                     .color(theme::DIM),
                 );
-                ui.add_space(4.0);
-                self.preferences(ui);
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| self.settings_list(ui, |group| group != "Global EQ"));
+            });
+        self.show_preferences = open;
+    }
 
+    /// The global EQ, drawn as what it does rather than as eleven numbers.
+    ///
+    /// Two cuts and three peaking bands, over a log frequency axis. The handles
+    /// are the controls: drag a band to move and lift it, scroll on one to
+    /// narrow it, drag a cut along the floor. The numbers underneath say
+    /// exactly where everything landed, because a curve is for aiming and a
+    /// number is for repeating.
+    fn eq_window(&mut self, ctx: &egui::Context) {
+        if !self.show_eq {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("Global EQ")
+            .open(&mut open)
+            .default_width(560.0)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                if !matches!(self.connection, Connection::Online) {
+                    ui.label(RichText::new("connect to read the device's EQ").color(theme::DIM));
+                    return;
+                }
+                // Not "some settings have arrived" but "the EQ's own have":
+                // `eq_curve_now` substitutes sensible numbers for ids it has
+                // not seen, and a panel that can be dragged while it is showing
+                // substitutes would write them over the pedal's real ones.
+                if !self.eq_settings_known() {
+                    ui.label(RichText::new("reading the device's EQ…").color(theme::DIM));
+                    return;
+                }
+                // The bypass leads, because a curve you cannot hear is the
+                // first thing to check and the last thing anyone remembers.
+                let mut on = self.settings.get(&id::EQ_ON).is_some_and(|v| *v >= 0.5);
+                ui.horizontal(|ui| {
+                    if ui.add(theme::switch(&mut on)).changed() {
+                        self.settings.insert(id::EQ_ON, on as u8 as f32);
+                        self.send(Cmd::WriteSetting {
+                            id: id::EQ_ON,
+                            value: on as u8 as f32,
+                        });
+                    }
+                    ui.label(if on { "On" } else { "Off" });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .small_button("Flatten")
+                            .on_hover_text("every band back to no gain, both cuts off")
+                            .clicked()
+                        {
+                            self.flatten_eq();
+                        }
+                    });
+                });
+                ui.add_space(6.0);
+                self.eq_curve(ui, on);
                 ui.add_space(10.0);
                 ui.separator();
-                ui.checkbox(&mut self.show_activity, "Show what the device reports");
+                ui.add_space(6.0);
+                self.eq_controls(ui);
             });
-        self.show_device = open;
+        self.show_eq = open;
+    }
+
+    /// The numbers under the curve, one group per handle.
+    ///
+    /// Each group wears its handle's colour, so the dot you just dragged and
+    /// the three numbers that moved are visibly the same control. A flat list
+    /// of eleven made you count to work out which "Freq" you were looking at.
+    fn eq_controls(&mut self, ui: &mut egui::Ui) {
+        let curve = self.eq_curve_now();
+        let mut write: Option<(i64, f32)> = None;
+
+        ui.columns(5, |cols| {
+            // The cuts take away, the bands shape; each still gets its own
+            // column so the row reads left to right as the spectrum does.
+            write = write.or_else(|| {
+                eq_cut_group(
+                    &mut cols[0],
+                    "Low Cut",
+                    theme::rgb(eq::LOW_CUT_COLOUR),
+                    id::LOW_CUT,
+                    curve.low_cut,
+                    19.9,
+                    19.9..=500.0,
+                )
+            });
+            for (i, (name, colour, freq_id, q_id, gain_id, band, range)) in [
+                (
+                    "Low",
+                    eq::LOW_COLOUR,
+                    id::LOW_FREQ,
+                    id::LOW_Q,
+                    id::LOW_GAIN,
+                    curve.low,
+                    20.0..=500.0,
+                ),
+                (
+                    "Mid",
+                    eq::MID_COLOUR,
+                    id::MID_FREQ,
+                    id::MID_Q,
+                    id::MID_GAIN,
+                    curve.mid,
+                    200.0..=5000.0,
+                ),
+                (
+                    "High",
+                    eq::HIGH_COLOUR,
+                    id::HIGH_FREQ,
+                    id::HIGH_Q,
+                    id::HIGH_GAIN,
+                    curve.high,
+                    1000.0..=20000.0,
+                ),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let found = eq_band_group(
+                    &mut cols[i + 1],
+                    name,
+                    theme::rgb(colour),
+                    (freq_id, q_id, gain_id),
+                    band,
+                    range,
+                );
+                write = write.or(found);
+            }
+            write = write.or_else(|| {
+                eq_cut_group(
+                    &mut cols[4],
+                    "High Cut",
+                    theme::rgb(eq::HIGH_CUT_COLOUR),
+                    id::HIGH_CUT,
+                    curve.high_cut,
+                    20100.0,
+                    1000.0..=20100.0,
+                )
+            });
+        });
+
+        if let Some((id, value)) = write {
+            self.settings.insert(id, value);
+            self.send(Cmd::WriteSetting { id, value });
+        }
+    }
+
+    /// Whether every value the EQ panel drives has actually been read off the
+    /// device. Until it has, the panel shows nothing and touches nothing.
+    fn eq_settings_known(&self) -> bool {
+        [
+            id::LOW_CUT,
+            id::LOW_FREQ,
+            id::LOW_Q,
+            id::LOW_GAIN,
+            id::MID_FREQ,
+            id::MID_Q,
+            id::MID_GAIN,
+            id::HIGH_FREQ,
+            id::HIGH_Q,
+            id::HIGH_GAIN,
+            id::HIGH_CUT,
+        ]
+        .iter()
+        .all(|id| self.settings.contains_key(id))
+    }
+
+    /// Read the eleven numbers back out of the settings map as a curve.
+    fn eq_curve_now(&self) -> eq::Curve {
+        let at = |id: i64, fallback: f32| self.settings.get(&id).copied().unwrap_or(fallback);
+        eq::Curve {
+            low_cut: at(id::LOW_CUT, 20.0),
+            low: eq::Band {
+                freq: at(id::LOW_FREQ, 100.0),
+                q: at(id::LOW_Q, 0.7),
+                gain_db: at(id::LOW_GAIN, 0.0),
+            },
+            mid: eq::Band {
+                freq: at(id::MID_FREQ, 1000.0),
+                q: at(id::MID_Q, 0.7),
+                gain_db: at(id::MID_GAIN, 0.0),
+            },
+            high: eq::Band {
+                freq: at(id::HIGH_FREQ, 5000.0),
+                q: at(id::HIGH_Q, 0.7),
+                gain_db: at(id::HIGH_GAIN, 0.0),
+            },
+            high_cut: at(id::HIGH_CUT, 20000.0),
+        }
+    }
+
+    /// Put every band back to no gain and park both cuts outside the band.
+    fn flatten_eq(&mut self) {
+        for (id, value) in [
+            (id::LOW_GAIN, 0.0),
+            (id::MID_GAIN, 0.0),
+            (id::HIGH_GAIN, 0.0),
+            (id::LOW_CUT, 19.9),
+            (id::HIGH_CUT, 20100.0),
+        ] {
+            self.settings.insert(id, value);
+            self.send(Cmd::WriteSetting { id, value });
+        }
+    }
+
+    /// The curve itself, and the handles that move it.
+    fn eq_curve(&mut self, ui: &mut egui::Ui, active: bool) {
+        const HEIGHT: f32 = 200.0;
+        const RANGE_DB: f32 = 15.0;
+
+        let width = ui.available_width();
+        let (rect, _) =
+            ui.allocate_exact_size(egui::Vec2::new(width, HEIGHT), egui::Sense::hover());
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, egui::Rounding::same(4.0), theme::BACKGROUND);
+
+        let x_of = |hz: f32| rect.left() + eq::position(hz) * rect.width();
+        let y_of = |db: f32| rect.center().y - (db / RANGE_DB) * (rect.height() / 2.0);
+        let db_of = |y: f32| ((rect.center().y - y) / (rect.height() / 2.0)) * RANGE_DB;
+        let hz_of = |x: f32| eq::from_position((x - rect.left()) / rect.width());
+
+        // The grid, at the frequencies and gains anyone reads an EQ by.
+        let grid = egui::Stroke::new(1.0_f32, theme::PANEL);
+        for hz in [50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0] {
+            let x = x_of(hz);
+            painter.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], grid);
+            let label = if hz >= 1000.0 {
+                format!("{:.0}k", hz / 1000.0)
+            } else {
+                format!("{hz:.0}")
+            };
+            painter.text(
+                egui::pos2(x, rect.bottom() - 2.0),
+                egui::Align2::CENTER_BOTTOM,
+                label,
+                egui::FontId::proportional(9.0),
+                theme::DIM.gamma_multiply(0.7),
+            );
+        }
+        for db in [-12.0, -6.0, 6.0, 12.0] {
+            let y = y_of(db);
+            painter.line_segment([egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)], grid);
+        }
+        // Unity, drawn heavier: it is the line every other reading is against.
+        let zero = y_of(0.0);
+        painter.line_segment(
+            [egui::pos2(rect.left(), zero), egui::pos2(rect.right(), zero)],
+            egui::Stroke::new(1.0_f32, theme::DIM.gamma_multiply(0.6)),
+        );
+
+        // The response. Dim when the EQ is bypassed — the shape is still worth
+        // seeing, it just is not doing anything.
+        let curve = self.eq_curve_now();
+        let ink = if active {
+            theme::ACCENT
+        } else {
+            theme::DIM.gamma_multiply(0.8)
+        };
+        let points: Vec<egui::Pos2> = curve
+            .sampled(rect.width().max(2.0) as usize)
+            .into_iter()
+            .map(|(t, db)| egui::pos2(rect.left() + t * rect.width(), y_of(db)))
+            .collect();
+        painter.add(egui::Shape::line(points, egui::Stroke::new(2.0_f32, ink)));
+
+        // The handles. Each writes as it moves, paced, so the pedal is heard
+        // moving without being asked sixty times a second.
+        let bands = [
+            (
+                "Low",
+                eq::LOW_COLOUR,
+                id::LOW_FREQ,
+                id::LOW_Q,
+                id::LOW_GAIN,
+                curve.low,
+            ),
+            (
+                "Mid",
+                eq::MID_COLOUR,
+                id::MID_FREQ,
+                id::MID_Q,
+                id::MID_GAIN,
+                curve.mid,
+            ),
+            (
+                "High",
+                eq::HIGH_COLOUR,
+                id::HIGH_FREQ,
+                id::HIGH_Q,
+                id::HIGH_GAIN,
+                curve.high,
+            ),
+        ];
+        let mut writes: Vec<(i64, f32)> = Vec::new();
+        let mut released = false;
+        for (name, colour, freq_id, q_id, gain_id, band) in bands {
+            let at = egui::pos2(x_of(band.freq), y_of(band.gain_db));
+            let hit = egui::Rect::from_center_size(at, egui::Vec2::splat(18.0));
+            let response = ui
+                .interact(hit, ui.id().with(("eq-band", freq_id)), egui::Sense::drag())
+                .on_hover_text(format!(
+                    "{name} — {:.0} Hz, {:+.1} dB, Q {:.2}\ndrag to move, scroll to narrow",
+                    band.freq, band.gain_db, band.q
+                ));
+            if response.dragged() {
+                let p = response.interact_pointer_pos().unwrap_or(at);
+                let freq = hz_of(p.x).clamp(eq::MIN_HZ, eq::MAX_HZ);
+                let gain = db_of(p.y).clamp(-12.0, 12.0);
+                writes.push((freq_id, freq));
+                writes.push((gain_id, gain));
+            }
+            // Scrolling over a band is how every EQ sets Q, and it saves the
+            // panel a third handle per band.
+            if response.hovered() {
+                let scroll = ui.input(|i| i.raw_scroll_delta.y);
+                if scroll != 0.0 {
+                    let q = (band.q * (1.0 + scroll.signum() * 0.12)).clamp(0.1, 10.0);
+                    writes.push((q_id, q));
+                }
+            }
+            released |= response.drag_stopped();
+
+            // The handle keeps its own colour whether or not the EQ is on: it
+            // is how you tell which of the three you have hold of, and that
+            // does not stop being true when the EQ is bypassed.
+            let handle = theme::rgb(colour);
+            let handle = if active {
+                handle
+            } else {
+                handle.gamma_multiply(0.55)
+            };
+            painter.circle_filled(at, 6.0, handle);
+            painter.circle_stroke(at, 6.0, egui::Stroke::new(1.5_f32, theme::BACKGROUND));
+            if response.hovered() || response.dragged() {
+                painter.circle_stroke(at, 9.0, egui::Stroke::new(1.5_f32, handle));
+            }
+        }
+
+        // The two cuts ride along the unity line, which is where they act.
+        for (name, colour, id, value, parked) in [
+            (
+                "Low Cut",
+                eq::LOW_CUT_COLOUR,
+                id::LOW_CUT,
+                curve.low_cut,
+                19.9,
+            ),
+            (
+                "High Cut",
+                eq::HIGH_CUT_COLOUR,
+                id::HIGH_CUT,
+                curve.high_cut,
+                20100.0,
+            ),
+        ] {
+            let at = egui::pos2(x_of(value), zero);
+            let hit = egui::Rect::from_center_size(at, egui::Vec2::new(14.0, 22.0));
+            let off = (value - parked).abs() < 0.5;
+            let response = ui
+                .interact(hit, ui.id().with(("eq-cut", id)), egui::Sense::drag())
+                .on_hover_text(if off {
+                    format!("{name} — off\ndrag into the band to use it")
+                } else {
+                    format!("{name} — {value:.0} Hz\ndrag to move")
+                });
+            if response.dragged() {
+                let p = response.interact_pointer_pos().unwrap_or(at);
+                writes.push((id, hz_of(p.x).clamp(eq::MIN_HZ, eq::MAX_HZ)));
+            }
+            released |= response.drag_stopped();
+
+            // A dot, like every other handle: five things you can grab should
+            // look like five things you can grab. Parked outside the band it is
+            // doing nothing, and drawing it as bright as a cut that is working
+            // would be a lie, so it goes hollow instead.
+            let mark = theme::rgb(colour);
+            if off {
+                painter.circle_filled(at, 5.0, theme::BACKGROUND);
+                painter.circle_stroke(at, 5.0, egui::Stroke::new(1.5_f32, mark.gamma_multiply(0.6)));
+            } else {
+                painter.circle_filled(at, 6.0, mark);
+                painter.circle_stroke(at, 6.0, egui::Stroke::new(1.5_f32, theme::BACKGROUND));
+            }
+            if response.hovered() || response.dragged() {
+                painter.circle_stroke(at, 9.0, egui::Stroke::new(1.5_f32, mark));
+            }
+        }
+
+        if !writes.is_empty() {
+            // Show it immediately whatever happens, so the curve tracks the
+            // finger; only the trip to the pedal is paced.
+            for &(id, value) in &writes {
+                self.settings.insert(id, value);
+            }
+            let due = self
+                .eq_wrote_at
+                .is_none_or(|t| t.elapsed() > Duration::from_millis(60));
+            if due {
+                self.eq_wrote_at = Some(std::time::Instant::now());
+                for (id, value) in writes.drain(..) {
+                    self.send(Cmd::WriteSetting { id, value });
+                }
+            }
+        }
+        // Whatever the pacing swallowed, the last position is not negotiable.
+        if released {
+            self.eq_wrote_at = None;
+            let now = self.eq_curve_now();
+            for (id, value) in [
+                (id::LOW_CUT, now.low_cut),
+                (id::LOW_FREQ, now.low.freq),
+                (id::LOW_Q, now.low.q),
+                (id::LOW_GAIN, now.low.gain_db),
+                (id::MID_FREQ, now.mid.freq),
+                (id::MID_Q, now.mid.q),
+                (id::MID_GAIN, now.mid.gain_db),
+                (id::HIGH_FREQ, now.high.freq),
+                (id::HIGH_Q, now.high.q),
+                (id::HIGH_GAIN, now.high.gain_db),
+                (id::HIGH_CUT, now.high_cut),
+            ] {
+                self.send(Cmd::WriteSetting { id, value });
+            }
+        }
     }
 
     /// The device's global settings, by name.
@@ -1936,7 +2940,11 @@ impl App {
     /// them, one control at a time - see `hx_proto::settings`. The rest are
     /// reachable only from the pedal's own menu, so they are not shown rather
     /// than shown as numbers nobody can act on.
-    fn preferences(&mut self, ui: &mut egui::Ui) {
+    ///
+    /// `wanted` decides which groups appear, because the same list serves two
+    /// windows now: the EQ panel takes its own group, preferences takes the
+    /// rest.
+    fn settings_list(&mut self, ui: &mut egui::Ui, wanted: impl Fn(&str) -> bool) {
         use hx_proto::settings::{self, Kind};
 
         if !matches!(self.connection, Connection::Online) {
@@ -1949,7 +2957,7 @@ impl App {
         }
 
         let mut write: Option<(i64, f32)> = None;
-        for group in settings::groups() {
+        for group in settings::groups().into_iter().filter(|g| wanted(g)) {
             ui.add_space(6.0);
             ui.label(RichText::new(group.to_uppercase()).small().color(theme::DIM));
             for setting in settings::SETTINGS.iter().filter(|s| s.group == group) {
@@ -2412,8 +3420,10 @@ impl App {
                         match library::keep(&preview.source) {
                             Ok(kept) => {
                                 preview.source = kept;
-                                // Open the library so the keep visibly lands.
-                                self.library_panel = true;
+                                // The library is always on screen, so the row
+                                // simply appears; it only has to be the tones
+                                // half that is showing.
+                                self.lib_showing = LibraryView::Tones;
                                 self.refresh_library();
                                 self.note(format!("kept {}", preview.name));
                             }
@@ -2576,7 +3586,7 @@ impl App {
         // branch runs from the input's edge to the output's.
         let mut fork_end = None;
         let mut input_rect = None;
-        let mut output_left = None;
+        let mut output_rect = None;
 
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
@@ -2617,7 +3627,7 @@ impl App {
                     self.insert_point(ui, output);
                     let (hit, rect) = self.endpoint(ui, output);
                     pick = hit.or(pick);
-                    output_left = Some(rect.left());
+                    output_rect = Some(rect);
                 }
             });
 
@@ -2639,8 +3649,8 @@ impl App {
 
             // The offer of a parallel branch, where it would actually run.
             if self.can_offer_branch(path) {
-                if let (Some(input), Some(right)) = (input_rect, output_left) {
-                    self.ghost_branch(ui, path, input, right);
+                if let (Some(input), Some(output)) = (input_rect, output_rect) {
+                    self.ghost_branch(ui, path, input, output.left());
                 }
             }
         });
@@ -3324,13 +4334,17 @@ impl App {
                 });
                 self.chain[self.selected].enabled = on;
             }
-            if ui.button("Copy").on_hover_text("copy this block").clicked() {
+            ui.add_space(4.0);
+            if theme::icon_button(ui, theme::Icon::Copy, true)
+                .on_hover_text("Copy this block")
+                .clicked()
+            {
                 self.copied_block = Some(block.position as usize);
                 self.note(format!("copied {}", self.slot_label(block)));
             }
-            if ui
-                .add_enabled(self.copied_block.is_some(), egui::Button::new("Paste"))
-                .on_hover_text("put the copied block here")
+            if theme::icon_button(ui, theme::Icon::Paste, self.copied_block.is_some())
+                .on_hover_text("Paste — put the copied block here")
+                .on_disabled_hover_text("Paste — no block copied yet")
                 .clicked()
             {
                 if let Some(from) = self.copied_block {
@@ -3340,9 +4354,8 @@ impl App {
                     });
                 }
             }
-            if ui
-                .button("Remove")
-                .on_hover_text("take this block out of the chain")
+            if theme::icon_button(ui, theme::Icon::Remove, true)
+                .on_hover_text("Remove — take this block out of the chain")
                 .clicked()
             {
                 self.edit(Cmd::ClearBlock(block.position));
@@ -3492,6 +4505,7 @@ impl App {
                     catalog,
                     search,
                     browsing,
+                    browsing_shelf,
                     ..
                 } = self;
                 let Some(catalog) = catalog.as_ref() else {
@@ -3501,8 +4515,11 @@ impl App {
                 picked = model_picker(
                     ui,
                     catalog,
-                    search,
-                    browsing,
+                    Browsing {
+                        search,
+                        category: browsing,
+                        shelf: browsing_shelf,
+                    },
                     Holding {
                         model: current.as_deref(),
                         paired: block.paired.is_some(),
@@ -3564,6 +4581,7 @@ impl App {
                             catalog,
                             search,
                             browsing,
+                            browsing_shelf,
                             ..
                         } = self;
                         let Some(catalog) = catalog.as_ref() else {
@@ -3572,8 +4590,11 @@ impl App {
                         picked = model_picker(
                             ui,
                             catalog,
-                            search,
-                            browsing,
+                            Browsing {
+                                search,
+                                category: browsing,
+                                shelf: browsing_shelf,
+                            },
                             Holding::default(),
                             "ADD A BLOCK",
                             true,
@@ -4036,6 +5057,18 @@ fn attach_range(path: &hx_proto::preset::Path, opening: bool) -> Option<(usize, 
 /// A free function taking the pieces it needs rather than `&mut self`, so the
 /// same widget serves the swap shelf and the insert popup — the two places you
 /// choose a pedal should not look or behave differently.
+/// Where the model browser is pointed: the filter typed in, the category
+/// chosen, and the shelf under that category.
+///
+/// The three travel together because they are not independent — typing a
+/// search overrides both, and choosing a category clears the shelf. Kept as
+/// separate arguments they were three chances to update two of them.
+struct Browsing<'a> {
+    search: &'a mut String,
+    category: &'a mut Option<u32>,
+    shelf: &'a mut Option<String>,
+}
+
 /// What a block holds now, which decides where the picker opens and which tile
 /// it marks as the current one.
 #[derive(Debug, Clone, Copy, Default)]
@@ -4066,12 +5099,16 @@ fn number_of(catalog: &hx_catalog::Catalog, id: &str) -> Option<u32> {
 fn model_picker(
     ui: &mut egui::Ui,
     catalog: &hx_catalog::Catalog,
-    search: &mut String,
-    browsing: &mut Option<u32>,
+    at: Browsing,
     holding: Holding,
     heading: &str,
     focus_search: bool,
 ) -> Option<Picked> {
+    let Browsing {
+        search,
+        category: browsing,
+        shelf,
+    } = at;
     let mut picked = None;
 
     ui.horizontal(|ui| {
@@ -4120,11 +5157,12 @@ fn model_picker(
             });
             if theme::category_chip(ui, &category.name, icon.as_ref(), colour, on).clicked() {
                 *browsing = Some(category.id);
+                // The shelf under it belonged to the old category.
+                *shelf = None;
                 search.clear();
             }
         }
     });
-    ui.separator();
 
     // Whether what is on screen fills a block with two models. A search cuts
     // across categories, so it can only offer single models.
@@ -4151,9 +5189,9 @@ fn model_picker(
     // how people talk about the models. A search cuts across them, so it stays
     // one flat list.
     let shelves: Vec<(&str, Vec<&hx_catalog::Model>)> = if searching {
-        vec![("", models)]
+        Vec::new()
     } else {
-        let shelved: Vec<(&str, Vec<&hx_catalog::Model>)> = catalog
+        catalog
             .category(showing)
             .map(|c| {
                 c.subcategories
@@ -4169,52 +5207,193 @@ fn model_picker(
                     .filter(|(_, models)| !models.is_empty())
                     .collect()
             })
-            .unwrap_or_default();
-        // A category with no second level - and a paired one, whose tiles are
-        // amp-and-cab pairs rather than the shelved models - shows flat.
-        if shelved.is_empty() || pairing {
-            vec![("", models)]
-        } else {
-            shelved
-        }
+            .unwrap_or_default()
+    };
+    // A category with no second level shows flat, as does a search, which cuts
+    // across shelves by definition. Amp+Cab does have one — Guitar and Bass,
+    // inherited from the Amp category and narrowed to the amps that come with a
+    // cab — and pairing changes only what a pick sends, never how the shelf is
+    // laid out.
+    let shelved = shelves.len() > 1;
+
+    // Which shelf is open. The stored name is checked against this category's
+    // own shelves rather than trusted, which is what makes changing category
+    // reset it; failing that, the shelf holding the block's current model, so
+    // swapping a stereo delay opens on Stereo rather than on Mono.
+    let open = if shelved {
+        let chosen = shelf
+            .as_deref()
+            .and_then(|want| shelves.iter().position(|(name, _)| *name == want));
+        let holds_current = || {
+            let held = holding.model?;
+            shelves
+                .iter()
+                .position(|(_, models)| models.iter().any(|m| m.id == held))
+        };
+        chosen.or_else(holds_current).unwrap_or(0)
+    } else {
+        0
+    };
+
+    if shelved {
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            for (i, (name, models)) in shelves.iter().enumerate() {
+                if theme::shelf_pill(ui, name, i == open)
+                    .on_hover_text(format!("{} models", models.len()))
+                    .clicked()
+                {
+                    *shelf = Some((*name).to_owned());
+                }
+            }
+        });
+    }
+    ui.separator();
+
+    // One shelf at a time when there are shelves; everything otherwise.
+    let showing: Vec<&hx_catalog::Model> = if shelved {
+        shelves[open].1.clone()
+    } else {
+        models
     };
 
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            if shelves.iter().all(|(_, models)| models.is_empty()) {
+            if showing.is_empty() {
                 ui.label(RichText::new("Nothing matches").color(theme::DIM));
             }
-            for (shelf, models) in shelves {
-                if !shelf.is_empty() {
-                    ui.add_space(6.0);
-                    ui.label(RichText::new(shelf.to_uppercase()).small().color(theme::DIM));
-                }
-                ui.horizontal_wrapped(|ui| {
-                    for model in models {
-                        let selected = holding.model == Some(model.id.as_str());
-                        let art = catalog
-                            .artwork(model)
-                            .map(|p| theme::Art::whole(format!("file://{}", p.display())));
-                        if theme::model_tile(ui, &model.name, art.as_ref(), selected).clicked() {
-                            // Only models the firmware knows by number can be sent.
-                            picked = number_of(catalog, &model.id).map(|model_number| Picked {
-                                model: model_number,
-                                // In a paired category the cab comes with the amp;
-                                // if the firmware does not know that cab by number
-                                // the amp still goes in, alone.
-                                paired: pairing
-                                    .then(|| catalog.paired_cab(model))
-                                    .flatten()
-                                    .and_then(|cab| number_of(catalog, &cab.id)),
-                            });
-                        }
+            ui.horizontal_wrapped(|ui| {
+                for model in showing {
+                    let selected = holding.model == Some(model.id.as_str());
+                    let art = catalog
+                        .artwork(model)
+                        .map(|p| theme::Art::whole(format!("file://{}", p.display())));
+                    if theme::model_tile(ui, &model.name, art.as_ref(), selected).clicked() {
+                        // Only models the firmware knows by number can be sent.
+                        picked = number_of(catalog, &model.id).map(|model_number| Picked {
+                            model: model_number,
+                            // In a paired category the cab comes with the amp;
+                            // if the firmware does not know that cab by number
+                            // the amp still goes in, alone.
+                            paired: pairing
+                                .then(|| catalog.paired_cab(model))
+                                .flatten()
+                                .and_then(|cab| number_of(catalog, &cab.id)),
+                        });
                     }
-                });
-            }
+                }
+            });
         });
 
     picked
+}
+
+/// A band's heading: its colour as a dot, then its name in that colour.
+fn eq_group_title(ui: &mut egui::Ui, name: &str, colour: egui::Color32) {
+    ui.horizontal(|ui| {
+        let (dot, _) = ui.allocate_exact_size(egui::Vec2::splat(9.0), egui::Sense::hover());
+        ui.painter().circle_filled(dot.center(), 4.0, colour);
+        ui.label(RichText::new(name).small().color(colour).strong());
+    });
+}
+
+/// One peaking band's three numbers, under its own colour.
+fn eq_band_group(
+    ui: &mut egui::Ui,
+    name: &str,
+    colour: egui::Color32,
+    ids: (i64, i64, i64),
+    band: eq::Band,
+    freq_range: std::ops::RangeInclusive<f32>,
+) -> Option<(i64, f32)> {
+    let (freq_id, q_id, gain_id) = ids;
+    eq_group_title(ui, name, colour);
+    let mut write = None;
+
+    let mut freq = band.freq;
+    if ui
+        .add(
+            egui::DragValue::new(&mut freq)
+                .range(freq_range)
+                // A hertz at a time down low and a hundred up top is one
+                // control that suits both ends; a fixed step suits neither.
+                .speed(band.freq.max(20.0) / 60.0)
+                .suffix(" Hz")
+                .fixed_decimals(0),
+        )
+        .on_hover_text("centre frequency")
+        .changed()
+    {
+        write = Some((freq_id, freq));
+    }
+    let mut gain = band.gain_db;
+    if ui
+        .add(
+            egui::DragValue::new(&mut gain)
+                .range(-12.0..=12.0)
+                .speed(0.1)
+                .suffix(" dB")
+                .fixed_decimals(1),
+        )
+        .on_hover_text("cut or boost at that frequency")
+        .changed()
+    {
+        write = Some((gain_id, gain));
+    }
+    let mut q = band.q;
+    if ui
+        .add(
+            egui::DragValue::new(&mut q)
+                .range(0.1..=10.0)
+                .speed(0.02)
+                .prefix("Q ")
+                .fixed_decimals(2),
+        )
+        .on_hover_text("how narrow the band is")
+        .changed()
+    {
+        write = Some((q_id, q));
+    }
+    write
+}
+
+/// A cut's one number, and the word for having it switched off.
+fn eq_cut_group(
+    ui: &mut egui::Ui,
+    name: &str,
+    colour: egui::Color32,
+    id: i64,
+    value: f32,
+    parked: f32,
+    range: std::ops::RangeInclusive<f32>,
+) -> Option<(i64, f32)> {
+    eq_group_title(ui, name, colour);
+    let mut write = None;
+    let off = (value - parked).abs() < 0.5;
+
+    let mut hz = value;
+    if ui
+        .add(
+            egui::DragValue::new(&mut hz)
+                .range(range)
+                .speed(value.max(20.0) / 60.0)
+                .suffix(" Hz")
+                .fixed_decimals(0),
+        )
+        .on_hover_text("where the roll-off starts")
+        .changed()
+    {
+        write = Some((id, hz));
+    }
+    // The device has no off switch for these: it parks them outside the band.
+    // Saying so beats leaving someone to work out why 20100 Hz does nothing.
+    ui.label(
+        RichText::new(if off { "off" } else { "on" })
+            .small()
+            .color(if off { theme::DIM } else { colour }),
+    );
+    write
 }
 
 /// Make a preset name safe to use as a filename.

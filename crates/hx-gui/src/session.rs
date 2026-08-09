@@ -8,6 +8,10 @@
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
+/// One slot on its way to the pedal: where it goes, and the preset that goes
+/// there — its name and its document — or nothing, to empty the slot.
+pub type SlotWrite = (i64, Option<(String, Vec<u8>)>);
+
 /// What the UI asks for.
 pub enum Cmd {
     Connect,
@@ -163,6 +167,15 @@ pub enum Cmd {
     CopyPreset,
     /// Write a whole preset document over the loaded one.
     PastePreset(Vec<u8>),
+    /// Empty a slot back to the factory blank, the way HX Edit's restore blanks
+    /// the slots a backup holds nothing for. This one writes flash.
+    ClearPreset(i64),
+    /// Read every preset in the setlist and hand the documents back, so the
+    /// library can keep the whole pedal as a setlist.
+    CaptureSetlist,
+    /// Write a setlist back onto the pedal: for each slot, the name and the
+    /// document, or nothing to empty it. Every one of these is a flash write.
+    PushSetlist(Vec<SlotWrite>),
 }
 
 /// What the worker reports.
@@ -225,6 +238,10 @@ pub enum Evt {
     /// The device's favourite blocks, as (index, name).
     Favourites(Vec<(i64, String)>),
     Setlists(Vec<String>),
+    /// Every preset in the setlist, as (name, document bytes). An empty slot
+    /// comes back as `None` so the setlist can record that it is empty rather
+    /// than silently shortening.
+    CapturedSetlist(Vec<(String, Option<Vec<u8>>)>),
     Activity(String),
     Failed(String),
 }
@@ -658,6 +675,28 @@ impl Worker {
                 }
             }
             Cmd::PastePreset(blob) => self.paste(&blob),
+            Cmd::CaptureSetlist => self.capture_setlist(),
+            Cmd::PushSetlist(slots) => self.push_setlist(slots),
+            Cmd::ClearPreset(index) => {
+                let setlist = self.setlist;
+                if self.run_on_device(|d| d.clear_preset_at(setlist, index)) {
+                    // Same care as a rename: `clear_preset_at` paces its own
+                    // flash commit, so the list read lands on a settled device.
+                    // Unlike a rename this does change the document, so the
+                    // loaded preset is read back too — but only if it is the one
+                    // that was emptied.
+                    if let Some(names) = self.try_on_device(|d| d.presets(setlist)) {
+                        self.send(Evt::Presets(names));
+                    }
+                    if self.shown.0 == index {
+                        self.reload();
+                    }
+                    self.send(Evt::Activity(format!(
+                        "emptied {}",
+                        hx_proto::rpc::slot_label(index)
+                    )));
+                }
+            }
             Cmd::ClearBlock(block) => {
                 // Removing a pedal deserves its own undo step, not a shared
                 // one with whatever knob was last turned.
@@ -1140,6 +1179,82 @@ impl Worker {
     /// The bytes are parsed first. A malformed document is accepted by the
     /// device and then reads back as an empty preset, so refusing early is the
     /// difference between "that file is not a preset" and a wiped slot.
+    /// Read the whole setlist off the pedal, document by document.
+    ///
+    /// This is the read half of a backup without writing a bundle: the same
+    /// `read_preset_at` that made reading all 126 take under two seconds
+    /// instead of two minutes, because it never loads a preset to read it.
+    /// Nothing here writes to the device.
+    fn capture_setlist(&mut self) {
+        let setlist = self.setlist;
+        let Some(names) = self.try_on_device(|d| d.presets(setlist)) else {
+            return;
+        };
+        let total = names.len();
+        let mut slots = Vec::with_capacity(total);
+        for (index, name) in names.into_iter().enumerate() {
+            self.send(Evt::Working {
+                what: "reading the setlist".into(),
+                progress: index as f32 / total.max(1) as f32,
+            });
+            // A slot that will not read is empty as far as a setlist is
+            // concerned; the alternative is abandoning 125 good presets over
+            // one bad one.
+            let bytes = self
+                .try_on_device(|d| d.read_preset_at(setlist, index as i64))
+                .flatten()
+                .map(|preset| preset.encode());
+            slots.push((name, bytes));
+        }
+        self.send(Evt::Working { what: String::new(), progress: 1.0 });
+        self.send(Evt::CapturedSetlist(slots));
+    }
+
+    /// Write a whole setlist onto the pedal.
+    ///
+    /// Every slot is a flash write, and unpaced flash writes are what once
+    /// corrupted a setlist past a power cycle — so this goes through
+    /// `write_preset_at` and `clear_preset_at`, which pace their own commits,
+    /// one slot at a time and never in a hurry.
+    fn push_setlist(&mut self, slots: Vec<SlotWrite>) {
+        let setlist = self.setlist;
+        let total = slots.len();
+        let mut written = 0usize;
+        for (step, (index, bytes)) in slots.into_iter().enumerate() {
+            self.send(Evt::Working {
+                what: "writing the setlist".into(),
+                progress: step as f32 / total.max(1) as f32,
+            });
+            let ok = match bytes {
+                Some((name, bytes)) => match hx_proto::Preset::parse(&bytes) {
+                    Some(preset) => {
+                        self.run_on_device(|d| d.write_preset_at(setlist, index, &name, &preset))
+                    }
+                    None => {
+                        self.send(Evt::Failed(format!(
+                            "{} is not a preset document",
+                            hx_proto::rpc::slot_label(index)
+                        )));
+                        false
+                    }
+                },
+                None => self.run_on_device(|d| d.clear_preset_at(setlist, index)),
+            };
+            if !ok {
+                // The device has stopped answering; carrying on would be 100
+                // more failures and a longer wait for the same news.
+                break;
+            }
+            written += 1;
+        }
+        self.send(Evt::Working { what: String::new(), progress: 1.0 });
+        if let Some(names) = self.try_on_device(|d| d.presets(setlist)) {
+            self.send(Evt::Presets(names));
+        }
+        self.reload();
+        self.send(Evt::Activity(format!("wrote {written} presets to the pedal")));
+    }
+
     fn paste(&mut self, blob: &[u8]) {
         let Some(preset) = hx_proto::Preset::parse(blob) else {
             self.send(Evt::Failed("that is not a preset file".into()));

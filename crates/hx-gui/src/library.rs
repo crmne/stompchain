@@ -74,10 +74,28 @@ pub fn keep(source: &Path) -> Result<PathBuf, String> {
 }
 
 /// Write tone content straight into the library, under a preset's own name.
+///
+/// A tone whose bytes are already here is not kept twice: the path to the copy
+/// that exists comes back instead. A preset document carries its own name, so
+/// identical bytes are the same tone by definition — and capturing the same
+/// pedal twice should cost nothing, or a library fills with duplicates of a
+/// setlist somebody re-captured.
 pub fn keep_bytes(stem: &str, ext: &str, contents: &[u8]) -> Result<PathBuf, String> {
+    if let Some(existing) = holding_exactly(contents) {
+        return Ok(existing);
+    }
     let target = fresh_target(stem, ext)?;
     std::fs::write(&target, contents).map_err(|e| format!("could not keep the tone: {e}"))?;
     Ok(target)
+}
+
+/// The library file with exactly these bytes, if one is already here.
+fn holding_exactly(contents: &[u8]) -> Option<PathBuf> {
+    entries().into_iter().find(|path| {
+        // Length first: it settles almost every comparison without a read.
+        std::fs::metadata(path).is_ok_and(|m| m.len() == contents.len() as u64)
+            && std::fs::read(path).is_ok_and(|bytes| bytes == contents)
+    })
 }
 
 /// Take a tone out of the library - into its `.trash` folder, not gone, so a
@@ -151,6 +169,118 @@ pub fn save_meta(file_name: &str, meta: &Meta) -> Result<(), String> {
     std::fs::write(dir.join("index.json"), json).map_err(|e| e.to_string())
 }
 
+/// One slot of a setlist.
+///
+/// The name rides along with the file so a setlist can be read, listed and
+/// reordered without opening the 126 documents it points at.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone, PartialEq)]
+pub struct Slot {
+    /// The library file this slot holds, or empty for an empty slot.
+    pub file: String,
+    pub name: String,
+}
+
+impl Slot {
+    pub fn is_empty(&self) -> bool {
+        self.file.is_empty()
+    }
+}
+
+/// A setlist: everything a pedal holds, kept on this machine.
+///
+/// A pedal has room for one at a time — 126 slots on an HX Stomp — and that is
+/// a property of the pedal, not of the music. Here a person keeps as many as
+/// they have gigs, and puts any of them back with one button. The slots are in
+/// the pedal's own order, because that order *is* the setlist: which preset the
+/// footswitch reaches next is the whole point.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone, PartialEq)]
+pub struct Setlist {
+    pub name: String,
+    pub description: String,
+    pub venue: String,
+    /// Free text on purpose: "summer tour", "2026-03-14" and "second set" are
+    /// all things people actually write, and none of them is a date picker.
+    pub date: String,
+    pub slots: Vec<Slot>,
+}
+
+impl Setlist {
+    /// How many slots actually hold something.
+    pub fn filled(&self) -> usize {
+        self.slots.iter().filter(|s| !s.is_empty()).count()
+    }
+}
+
+/// Where setlists live, one JSON file each — inspectable, and a single one can
+/// be sent to somebody without sending the whole library.
+fn setlists_dir() -> Option<PathBuf> {
+    dir().map(|d| d.join("setlists"))
+}
+
+/// A file name for a setlist, derived from its own name.
+fn slug(name: &str) -> String {
+    let cleaned: String = name
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let collapsed = cleaned
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if collapsed.is_empty() {
+        "setlist".to_owned()
+    } else {
+        collapsed
+    }
+}
+
+/// Every setlist in the library, with the file each came from, by name.
+pub fn setlists() -> Vec<(PathBuf, Setlist)> {
+    let Some(dir) = setlists_dir() else {
+        return Vec::new();
+    };
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(PathBuf, Setlist)> = read
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "json"))
+        .filter_map(|p| {
+            let bytes = std::fs::read(&p).ok()?;
+            let setlist: Setlist = serde_json::from_slice(&bytes).ok()?;
+            Some((p, setlist))
+        })
+        .collect();
+    found.sort_by_key(|(_, s)| s.name.to_lowercase());
+    found
+}
+
+/// Write a setlist out. An existing file for the same name is replaced, which
+/// is what saving one means; renaming makes a new file and leaves the old.
+pub fn save_setlist(setlist: &Setlist) -> Result<PathBuf, String> {
+    let dir = setlists_dir().ok_or("no home directory to keep setlists in")?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create the library: {e}"))?;
+    let target = dir.join(format!("{}.json", slug(&setlist.name)));
+    let json = serde_json::to_vec_pretty(setlist).map_err(|e| e.to_string())?;
+    std::fs::write(&target, json).map_err(|e| format!("could not save the setlist: {e}"))?;
+    Ok(target)
+}
+
+/// Take a setlist out of the library. The tones it pointed at stay: they are
+/// the library's, not the setlist's, and another setlist may well play them.
+pub fn remove_setlist(path: &Path) -> Result<(), String> {
+    std::fs::remove_file(path).map_err(|e| format!("could not remove the setlist: {e}"))
+}
+
 /// Every distinct tag across the library, sorted, for the browse rail.
 pub fn all_tags() -> Vec<String> {
     let mut tags: Vec<String> = metadata()
@@ -166,18 +296,43 @@ pub fn all_tags() -> Vec<String> {
 mod tests {
     use super::*;
 
-    fn scratch() -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("stompchain-library-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("STOMPCHAIN_LIBRARY", &dir);
-        dir
+    /// The library is found through one process-wide environment variable, so
+    /// two tests pointing it at two directories at once would each see the
+    /// other's. They take turns; the guard is held for the whole test.
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct Scratch {
+        dir: PathBuf,
+        // Held, not read: dropping it is what lets the next test run.
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Scratch {
+        fn new(name: &str) -> Scratch {
+            // A poisoned lock means some earlier test panicked. That test has
+            // already failed; there is no reason for this one to as well.
+            let guard = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+            let dir = std::env::temp_dir().join(format!(
+                "stompchain-library-test-{}-{name}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::env::set_var("STOMPCHAIN_LIBRARY", &dir);
+            Scratch { dir, _guard: guard }
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+            std::env::remove_var("STOMPCHAIN_LIBRARY");
+        }
     }
 
     #[test]
     fn keeping_copies_and_never_overwrites() {
-        let _dir = scratch();
+        let _scratch = Scratch::new("keep");
         let source = std::env::temp_dir().join("stompchain-keep-test.hlx");
         std::fs::write(&source, b"{}").unwrap();
 
@@ -200,5 +355,89 @@ mod tests {
         assert!(dir().unwrap().join(".trash").join("stompchain-keep-test.hlx").exists());
 
         let _ = std::fs::remove_file(source);
+    }
+
+    /// Capturing the same pedal twice must not double the library. Identical
+    /// bytes are the same tone — the name is inside the document.
+    #[test]
+    fn keeping_the_same_bytes_twice_keeps_one_copy() {
+        let _scratch = Scratch::new("dedup");
+        let first = keep_bytes("Blackened", "hxpreset", b"one").unwrap();
+        let again = keep_bytes("Blackened", "hxpreset", b"one").unwrap();
+        assert_eq!(first, again, "identical bytes are the same tone");
+        assert_eq!(entries().len(), 1);
+
+        // Different bytes under the same name are a different tone, and both
+        // are kept.
+        let other = keep_bytes("Blackened", "hxpreset", b"two").unwrap();
+        assert_ne!(first, other);
+        assert_eq!(entries().len(), 2);
+    }
+
+    #[test]
+    fn a_setlist_saves_and_reads_back() {
+        let _scratch = Scratch::new("setlist-roundtrip");
+        assert!(setlists().is_empty());
+
+        let saved = Setlist {
+            name: "Summer Tour".into(),
+            description: "the loud one".into(),
+            venue: "Paradiso".into(),
+            date: "2026-07-02".into(),
+            slots: vec![
+                Slot { file: "blackened.hxpreset".into(), name: "Blackened".into() },
+                Slot::default(),
+                Slot { file: "relief.hxpreset".into(), name: "DIR:Relief".into() },
+            ],
+        };
+        save_setlist(&saved).unwrap();
+
+        let read = setlists();
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].1, saved, "a setlist round-trips unchanged");
+        assert_eq!(read[0].1.filled(), 2, "the empty slot is not a preset");
+        assert_eq!(read[0].1.slots.len(), 3, "but it still takes up a slot");
+    }
+
+    /// Saving the same setlist again replaces it rather than piling up copies —
+    /// the pedal has one "Summer Tour" and so does the library.
+    #[test]
+    fn saving_a_setlist_again_replaces_it() {
+        let _scratch = Scratch::new("setlist-replace");
+        let mut setlist = Setlist { name: "Summer Tour".into(), ..Default::default() };
+        save_setlist(&setlist).unwrap();
+        setlist.venue = "Melkweg".into();
+        save_setlist(&setlist).unwrap();
+
+        let read = setlists();
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].1.venue, "Melkweg");
+    }
+
+    /// Removing a setlist leaves its tones alone: they belong to the library,
+    /// and another setlist may well play them.
+    #[test]
+    fn removing_a_setlist_keeps_its_tones() {
+        let _scratch = Scratch::new("setlist-remove");
+        keep_bytes("Blackened", "hxpreset", b"one").unwrap();
+        let setlist = Setlist {
+            name: "Gig".into(),
+            slots: vec![Slot { file: "Blackened.hxpreset".into(), name: "Blackened".into() }],
+            ..Default::default()
+        };
+        let path = save_setlist(&setlist).unwrap();
+
+        remove_setlist(&path).unwrap();
+        assert!(setlists().is_empty());
+        assert_eq!(entries().len(), 1, "the tone outlives the setlist");
+    }
+
+    #[test]
+    fn a_setlist_name_becomes_a_usable_file_name() {
+        assert_eq!(slug("Summer Tour"), "summer-tour");
+        assert_eq!(slug("  Two   Words  "), "two-words");
+        assert_eq!(slug("Set #1: The/Loud One"), "set-1-the-loud-one");
+        assert_eq!(slug(""), "setlist");
+        assert_eq!(slug("///"), "setlist");
     }
 }
