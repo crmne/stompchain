@@ -36,6 +36,41 @@ bin_dir() {
     echo "${BIN_DIRS[0]}"
 }
 
+# What the program was called before, so an upgrade can take it away.
+#
+# The rename left every old binary, launcher entry and icon exactly where it
+# was, and the old ones are not harmlessly redundant: 0.2.x reads
+# ~/.local/share/stompchain, which the current version moves to
+# ~/.local/share/tonepush on its first run. So a launcher still pointing at the
+# old entry opens an editor showing an empty library, which looks precisely
+# like having lost everything. Nothing is lost - it is the wrong program - but
+# nobody should have to work that out.
+FORMER_SLUG="stompchain"
+FORMER_NAME="stompchain"
+
+retire_former_name() {
+    local dir found=0
+    for dir in "${BIN_DIRS[@]}"; do
+        for bin in "$FORMER_SLUG" "$FORMER_SLUG-gui"; do
+            [ -f "$dir/$bin" ] && { rm -f "$dir/$bin"; say "removed $dir/$bin (the old name)"; found=1; }
+        done
+    done
+    [ -d "$MAC_APPS/$FORMER_NAME.app" ] && {
+        rm -rf "$MAC_APPS/$FORMER_NAME.app"
+        say "removed $MAC_APPS/$FORMER_NAME.app (the old name)"
+        found=1
+    }
+    [ -f "$LINUX_APPS/$FORMER_SLUG.desktop" ] && {
+        rm -f "$LINUX_APPS/$FORMER_SLUG.desktop"
+        say "removed $LINUX_APPS/$FORMER_SLUG.desktop (the old name)"
+        found=1
+    }
+    local icon="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps/$FORMER_SLUG.svg"
+    [ -f "$icon" ] && { rm -f "$icon"; say "removed $icon (the old name)"; found=1; }
+    [ "$found" = 1 ] && say "your library moved across with the name; nothing was lost"
+    return 0
+}
+
 uninstall() {
     local dir
     for dir in "${BIN_DIRS[@]}"; do
@@ -56,6 +91,7 @@ uninstall() {
         rm -f "$icon"
         say "removed $icon"
     }
+    retire_former_name
     if [ -f "$UDEV_RULE" ]; then
         warn "left $UDEV_RULE in place; remove it with sudo if you want it gone"
     fi
@@ -170,6 +206,10 @@ main() {
     else
         cargo build --release
     fi
+
+    # Before installing, not after: leaving both on PATH for even a moment is
+    # what lets somebody launch the wrong one.
+    retire_former_name
 
     local dir
     dir="$(bin_dir)"
