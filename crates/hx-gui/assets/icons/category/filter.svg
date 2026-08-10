@@ -1,0 +1,4 @@
+<!-- Filter: flat, then a corner, then gone. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M2 8h9l1.5-3 1.5 5c1.5 5 3 6 8 6"/>
+</svg>

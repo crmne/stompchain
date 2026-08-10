@@ -1,0 +1,4 @@
+<!-- Distortion: a wave driven into clipping, its peaks squared off. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M2 12h2l0-4h4l0 8h4l0-8h4l0 4h2"/>
+</svg>

@@ -1,0 +1,7 @@
+<!-- Preamp: the valve at the front of it, pins and all. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M8 10a4 4 0 0 1 8 0v6H8z"/>
+  <path d="M7 16h10"/>
+  <path d="M10 19v2M14 19v2M12 19v2"/>
+  <path d="M12 8v5" opacity=".5"/>
+</svg>

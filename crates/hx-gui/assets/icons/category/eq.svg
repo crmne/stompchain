@@ -1,0 +1,5 @@
+<!-- EQ: three faders, each set to its own height. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M6 3v18M12 3v18M18 3v18"/>
+  <path d="M3.5 8h5M9.5 15h5M15.5 6h5"/>
+</svg>

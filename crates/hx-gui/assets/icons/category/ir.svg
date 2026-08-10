@@ -1,0 +1,6 @@
+<!-- Impulse response: one spike, and the room it measured. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 20V12"/>
+  <path d="M3 12c5 0 4-8 7-8s4 12 7 12h4"/>
+  <path d="M10 20v-3M14 20v-6" opacity=".5"/>
+</svg>
