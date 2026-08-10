@@ -1,11 +1,21 @@
+# Every value is written out, and nothing here is inherited from the workspace.
+#
+# This is the one manifest in the repository that leaves it: `gem build` copies
+# it verbatim into the gem, and it is compiled on a machine where there is no
+# workspace to inherit from. `edition.workspace = true` there is not a fallback,
+# it is an error - "failed to find a workspace root" - and the gem will not
+# install. CI checks that nothing in this file says `workspace`.
+#
+# The cost is that the version is written in two places. `.github/workflows/ci.yml`
+# fails if it stops matching the workspace's.
 [package]
 name = "hx-ruby"
 description = "Ruby bindings over hx-catalog's preset inspector, so the tone browser reads .hlx files with the same code the desktop uses"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
-rust-version.workspace = true
+version = "0.3.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/crmne/tonepush"
+rust-version = "1.87"
 
 [lib]
 # The name Ruby dlopen's and the `Init_hx_ruby` entry it calls; keep it in step

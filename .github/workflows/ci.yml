@@ -52,21 +52,44 @@ jobs:
           ruby-version: "3.3"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: No path dependencies escape into the package
+      # ext/hx_ruby/Cargo.toml is copied into the gem and compiled where there is
+      # no workspace and no sibling crate. Anything that only resolves inside
+      # this checkout - a path dependency, or a value inherited from the
+      # workspace - is an error there and nowhere else, which is how one reached
+      # a release: `edition.workspace = true` built fine here and failed with
+      # "failed to find a workspace root" the moment the gem was installed.
+      - name: The gem's manifest stands on its own
         run: |
           set -euo pipefail
-          if grep -q 'path *=' ext/hx_ruby/Cargo.toml; then
-            echo "ext/hx_ruby/Cargo.toml has a path dependency; it would not" >&2
-            echo "resolve once the gem is unpacked somewhere else." >&2
-            exit 1
+          fail=0
+          if grep -nE '^[^#]*path *=' ext/hx_ruby/Cargo.toml; then
+            echo "^ path dependency: points at nothing once the gem is unpacked" >&2
+            fail=1
           fi
-      - name: The gem's version matches the workspace's
+          if grep -nE '^[^#]*workspace *= *true|^[^#]*\.workspace' ext/hx_ruby/Cargo.toml; then
+            echo "^ workspace inheritance: there is no workspace to inherit from" >&2
+            fail=1
+          fi
+          exit $fail
+      # Three places say the version, and the two that are written by hand drift
+      # silently. The gem installs the crates by version, so a mismatch resolves
+      # against whatever was last published rather than what is in this commit.
+      - name: Every version agrees
         run: |
           set -euo pipefail
-          gem_version="$(ruby -Ilib -rhx_ruby/version -e 'puts HxRuby::VERSION')"
-          crate_version="$(sed -n 's/^version = "\(.*\)"/\1/p' ../../Cargo.toml | head -1)"
-          [ "$gem_version" = "$crate_version" ] || {
-            echo "gem is $gem_version, workspace is $crate_version" >&2
+          workspace="$(sed -n 's/^version = "\(.*\)"/\1/p' ../../Cargo.toml | head -1)"
+          gem="$(ruby -Ilib -rhx_ruby/version -e 'puts HxRuby::VERSION')"
+          ext="$(sed -n 's/^version = "\(.*\)"/\1/p' ext/hx_ruby/Cargo.toml | head -1)"
+          echo "workspace=$workspace gem=$gem ext=$ext"
+          for dep in hx-catalog hx-proto; do
+            want="$(sed -n "s/^${dep} = \"\(.*\)\"/\1/p" ext/hx_ruby/Cargo.toml)"
+            [ "$want" = "$workspace" ] || {
+              echo "ext depends on $dep $want, workspace is at $workspace" >&2
+              exit 1
+            }
+          done
+          [ "$gem" = "$workspace" ] && [ "$ext" = "$workspace" ] || {
+            echo "versions disagree" >&2
             exit 1
           }
       # Only that the package builds. Installing it would compile against the
