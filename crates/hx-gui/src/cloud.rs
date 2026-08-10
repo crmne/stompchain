@@ -34,15 +34,14 @@ const TONES: &str = "https://tonepush.rocks/api/v1/tones";
 /// held hostage by somebody else's uptime.
 const PAGES: u32 = 20;
 
-/// How many tones to ask about in detail.
+/// How many tones to ask about one at a time, when the index will not say.
 ///
-/// The index does not carry the hashes - they are on the implementations, which
-/// only the detail view returns - so learning what is published costs one
-/// request per tone. That is fine for a site with a few dozen and plainly wrong
-/// for one with thousands, and the fix is not here: the index should return
-/// `file_sha256`, or the site should answer "do you have this hash". Until it
-/// does, this stops rather than firing a thousand requests at somebody's
-/// server every time an editor opens, and says so when it stops.
+/// The index carries `file_sha256s` now, so the ordinary path is one request
+/// per page and this is never reached. It is the fallback for a site that has
+/// not deployed that yet, where the hashes live only on a tone's details and
+/// learning them costs a request each. Capped so an editor opening against an
+/// older site with a large library does not fire a thousand requests at it,
+/// and it says so when it stops rather than quietly reporting less.
 const DETAILS: usize = 200;
 
 /// Ask the site what it has, in the background.
@@ -80,15 +79,21 @@ fn fetch() -> Option<BTreeSet<String>> {
         if tones.is_empty() {
             break;
         }
-        // The summary the index returns carries no hashes - those are on the
-        // implementations, which only the detail view has. One request per
-        // tone is the cost of an honest answer, and it happens once.
         for tone in tones {
+            // The index carries the hashes itself, which makes the whole
+            // question one request per page.
+            if let Some(listed) = summary_hashes(tone) {
+                found.extend(listed);
+                continue;
+            }
+            // An older site only has them on a tone's details, so this asks -
+            // once per tone, which is why it is capped. Kept so the editor
+            // still works against a site that has not deployed the index
+            // change yet, and it costs nothing once that lands.
             if asked >= DETAILS {
                 eprintln!(
-                    "the tone browser has more than {DETAILS} tones; only the first \
-                     {DETAILS} were checked. The column may show a published tone as \
-                     absent until the site's index carries file_sha256."
+                    "the tone browser has more than {DETAILS} tones and its index does \
+                     not carry file_sha256, so only the first {DETAILS} were checked."
                 );
                 return Some(found);
             }
@@ -100,6 +105,23 @@ fn fetch() -> Option<BTreeSet<String>> {
         }
     }
     Some(found)
+}
+
+/// The hashes a tone's index entry lists, when the site puts them there.
+///
+/// `None` means the field is absent, which is a site old enough to keep them
+/// only on the details - a different thing from a tone that has none, which is
+/// an empty list and needs no second request.
+fn summary_hashes(tone: &serde_json::Value) -> Option<Vec<String>> {
+    let listed = tone.get("file_sha256s")?.as_array()?;
+    Some(
+        listed
+            .iter()
+            .filter_map(|hash| hash.as_str())
+            .filter(|hash| hash.len() == 64)
+            .map(|hash| hash.to_ascii_lowercase())
+            .collect(),
+    )
 }
 
 /// Every file hash published for one tone, across its implementations.
@@ -195,6 +217,27 @@ mod tests {
             ]
         });
         assert!(file_hashes(&json).is_empty());
+    }
+
+    #[test]
+    fn an_index_that_lists_hashes_needs_no_second_request() {
+        let tone = serde_json::json!({ "id": 1, "file_sha256s": ["A".repeat(64)] });
+        assert_eq!(summary_hashes(&tone), Some(vec!["a".repeat(64)]));
+    }
+
+    /// The distinction the fallback turns on: a tone with nothing published is
+    /// an empty list, and a site that does not carry them at all is no field.
+    #[test]
+    fn no_field_and_an_empty_field_mean_different_things() {
+        let older = serde_json::json!({ "id": 1 });
+        assert_eq!(summary_hashes(&older), None, "ask this one for its details");
+
+        let none_published = serde_json::json!({ "id": 1, "file_sha256s": [] });
+        assert_eq!(
+            summary_hashes(&none_published),
+            Some(Vec::new()),
+            "this one has answered; asking again would be a wasted request"
+        );
     }
 
     #[test]
