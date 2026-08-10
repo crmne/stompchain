@@ -8,6 +8,7 @@ use std::time::Duration;
 use egui::RichText;
 use hx_catalog::{Catalog, Kind};
 
+mod cloud;
 mod config;
 mod eq;
 /// Public so the desktop entry point can bring an older library across before
@@ -326,6 +327,15 @@ pub struct App {
     /// release's tag once it has. Both stay `None` when there is nothing to
     /// say, which is the common case and the quiet one.
     update_check: Option<std::sync::mpsc::Receiver<String>>,
+    /// What the tone browser already has, by the hash of the file it was given,
+    /// and the answer while it is still coming. Empty and `None` together mean
+    /// the site never answered, which is drawn as nothing rather than as
+    /// "published nowhere".
+    cloud_check: Option<std::sync::mpsc::Receiver<std::collections::BTreeSet<String>>>,
+    cloud_files: std::collections::BTreeSet<String>,
+    /// Each library tone's portable hash, worked out once. Reading and hashing
+    /// two hundred `.hlx` files is nothing once and far too much every frame.
+    portable_hashes: std::collections::HashMap<String, String>,
     update_available: Option<String>,
 }
 
@@ -420,23 +430,42 @@ impl LibColumn {
         }
     }
 
-    fn cell(self, entry: &LibEntry, state: theme::Sync) -> table::Cell {
+    fn cell(self, entry: &LibEntry, state: theme::Sync, cloud: theme::Sync) -> table::Cell {
         match self {
-            // This row is a tone in the library, so the computer is not one
-            // of the icons: it shows the pedal, and the cloud when the tone
-            // browser exists to answer for it.
-            LibColumn::Sync => table::Cell::Places(vec![(
-                theme::Icon::Pedal,
-                state,
-                match state {
-                    theme::Sync::Absent => "Not on the pedal. Send it",
-                    theme::Sync::Same => "On the pedal",
-                    theme::Sync::Differs => {
-                        "On the pedal under this name, but different. Send this one"
-                    }
-                    theme::Sync::Unknown => "",
-                },
-            )]),
+            // This row is a tone in the library, so the computer is not one of
+            // the icons: it shows the pedal, and the cloud once the tone
+            // browser has answered for it. The cloud is dropped entirely rather
+            // than drawn blank when the site said nothing, because a
+            // permanently empty icon is furniture.
+            LibColumn::Sync => {
+                let mut places = vec![(
+                    theme::Icon::Pedal,
+                    state,
+                    match state {
+                        theme::Sync::Absent => "Not on the pedal. Send it",
+                        theme::Sync::Same => "On the pedal",
+                        theme::Sync::Differs => {
+                            "On the pedal under this name, but different. Send this one"
+                        }
+                        theme::Sync::Unknown => "",
+                    },
+                )];
+                if cloud != theme::Sync::Unknown {
+                    places.push((
+                        theme::Icon::Cloud,
+                        cloud,
+                        match cloud {
+                            theme::Sync::Same => "Published on the tone browser",
+                            // Not "publish it": publishing needs an account and
+                            // an upload this cannot yet do, and an icon that
+                            // offers something it cannot deliver is worse than
+                            // one that only reports.
+                            _ => "Not on the tone browser",
+                        },
+                    ));
+                }
+                table::Cell::Places(places)
+            }
             LibColumn::Chain => table::Cell::Dim(self.text(entry)),
             _ => table::Cell::Text(self.text(entry)),
         }
@@ -593,6 +622,9 @@ impl App {
             confirm_switch: None,
             renaming_header: None,
             update_check: Some(update::check()),
+            cloud_check: Some(cloud::published()),
+            cloud_files: std::collections::BTreeSet::new(),
+            portable_hashes: std::collections::HashMap::new(),
             update_available: None,
         };
         // The library is on screen from the first frame, so it is read before
@@ -1225,6 +1257,44 @@ impl App {
                     });
                 });
             });
+    }
+
+    /// Take the site's answer if it has arrived, and say whether a tone is on
+    /// it.
+    ///
+    /// The site records the hash of the file it was given, which is the `.hlx`,
+    /// so the comparison is against the portable copy and never against the
+    /// tone's own identity. A tone with no portable copy written yet cannot be
+    /// looked up at all, and answers `Unknown` rather than `Absent`: we do not
+    /// know that it is missing, only that we cannot ask.
+    fn cloud_sync(&mut self, hash: &str) -> theme::Sync {
+        if let Some(rx) = &self.cloud_check {
+            match rx.try_recv() {
+                Ok(files) => {
+                    self.cloud_files = files;
+                    self.cloud_check = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.cloud_check = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        // Nothing came back. Drawing an outline here would claim every tone is
+        // unpublished on the word of a request that failed.
+        if self.cloud_files.is_empty() {
+            return theme::Sync::Unknown;
+        }
+        let Some(portable) = self.portable_hashes.get(hash).cloned().or_else(|| {
+            let found = library::portable_hash(hash)?;
+            self.portable_hashes.insert(hash.to_owned(), found.clone());
+            Some(found)
+        }) else {
+            return theme::Sync::Unknown;
+        };
+        if self.cloud_files.contains(&portable) {
+            theme::Sync::Same
+        } else {
+            theme::Sync::Absent
+        }
     }
 
     /// Which TonePush this is, in the corner where a version belongs.
@@ -3105,10 +3175,18 @@ impl App {
             ..Default::default()
         };
         for &i in &rows {
+            // Both answers are worked out before the row is borrowed: asking
+            // the site caches what it learns, so it needs the app mutably, and
+            // a borrowed entry would still be held.
+            let (hash, name) = {
+                let entry = &self.lib_entries[i];
+                (entry.hash.clone(), entry.name.clone())
+            };
+            let state = self.tone_sync(&hash, &name);
+            let cloud = self.cloud_sync(&hash);
             let entry = &self.lib_entries[i];
-            let state = self.tone_sync(&entry.hash, &entry.name);
             grid.rows
-                .push(shown.iter().map(|c| c.cell(entry, state)).collect());
+                .push(shown.iter().map(|c| c.cell(entry, state, cloud)).collect());
             grid.chosen.push(self.lib_chosen.contains(&entry.hash));
         }
 
@@ -3155,8 +3233,24 @@ impl App {
             let hash = self.lib_entries[rows[row]].hash.clone();
             self.open_tone(&hash);
         }
-        if let Some((row, _)) = did.place {
-            self.start_sending(rows[row]);
+        // Which icon, not merely that one was pressed. The places are built in
+        // a fixed order - the pedal, then the cloud when the site has answered
+        // - and reading only the row sent a tone to the pedal whichever of them
+        // was clicked, which is a write nobody asked for.
+        if let Some((row, place)) = did.place {
+            match place {
+                0 => self.start_sending(rows[row]),
+                // Publishing needs an account and an upload this cannot do yet,
+                // so the cloud icon takes you to the tone rather than pretending
+                // to put one there.
+                _ => {
+                    let hash = self.lib_entries[rows[row]].hash.clone();
+                    if let Some(portable) = self.portable_hashes.get(&hash) {
+                        let url = cloud::tone_url(portable);
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                    }
+                }
+            }
         }
         if did.chose.is_some() {
             self.ask_to_delete();

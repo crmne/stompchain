@@ -296,6 +296,29 @@ pub fn has_portable(hash: &str) -> bool {
     })
 }
 
+/// Where a tone's portable copy is: the `.hlx`, whether that is the object
+/// itself or the file written beside it.
+pub fn portable_path(hash: &str) -> Option<PathBuf> {
+    let path = object_path(hash)?;
+    if path.extension().is_some_and(|e| e == "hlx") {
+        return Some(path);
+    }
+    let beside = path.with_extension("hlx");
+    beside.is_file().then_some(beside)
+}
+
+/// The hash of a tone's *portable* copy, which is a different number from the
+/// tone's own identity and answers a different question.
+///
+/// A tone is identified here by the bytes the device gave us. The tone browser
+/// stores what was uploaded to it, which is the `.hlx`. So "is this tone on the
+/// site" is asked of the portable copy's hash and never of the object's, and
+/// the two must not be confused: every tone in the library has both, and they
+/// never match.
+pub fn portable_hash(hash: &str) -> Option<String> {
+    Some(hash_of(&std::fs::read(portable_path(hash)?).ok()?))
+}
+
 /// A tone's editable metadata. The field set matches the Tones web schema so
 /// publishing to the site is a straight copy, not a translation. The chain
 /// itself - blocks, amps, output - is derived from the document when shown,
