@@ -19,9 +19,9 @@ hero:
       link: https://github.com/crmne/tonepush
   image:
     src: /screenshot.png
-    alt: "TonePush editing a preset on an HX Stomp: a drive, amp and cab on the main line with a delay and reverb on a parallel branch"
+    alt: "TonePush editing a preset on an HX Stomp: a wah, distortion, amp and cab along the main line with a second cab on a parallel branch, the wah's knobs and its expression pedal assignment below, and the library along the bottom"
     width: 2000
-    height: 1306
+    height: 1300
 
 features:
   - icon: 🎛️

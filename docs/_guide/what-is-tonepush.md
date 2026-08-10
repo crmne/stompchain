@@ -10,7 +10,7 @@ The Line 6 HX Stomp is a small box holding a large amp-and-effects rig. Editing 
 
 TonePush is an open-source editor for HX-family devices. It talks the same USB protocol HX Edit talks, edits the same scratch buffer, and runs on Linux, macOS, and Windows. Behind it sits the protocol itself, reverse-engineered from USB captures and written up in [PROTOCOL.md](https://github.com/crmne/tonepush/blob/main/PROTOCOL.md), so this editor is not the only thing that can ever be built on it.
 
-![TonePush editing a preset on an HX Stomp](/screenshot.png)
+![TonePush editing a preset on an HX Stomp: a wah, distortion, amp and cab along the main line with a second cab on a parallel branch, the wah's knobs and its expression pedal assignment below, and the library along the bottom](/screenshot.png)
 
 ## What it does
 

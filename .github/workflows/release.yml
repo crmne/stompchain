@@ -244,11 +244,11 @@ jobs:
         if: env.CARGO_REGISTRY_TOKEN != ''
         run: |
           set -euo pipefail
+          source .github/crates-io.sh
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
           for crate in hx-proto hx-catalog; do
             # A re-run of a release must not fail on what it already did.
-            if curl -sSf "https://crates.io/api/v1/crates/${crate}" \
-               | grep -q "\"num\":\"${version}\""; then
+            if published "$crate" "$version"; then
               echo "${crate} ${version} is already published"
               continue
             fi
@@ -262,14 +262,21 @@ jobs:
         id: confirm
         run: |
           set -euo pipefail
+          source .github/crates-io.sh
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
           available=true
           for crate in hx-proto hx-catalog; do
-            if curl -sSf "https://crates.io/api/v1/crates/${crate}" \
-               | grep -q "\"num\":\"${version}\""; then
+            # The index lags the upload by a few seconds, so this waits rather
+            # than deciding on the first answer. The first release published
+            # both crates and then declared them missing one second later.
+            for attempt in $(seq 1 30); do
+              published "$crate" "$version" && break
+              sleep 10
+            done
+            if published "$crate" "$version"; then
               echo "${crate} ${version}: present"
             else
-              echo "${crate} ${version}: missing"
+              echo "${crate} ${version}: missing after five minutes"
               available=false
             fi
           done

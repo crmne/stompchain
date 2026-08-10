@@ -7,7 +7,7 @@ An open-source editor for Line 6 HX-family devices: a cross-platform GUI, a
 scriptable CLI, and the reverse-engineered protocol documentation behind both.
 Built and tested against an HX Stomp on firmware 3.80.
 
-![TonePush editing a preset on an HX Stomp](docs/screenshot.png)
+![TonePush editing a preset on an HX Stomp: a wah, distortion, amp and cab along the main line with a second cab on a parallel branch, the wah's knobs and its expression pedal assignment below, and the library along the bottom](docs/screenshot.png)
 
 Nothing here is derived from Line 6 source code. The protocol was reconstructed
 by observing USB traffic; see [PROTOCOL.md](PROTOCOL.md) for the write-up,
