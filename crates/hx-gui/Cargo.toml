@@ -1,6 +1,6 @@
 [package]
 name = "hx-gui"
-description = "Cross-platform editor for Line 6 HX-family devices"
+description = "Edit the presets on a Line 6 Helix or HX guitar pedal, on Linux, macOS and Windows"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

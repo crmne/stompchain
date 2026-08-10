@@ -1,6 +1,6 @@
 [package]
 name = "hx-catalog"
-description = "Reads the model catalog HX Edit ships, for model and parameter metadata"
+description = "What every amp and effect in a Line 6 Helix or HX guitar pedal is called, and what its knobs do"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

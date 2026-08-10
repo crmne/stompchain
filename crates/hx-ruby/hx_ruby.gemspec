@@ -8,11 +8,19 @@ Gem::Specification.new do |spec|
   spec.authors = ["Carmine Paolino"]
   spec.email = ["carmine@paolino.me"]
 
-  spec.summary = "Parse Line 6 .hlx presets into tone facts with the TonePush Rust catalog"
+  # Written for somebody who has never heard of this project. They arrive from a
+  # search, and the first sentence has to say what the thing is without leaning
+  # on the name of any other part of it.
+  spec.summary = "Read Line 6 Helix and HX guitar preset files from Ruby"
   spec.description = <<~DESC.tr("\n", " ").strip
-    Ruby bindings over hx-catalog's preset inspector, so the tone browser reads
-    .hlx files with the same Rust code the desktop uses instead of
-    reimplementing parsing in Ruby.
+    A preset on a Line 6 Helix or HX Stomp is a saved guitar rig: an amp, a
+    speaker cabinet, the pedals in front of them, the order it all runs in, and
+    where every knob is set. Line 6 saves one as an .hlx file. This gem opens
+    that file and hands the rig back as ordinary Ruby - the blocks in order,
+    what each one is, and every setting - so you can read a preset, compare two,
+    or index a library of them. No hardware needed. The file is parsed by the
+    same Rust code that talks to the pedal itself, so it reads here exactly as
+    it does there.
   DESC
   spec.homepage = "https://docs.tonepush.rocks"
   spec.license = "MIT"

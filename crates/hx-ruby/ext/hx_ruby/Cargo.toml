@@ -10,7 +10,7 @@
 # fails if it stops matching the workspace's.
 [package]
 name = "hx-ruby"
-description = "Ruby bindings over hx-catalog's preset inspector, so the tone browser reads .hlx files with the same code the desktop uses"
+description = "Read Line 6 Helix and HX guitar preset files from Ruby"
 version = "0.3.0"
 edition = "2021"
 license = "MIT"

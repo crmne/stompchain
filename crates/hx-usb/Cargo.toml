@@ -1,6 +1,6 @@
 [package]
 name = "hx-usb"
-description = "USB transport for Line 6 HX-family devices"
+description = "Connect to a Line 6 Helix or HX guitar pedal over USB and edit what it is playing"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

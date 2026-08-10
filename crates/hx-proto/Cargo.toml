@@ -1,6 +1,6 @@
 [package]
 name = "hx-proto"
-description = "Wire protocol for Line 6 HX-family devices: framing, channels and MessagePack RPC"
+description = "The USB message format Line 6 Helix and HX guitar pedals speak, in Rust"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
