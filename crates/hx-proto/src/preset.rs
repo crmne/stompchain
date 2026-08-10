@@ -40,14 +40,14 @@ pub struct Assignment {
     /// 0 and 1 because that is a wah's range. They are not percentages.
     pub min: f32,
     pub max: f32,
-    /// Which MIDI CC drives it, for a bypass that MIDI drives. `None` for
-    /// everything else, including a *parameter* under MIDI: that one keeps its
-    /// number somewhere the document has not been shown to carry yet.
+    /// Which MIDI CC drives it, whenever MIDI is what drives it - a bypass and
+    /// a parameter alike. `None` under any other source, which has no number
+    /// to give.
     pub cc: Option<i64>,
 }
 
 /// What an assignment moves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Target {
     /// The block's on/off.
     Bypass,
@@ -707,9 +707,13 @@ impl Preset {
                         None => continue,
                     }
                 };
-                // A bypass under MIDI says which CC drives it, in the same key
-                // that a parameter uses for something else entirely.
-                let cc = (target == Target::Bypass && source == crate::rpc::Source::MidiCc)
+                // Under MIDI, key 1 is the CC number - for a parameter as much
+                // as for a bypass. It reads as the constant 4 on everything
+                // else because 4 is the CC the pedal picks for itself, and
+                // that made this look like a bypass-only field for a while.
+                // Setting one parameter's CC to 42, then 43, then 77 put
+                // exactly those here, in the document and in opcode 36's reply.
+                let cc = (source == crate::rpc::Source::MidiCc)
                     .then(|| what.get(key::ASSIGNED_KIND).and_then(Value::as_i64))
                     .flatten();
                 found.push(Assignment {
@@ -1462,9 +1466,9 @@ mod tests {
         }
     }
 
-    /// The other half of the same trap: on a parameter, key 1 really is the
-    /// constant 4, and reading it as a CC would report every knob as being on
-    /// CC 4.
+    /// The other half of the same trap: under anything but MIDI, key 1 really
+    /// is the constant 4, and reading it as a CC would report every knob on a
+    /// pedal or a switch as being on CC 4.
     #[test]
     fn a_parameter_carries_no_cc_in_that_key() {
         let assignment = crate::msgmap! {
@@ -1495,9 +1499,63 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].target, Target::Param(0));
         assert_eq!(
+            found[0].source,
+            crate::rpc::Source::Expression(1),
+            "the source is what decides whether key 1 is a number or a constant"
+        );
+        assert_eq!(
             found[0].cc, None,
             "4 there means a controller exists, not CC 4"
         );
+    }
+
+    /// And a parameter *under MIDI* does carry its CC in that key, which is the
+    /// same trap a third time. The entry below is the document the pedal wrote
+    /// when block 5's Feedback was put under MIDI and opcode 64 sent 77; 42 and
+    /// 43 before it landed in the same place, and 4 - the pedal's own default -
+    /// is what made the field look like a constant.
+    #[test]
+    fn a_parameter_under_midi_says_which_cc() {
+        let under_midi = |cc: i64| Preset {
+            sections: Vec::new(),
+            sections_width: 0,
+            slots: Vec::new(),
+            tone: crate::msgmap! {
+                key::ASSIGNMENTS => Value::Array(
+                    (0..9).map(|o| if o == 8 {
+                        Value::Array(vec![crate::msgmap! {
+                            0 => Value::Int(0),
+                            key::ASSIGNED_WHAT => crate::msgmap! {
+                                0 => Value::Int(8),
+                                key::ASSIGNED_KIND => Value::Int(cc),
+                                key::ASSIGNED_MIN => Value::Int(0),
+                                key::ASSIGNED_MAX => Value::Int(1),
+                                4 => Value::Int(0),
+                                key::ASSIGNED_ON => Value::Int(5),
+                                key::ASSIGNED_TARGET => crate::msgmap! {
+                                    28 => Value::Int(0),
+                                    key::ASSIGNED_PARAM => Value::Int(1),
+                                    41 => Value::Bool(false),
+                                },
+                                7 => Value::Int(0),
+                                13 => Value::Bool(false),
+                            },
+                        }])
+                    } else {
+                        Value::Nil
+                    }).collect::<Vec<_>>()
+                ),
+            },
+        };
+
+        for cc in [4, 42, 43, 77] {
+            let found = under_midi(cc).assignments();
+            assert_eq!(found.len(), 1, "the assignment on CC {cc} went missing");
+            assert_eq!(found[0].target, Target::Param(1));
+            assert_eq!(found[0].block, 5);
+            assert_eq!(found[0].source, crate::rpc::Source::MidiCc);
+            assert_eq!(found[0].cc, Some(cc), "and it should say which CC");
+        }
     }
 
     /// A branch with nothing on it is drawn as no lane at all, which is exactly

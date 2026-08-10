@@ -390,6 +390,21 @@ constant 4 there, for a footswitch as much as for MIDI - and opcode 64 says
 which CC. HX Edit sends one per intermediate value as the field is spun, the way
 a knob drag streams, so the last one is the answer.
 
+**And it reads back in key 1, the same place a bypass's does. [confirmed]** The
+two forms differ in how the number is *set* and not at all in where it is kept:
+put block 5's Feedback under MIDI, send 42, 43 and 77 through opcode 64, and
+opcode 36's reply and the document's controller entry both carry exactly those
+under key 1.
+
+```text
+{0: 8, 1: 77, 2: 0, 3: 1, 4: 0, 5: 5, 6: {28: 0, 29: 1, 41: false}, 7: 0, 13: false}
+```
+
+So key 1 is the CC number under MIDI whatever it drives, and the constant 4 - the
+CC the pedal picks for itself - is what made it look otherwise for the third time
+in this file. Under any other source it really is a constant: an expression pedal
+or a footswitch has no CC to give. Decide by the *source*, never by the number.
+
 **A bypass on a footswitch is not in the document. [confirmed]** The controller
 table at top-level key 4 holds every parameter assignment and the bypasses an
 *expression pedal* drives - a wah's auto-engage - and no footswitch bypass at
