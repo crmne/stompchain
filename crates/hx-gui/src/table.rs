@@ -192,7 +192,7 @@ pub fn show(ui: &mut Ui, id: &str, grid: &mut Grid) -> Did {
             // column narrower than its default, which nobody has ever wanted.
             let width = width + PADDING;
             egui_table::Column::new(width)
-                .range(width..=800.0)
+                .range(width..=drag_ceiling(width))
                 .resizable(!c.fills)
         })
         .collect();
@@ -214,6 +214,21 @@ pub fn show(ui: &mut Ui, id: &str, grid: &mut Grid) -> Did {
 }
 
 /// How tall this table's rows are: what it asked for, or a line of text.
+/// How wide a column may be dragged, given the width it starts at.
+///
+/// 800 is the sensible stopping point for dragging a column of text wider, and
+/// it used to be written as a flat maximum. But a column that fills takes
+/// whatever the window leaves it, and on a wide enough window that is more than
+/// 800 - which made the range `1007.75..=800.0`, and egui clamps into that
+/// range, and a clamp whose min exceeds its max panics. Opening a setlist on a
+/// large display was enough to do it.
+///
+/// A ceiling below the floor is not a ceiling. The width a column already needs
+/// is the least it may be allowed.
+fn drag_ceiling(width: f32) -> f32 {
+    width.max(800.0)
+}
+
 fn row_height(grid: &Grid) -> f32 {
     if grid.row_height > 0.0 {
         grid.row_height
@@ -451,5 +466,30 @@ impl egui_table::TableDelegate for Delegate<'_> {
 
     fn default_row_height(&self) -> f32 {
         row_height(self.grid)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The crash this guards against: a column wide enough to pass the ceiling
+    /// made a range whose min exceeded its max, and egui panics clamping into
+    /// one. A fills column on a wide window is exactly that.
+    #[test]
+    fn a_column_may_never_be_capped_below_the_width_it_needs() {
+        for width in [0.0, 90.0, 198.0, 799.9, 800.0, 800.1, 1007.75, 4000.0] {
+            assert!(
+                drag_ceiling(width) >= width,
+                "ceiling {} is below the width {width} it is meant to cap",
+                drag_ceiling(width)
+            );
+        }
+    }
+
+    /// And it still stops an ordinary column from being dragged off the screen.
+    #[test]
+    fn an_ordinary_column_still_stops_at_the_usual_place() {
+        assert_eq!(drag_ceiling(190.0), 800.0);
     }
 }
