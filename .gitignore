@@ -14,3 +14,7 @@ __pycache__/
 
 # Session handover notes: useful locally, not part of the project.
 NEXT-SESSION.md
+
+# Publishing credentials. Holds 1Password references rather than secrets, and
+# is still not committed: a file named .env is the first thing anything looks in.
+.env
