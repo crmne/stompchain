@@ -1367,6 +1367,20 @@ impl App {
                     {
                         self.show_favorites_only = !self.show_favorites_only;
                     }
+                    // Keeping the loaded preset belongs with the presets, next
+                    // to the star that marks one - not in the library's own
+                    // corner under a label ("Keep loaded preset") that said
+                    // nothing about where the thing went.
+                    let live = matches!(self.connection, Connection::Online)
+                        && self.preset_index >= 0;
+                    if theme::icon_button(ui, theme::Icon::Keep, live)
+                        .on_hover_text("Keep this preset in the library")
+                        .on_disabled_hover_text("Keep in library — no preset loaded")
+                        .clicked()
+                    {
+                        self.pending_copy = CopyTarget::Library;
+                        self.send(Cmd::CopyPreset);
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         self.backup_actions(ui);
                     });
@@ -1747,7 +1761,6 @@ impl App {
     /// to give it more or less room; it does not close, the same way the pedal
     /// does not close.
     fn library_strip(&mut self, ctx: &egui::Context) {
-        let mut keep_loaded = false;
         let mut capture = false;
         egui::TopBottomPanel::bottom("library")
             .resizable(true)
@@ -1773,21 +1786,10 @@ impl App {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let live = matches!(self.connection, Connection::Online);
                         match self.lib_showing {
-                            LibraryView::Tones => {
-                                if ui
-                                    .add_enabled(
-                                        live && self.preset_index >= 0,
-                                        egui::Button::new("Keep loaded preset"),
-                                    )
-                                    .on_hover_text(
-                                        "copy the loaded preset into the library, \
-                                         snapshots and routing and all",
-                                    )
-                                    .clicked()
-                                {
-                                    keep_loaded = true;
-                                }
-                            }
+                            // Keeping a preset lives on the preset list now,
+                            // beside the star: it is a thing you do to a
+                            // preset, not a thing the library does.
+                            LibraryView::Tones => {}
                             LibraryView::Setlists => {
                                 if ui
                                     .add_enabled(live, egui::Button::new("Capture the pedal"))
@@ -1809,11 +1811,26 @@ impl App {
                         egui::SidePanel::left("lib-tags")
                             .resizable(false)
                             .default_width(150.0)
-                            .show_inside(ui, |ui| self.library_tags_rail(ui));
+                            .show_inside(ui, |ui| {
+                                egui::ScrollArea::vertical()
+                                    .auto_shrink([false, false])
+                                    .id_salt("lib-tags-scroll")
+                                    .show(ui, |ui| self.library_tags_rail(ui));
+                            });
                         egui::SidePanel::right("lib-inspector")
                             .resizable(true)
                             .default_width(310.0)
-                            .show_inside(ui, |ui| self.library_inspector(ui));
+                            .show_inside(ui, |ui| {
+                                // Scrolled, not grown. Without this the
+                                // inspector's field stack decided the panel's
+                                // height, which is how the library ended up
+                                // taller than it was dragged to and sitting on
+                                // top of the status bar.
+                                egui::ScrollArea::vertical()
+                                    .auto_shrink([false, false])
+                                    .id_salt("lib-inspector-scroll")
+                                    .show(ui, |ui| self.library_inspector(ui));
+                            });
                         egui::CentralPanel::default()
                             .show_inside(ui, |ui| self.library_table(ui));
                     }
@@ -1825,16 +1842,17 @@ impl App {
                         egui::SidePanel::right("lib-setlist-details")
                             .resizable(true)
                             .default_width(310.0)
-                            .show_inside(ui, |ui| self.setlist_details(ui));
+                            .show_inside(ui, |ui| {
+                                egui::ScrollArea::vertical()
+                                    .auto_shrink([false, false])
+                                    .id_salt("lib-setlist-scroll")
+                                    .show(ui, |ui| self.setlist_details(ui));
+                            });
                         egui::CentralPanel::default()
                             .show_inside(ui, |ui| self.setlist_slots(ui));
                     }
                 }
             });
-        if keep_loaded {
-            self.pending_copy = CopyTarget::Library;
-            self.send(Cmd::CopyPreset);
-        }
         if capture {
             self.note("reading the whole setlist off the pedal".to_owned());
             self.send(Cmd::CaptureSetlist);

@@ -296,6 +296,7 @@ pub enum Icon {
     Remove,
     Gear,
     Sliders,
+    Keep,
 }
 
 impl Icon {
@@ -357,6 +358,12 @@ impl Icon {
             // the size it is actually used, because a 26-point outline has no
             // room to be a cog in seventeen pixels.
             Icon::Gear => &[],
+            // An arrow going down into a tray: put this away.
+            Icon::Keep => &[
+                &[(12.0, 3.0), (12.0, 14.0)],
+                &[(7.0, 9.0), (12.0, 14.0), (17.0, 9.0)],
+                &[(3.0, 16.0), (3.0, 21.0), (21.0, 21.0), (21.0, 16.0)],
+            ],
             // Three faders, each with its cap at a different place: an EQ.
             Icon::Sliders => &[
                 &[(6.0, 3.0), (6.0, 9.0)],
