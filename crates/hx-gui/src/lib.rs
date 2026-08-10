@@ -60,6 +60,17 @@ struct LibEntry {
     meta: library::Meta,
 }
 
+/// A sign-in waiting on somebody, somewhere else.
+///
+/// The code is on screen so it can be checked against the page, and the URL is
+/// kept so it can be said again: the browser that opened may not be the one
+/// they are signed in to, and the mail may be read on a phone entirely.
+struct Signing {
+    code: String,
+    url: String,
+    answer: std::sync::mpsc::Receiver<cloud::Linked>,
+}
+
 /// A tone kept under a name another tone already answers to: the bytes (in the
 /// store already, so the question can be asked safely), who holds the name, and
 /// the name being typed in case the answer is *Save as*.
@@ -280,6 +291,18 @@ pub struct App {
     assign_editing: Option<(hx_proto::preset::Target, bool, String)>,
     /// A footswitch's name being typed, and which switch it belongs to.
     switch_draft: Option<(u8, String)>,
+    /// A sign-in waiting to be approved, somewhere else.
+    signing_in: Option<Signing>,
+    /// A tone being published, and the answer when the site gives one.
+    publishing: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    /// A MIDI CC being dragged, by the block and the thing it drives.
+    ///
+    /// The number is only written to the pedal when the drag stops, so between
+    /// picking it up and letting it go there is nowhere else for it to live: a
+    /// cell redrawn from the document each frame would sit still under the
+    /// pointer. Emptied whenever a preset arrives, which is the document
+    /// catching up.
+    cc_drafts: std::collections::BTreeMap<(i64, hx_proto::preset::Target), i64>,
     /// Which block is waiting for a control to be picked, after Assign control
     /// was pressed. Right-clicking a control does the same thing; this is the
     /// way you find without being told.
@@ -606,6 +629,9 @@ impl App {
             assign_selected: None,
             assign_editing: None,
             switch_draft: None,
+            signing_in: None,
+            publishing: None,
+            cc_drafts: Default::default(),
             switches: Vec::new(),
             assigning: None,
             assignments: Vec::new(),
@@ -737,6 +763,9 @@ impl App {
                 }) => {
                     self.layout = layout;
                     self.assignments = assignments;
+                    // The document has caught up, so anything held while a
+                    // number was being dragged has been answered.
+                    self.cc_drafts.clear();
                     // The worker's word, not a blanket reset: most reloads are
                     // edits taking effect, and those leave changes to save.
                     self.dirty = dirty;
@@ -981,6 +1010,11 @@ impl eframe::App for App {
 
         self.shortcuts(ctx);
         self.finish_extraction();
+        // Both arrive from a thread and neither belongs to any one panel: one
+        // is a person approving a sign-in somewhere else, the other is the site
+        // taking a tone.
+        self.settle_signing_in();
+        self.settle_publishing();
         self.dropped_files(ctx);
         self.top_bar(ctx);
         self.status_bar(ctx);
@@ -2630,7 +2664,10 @@ impl App {
                             // beside the star: it is a thing you do to a
                             // preset, not a thing the library does. What is
                             // left here belongs to the table itself.
-                            LibraryView::Tones => self.column_menu(ui),
+                            LibraryView::Tones => {
+                                self.column_menu(ui);
+                                self.account_control(ui);
+                            }
                             LibraryView::Setlists => {
                                 if ui
                                     .add_enabled(live, egui::Button::new("Capture the pedal"))
@@ -3240,14 +3277,24 @@ impl App {
         if let Some((row, place)) = did.place {
             match place {
                 0 => self.start_sending(rows[row]),
-                // Publishing needs an account and an upload this cannot do yet,
-                // so the cloud icon takes you to the tone rather than pretending
-                // to put one there.
+                // The cloud: already up there, and it takes you to it; not up
+                // there, and it puts it there. A tone the site already has is
+                // not worth uploading twice, and the icon says which case this
+                // is before it is pressed.
                 _ => {
-                    let hash = self.lib_entries[rows[row]].hash.clone();
-                    if let Some(portable) = self.portable_hashes.get(&hash) {
-                        let url = cloud::tone_url(portable);
-                        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                    let entry = rows[row];
+                    let hash = self.lib_entries[entry].hash.clone();
+                    let known = self
+                        .portable_hashes
+                        .get(&hash)
+                        .filter(|portable| self.cloud_files.contains(*portable))
+                        .cloned();
+                    match known {
+                        Some(portable) => {
+                            let url = cloud::tone_url(&portable);
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                        }
+                        None => self.start_publishing(entry, ui.ctx()),
                     }
                 }
             }
@@ -3334,6 +3381,178 @@ impl App {
             .into_iter()
             .filter(|c| c.always() || !self.lib_hidden.contains(c))
             .collect()
+    }
+
+    /// Who this computer publishes as, and how it gets to be anybody.
+    ///
+    /// Sitting in the library's own header because that is where publishing
+    /// happens: signing in is not a preference, it is the thing that makes the
+    /// cloud icon do something.
+    fn account_control(&mut self, ui: &mut egui::Ui) {
+        if let Some(signing) = &self.signing_in {
+            ui.label(
+                RichText::new(format!("code {}", signing.code))
+                    .small()
+                    .color(theme::ACCENT),
+            )
+            .on_hover_text(format!(
+                "approve it at {}\nthen this signs itself in",
+                signing.url
+            ));
+            ui.spinner();
+            if ui.small_button("Cancel").clicked() {
+                self.signing_in = None;
+            }
+            return;
+        }
+
+        match self.config.account.clone() {
+            Some(account) => {
+                ui.menu_button(RichText::new(account).small(), |ui| {
+                    if ui.button("Sign out").clicked() {
+                        self.config.sign_out();
+                        ui.close_menu();
+                    }
+                    if ui.button("Open the tone browser").clicked() {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(cloud::site()));
+                        ui.close_menu();
+                    }
+                });
+            }
+            None => {
+                if ui
+                    .small_button("Sign in")
+                    .on_hover_text("to publish tones to the tone browser")
+                    .clicked()
+                {
+                    self.start_signing_in(ui.ctx());
+                }
+            }
+        }
+    }
+
+    /// Ask the site for a pairing, open it, and watch for the answer.
+    ///
+    /// All of it off the UI thread. Signing in ends in an email, so the wait is
+    /// however long somebody takes to find their inbox, and none of that may
+    /// happen on the frame this was clicked on.
+    fn start_signing_in(&mut self, ctx: &egui::Context) {
+        let pairing = match cloud::start_pairing() {
+            Ok(pairing) => pairing,
+            Err(why) => return self.note(why),
+        };
+        ctx.open_url(egui::OpenUrl::new_tab(pairing.url.clone()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let code = pairing.code.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            match cloud::poll_pairing(&code) {
+                Ok(None) => {}
+                Ok(Some(answer)) => {
+                    let _ = tx.send(answer);
+                    ctx.request_repaint();
+                    return;
+                }
+                Err(why) => {
+                    let _ = tx.send(cloud::Linked::GaveUp(why));
+                    ctx.request_repaint();
+                    return;
+                }
+            }
+        });
+        self.signing_in = Some(Signing {
+            code: pairing.code,
+            url: pairing.url,
+            answer: rx,
+        });
+    }
+
+    /// Put one tone on the tone browser.
+    ///
+    /// The file that goes up is the portable copy, because that is the one
+    /// another rig can play and the one whose hash the library already matches
+    /// against. What is said about it is what the row says: a tone with no name
+    /// or no artist is not published under invented ones.
+    fn start_publishing(&mut self, entry: usize, ctx: &egui::Context) {
+        let Some(token) = self.config.token.clone() else {
+            return self.note("sign in first, and then the cloud will publish".into());
+        };
+        if self.publishing.is_some() {
+            return self.note("one at a time: a tone is going up already".into());
+        }
+        let Some(entry) = self.lib_entries.get(entry) else {
+            return;
+        };
+        let Some(path) = library::portable_path(&entry.hash) else {
+            return self.note(format!("{} has no portable copy to publish", entry.name));
+        };
+        let Ok(hlx) = std::fs::read(&path) else {
+            return self.note(format!("{} could not be read", entry.name));
+        };
+        let tone = cloud::Publishing {
+            name: entry.meta.name.clone(),
+            artist: entry.meta.artist.clone(),
+            song: entry.meta.song.clone(),
+            part: entry.meta.part.clone(),
+            description: entry.meta.description.clone(),
+            creator_name: self.config.account.clone().unwrap_or_default(),
+            hlx,
+            filename: path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| format!("{}.hlx", entry.name)),
+        };
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(cloud::publish(&token, &tone));
+            ctx.request_repaint();
+        });
+        self.publishing = Some(rx);
+    }
+
+    /// Collect the answer to a publish, if one has arrived.
+    fn settle_publishing(&mut self) {
+        let Some(rx) = &self.publishing else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(name)) => {
+                self.publishing = None;
+                self.note(format!("{name} is on the tone browser"));
+                // Ask again what is up there, so the icon fills in without a
+                // restart.
+                self.cloud_check = Some(cloud::published());
+            }
+            Ok(Err(why)) => {
+                self.publishing = None;
+                self.note(why);
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.publishing = None,
+        }
+    }
+
+    /// Collect the answer to a sign-in, if one has arrived.
+    fn settle_signing_in(&mut self) {
+        let Some(signing) = &self.signing_in else {
+            return;
+        };
+        match signing.answer.try_recv() {
+            Ok(cloud::Linked::In { token, account }) => {
+                self.config.sign_in(token, account.clone());
+                self.signing_in = None;
+                self.note(format!("signed in as {account}"));
+            }
+            Ok(cloud::Linked::GaveUp(why)) => {
+                self.signing_in = None;
+                self.note(why);
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.signing_in = None,
+        }
     }
 
     /// The menu that turns columns on and off.
@@ -4296,42 +4515,42 @@ impl App {
                 (source, carries)
             })
             .collect();
-        let found = self.assignment(block, target);
-        let under = found.as_ref().map(|a| a.source);
         AssignMenu {
             name,
-            under,
+            under: self.assignment(block, target).map(|a| a.source),
             sources,
-            cc: found.and_then(|a| a.cc),
-            // The switch under this block, when there is one. A footswitch is
-            // three things besides what it drives - a name, a colour, a hold or
-            // a toggle - and this popup is where you are standing when you
-            // think about any of them.
-            switch: match under {
-                Some(Source::Footswitch(n)) if bypass => self
-                    .switches
-                    .iter()
-                    .find(|s| s.switch == n)
-                    .map(|s| SwitchView {
-                        switch: n,
-                        label: self
-                            .switch_draft
-                            .as_ref()
-                            .filter(|(drafting, _)| *drafting == n)
-                            .map(|(_, text)| text.clone())
-                            .unwrap_or_else(|| s.label.clone().unwrap_or_default()),
-                        named: s.label.is_some(),
-                        colour: s.colour,
-                        momentary: s.momentary,
-                    }),
-                _ => None,
-            },
-            colours: self
-                .catalog
+        }
+    }
+
+    /// One footswitch's own settings, gathered for the panel that draws them.
+    fn switch_view(&self, switch: u8, tint: egui::Color32) -> Option<SwitchView> {
+        let found = self.switches.iter().find(|s| s.switch == switch)?;
+        Some(SwitchView {
+            switch,
+            label: self
+                .switch_draft
                 .as_ref()
-                .and_then(|c| c.menu(hx_catalog::FOOTSWITCH_LED))
-                .map(<[String]>::to_vec)
-                .unwrap_or_default(),
+                .filter(|(drafting, _)| *drafting == switch)
+                .map(|(_, text)| text.clone())
+                .unwrap_or_else(|| found.label.clone().unwrap_or_default()),
+            carries: found.carries.first().map(|c| c.name.clone()),
+            colour: found.colour,
+            lit: self.led_colour(found.lit()),
+            momentary: found.momentary,
+            tint,
+        })
+    }
+
+    /// Carry out a change to a footswitch itself.
+    fn switch_action(&mut self, change: SwitchChange) {
+        match change {
+            SwitchChange::Typing(switch, text) => self.switch_draft = Some((switch, text)),
+            SwitchChange::Set { switch, edit } => {
+                if matches!(edit, session::SwitchEdit::Label(_)) {
+                    self.switch_draft = None;
+                }
+                self.edit(Cmd::EditSwitch { switch, edit });
+            }
         }
     }
 
@@ -4346,17 +4565,6 @@ impl App {
         use hx_proto::rpc::Source;
         let source = match action {
             AssignAction::To(source) => source,
-            AssignAction::Typing(switch, text) => {
-                self.switch_draft = Some((switch, text));
-                return;
-            }
-            AssignAction::Switch { switch, edit } => {
-                if matches!(edit, session::SwitchEdit::Label(_)) {
-                    self.switch_draft = None;
-                }
-                self.edit(Cmd::EditSwitch { switch, edit });
-                return;
-            }
             // Choosing the number, not choosing MIDI. The two travel by
             // different messages, and which one depends on what is assigned:
             // a bypass carries its CC on the assignment itself, a parameter
@@ -6276,6 +6484,43 @@ impl App {
             .collect()
     }
 
+    /// What to call the two ends of a travel, which depends on what moves it.
+    ///
+    /// An expression pedal sweeps between them, so they are a minimum and a
+    /// maximum. A footswitch has two positions, and those two numbers are the
+    /// value when it is up and the value when it is down: `Gain | Footswitch 2
+    /// | 0.0 | 10.0` under "Min" and "Max" reads like something has gone wrong,
+    /// and it is an ordinary clean boost.
+    fn travel_words(source: hx_proto::rpc::Source) -> (&'static str, &'static str) {
+        match source {
+            hx_proto::rpc::Source::Footswitch(_) => ("Off", "On"),
+            _ => ("Min", "Max"),
+        }
+    }
+
+    /// The same thing said in full, for the cell itself. A header speaks for a
+    /// whole column; this speaks for one row, which is what you want when the
+    /// two rows disagree.
+    fn end_meaning(source: hx_proto::rpc::Source, high: bool) -> String {
+        use hx_proto::rpc::Source;
+        match (source, high) {
+            (Source::Footswitch(n), false) => format!("what it reads with Footswitch {n} off"),
+            (Source::Footswitch(n), true) => format!("what it reads with Footswitch {n} on"),
+            (Source::Expression(n), false) => {
+                format!("what it reads with Expression Pedal {n} at the heel")
+            }
+            (Source::Expression(n), true) => {
+                format!("what it reads with Expression Pedal {n} at the toe")
+            }
+            (Source::MidiCc, false) => "what it reads when the CC sends 0".to_owned(),
+            (Source::MidiCc, true) => "what it reads when the CC sends 127".to_owned(),
+            (Source::Snapshots, high) => match high {
+                false => "the low end of what a snapshot can set".to_owned(),
+                true => "the high end of what a snapshot can set".to_owned(),
+            },
+        }
+    }
+
     /// Every assignment on this block, as the table everything else uses.
     ///
     /// The markers on the controls say *that* something is assigned; this says
@@ -6304,7 +6549,12 @@ impl App {
                         true => "Auto-engage".to_owned(),
                         false => self.target_name(position, a.target),
                     },
-                    source: a.source.label(),
+                    source: a.source,
+                    // Where a number is being dragged, that is the number: the
+                    // document does not hear about it until the drag stops, and
+                    // a cell drawn from the document until then cannot be
+                    // dragged anywhere at all.
+                    cc: self.cc_drafts.get(&(position, a.target)).copied().or(a.cc),
                     min: a.min,
                     max: a.max,
                     min_text: reading(a.min),
@@ -6323,12 +6573,42 @@ impl App {
         ui.label(RichText::new("ASSIGNMENTS").small().color(theme::DIM));
         ui.add_space(2.0);
 
+        // One header covers every row under it, so it can only follow the
+        // source while the rows agree about what the ends are. They usually do:
+        // a block is driven by one thing. Where they do not, Min and Max are
+        // the words that are true of both, and each cell says which end it is
+        // in its own row's terms anyway.
+        //
+        // The rows that have a travel decide it, because they are the ones with
+        // numbers under the heading. A table of nothing but bypasses has no
+        // numbers at all, and then every row gets a say rather than none.
+        let words = |rows: &mut dyn Iterator<Item = &Row>| {
+            rows.map(|row| Self::travel_words(row.source))
+                .reduce(|a, b| if a == b { a } else { ("Min", "Max") })
+        };
+        let ends = words(&mut listed.iter().filter(|row| row.travel.is_some()))
+            .or_else(|| words(&mut listed.iter()))
+            .unwrap_or(("Min", "Max"));
+
+        // The block's colour, which is what its badges are painted in wherever
+        // they appear.
+        let tint = self
+            .chain
+            .iter()
+            .find(|b| b.position == position)
+            .map(|b| self.block_colour(b))
+            .unwrap_or(theme::ACCENT);
+
+        // Nothing fills. This table has five narrow columns and lives in a panel
+        // as wide as the window; a column that took the slack put half a screen
+        // of nothing between what a control is and what drives it.
         let mut grid = table::Grid {
             columns: vec![
-                table::Column::new("Control", 110.0).fills(),
-                table::Column::new("Source", 130.0),
-                table::Column::new("Min", 70.0).editable(),
-                table::Column::new("Max", 70.0).editable(),
+                table::Column::new("Control", 150.0),
+                table::Column::new("Source", 74.0),
+                table::Column::new("CC", 56.0),
+                table::Column::new(ends.0, 70.0).editable(),
+                table::Column::new(ends.1, 70.0).editable(),
             ],
             sticky: 1,
             menu: vec!["Remove".to_owned()],
@@ -6338,25 +6618,45 @@ impl App {
         for row in &listed {
             // A switch has no travel to move: it is on or off. A parameter's
             // ends are values of that parameter, so they wear its own knob.
-            let end = |value: f32, text: &str| match &row.travel {
+            let end = |value: f32, text: &str, high: bool| match &row.travel {
                 Some(travel) => table::Cell::Knob {
                     value,
                     range: travel.range.clone(),
                     text: text.to_owned(),
+                    hover: Self::end_meaning(row.source, high),
                 },
                 None => table::Cell::Dim("-".to_owned()),
             };
             grid.rows.push(vec![
                 table::Cell::Text(row.name.clone()),
-                table::Cell::Dim(row.source.clone()),
-                end(row.min, &row.min_text),
-                end(row.max, &row.max_text),
+                // The chain's own badge, in the block's own colour. FS1 on the
+                // block, FS1 beside the on/off switch, FS1 here: one thing,
+                // written the same way, wherever you meet it.
+                table::Cell::Tag {
+                    text: row.source.short(),
+                    colour: tint,
+                    hover: row.source.label(),
+                },
+                // The number, beside the source that uses it. It used to be in
+                // the assign popup, two right-clicks deep and invisible until
+                // you were already there; the menu is for choosing what drives
+                // a control, and this adjusts one that already exists.
+                match row.source {
+                    hx_proto::rpc::Source::MidiCc => table::Cell::Number {
+                        value: row.cc.unwrap_or(DEFAULT_CC),
+                        range: 0..=127,
+                        hover: "which MIDI CC drives this\ndrag, or click to type",
+                    },
+                    _ => table::Cell::Dim("-".to_owned()),
+                },
+                end(row.min, &row.min_text, false),
+                end(row.max, &row.max_text, true),
             ]);
         }
         let row_of = |target: Target| listed.iter().position(|row| row.target == target);
         grid.selected = self.assign_selected.and_then(row_of);
         if let Some((target, high, draft)) = self.assign_editing.clone() {
-            grid.editing = row_of(target).map(|row| (row, if high { 3 } else { 2 }));
+            grid.editing = row_of(target).map(|row| (row, if high { HIGH_END } else { LOW_END }));
             grid.draft = draft;
         }
 
@@ -6365,6 +6665,11 @@ impl App {
         let height = 74.0 * listed.len() as f32 + table::ROW_HEIGHT + 4.0;
         let did = ui
             .allocate_ui(egui::vec2(ui.available_width(), height), |ui| {
+                // Claimed in full, not just where the table happens to have
+                // painted. A virtualised table lays its rows out itself and
+                // leaves the ui it was given no taller than a header, so
+                // anything drawn after it landed on top of the first row.
+                ui.set_min_height(height);
                 table::show(ui, "assignments", &mut grid)
             })
             .inner;
@@ -6375,13 +6680,24 @@ impl App {
         // Turning a knob writes as it turns, the way the pedal's own do.
         if let Some((row, col, value)) = did.turned {
             if let Some(row) = listed.get(row) {
-                self.move_travel(position, row.target, col == 3, value);
+                self.move_travel(position, row.target, col == HIGH_END, value);
+            }
+        }
+        // A CC is an address, not a sweep. Every step is kept so the field
+        // follows the pointer; only the one it comes to rest on is sent, which
+        // is what stops a drag from ordering a document read per pixel.
+        if let Some((row, _, cc, settled)) = did.numbered {
+            if let Some(row) = listed.get(row) {
+                self.cc_drafts.insert((position, row.target), cc);
+                if settled {
+                    self.assign_action(position, row.target, AssignAction::Cc(cc));
+                }
             }
         }
         if let Some((row, col)) = did.edit {
             match listed.get(row) {
                 Some(row) if row.travel.is_some() => {
-                    let high = col == 3;
+                    let high = col == HIGH_END;
                     let text = if high { &row.max_text } else { &row.min_text };
                     self.assign_editing = Some((row.target, high, text.clone()));
                 }
@@ -6420,6 +6736,55 @@ impl App {
             if let Some(row) = listed.get(row) {
                 self.assign_action(position, row.target, AssignAction::To(None));
             }
+        }
+
+        let switches = listed
+            .iter()
+            .filter_map(|row| match row.source {
+                hx_proto::rpc::Source::Footswitch(n) => Some(n),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        self.switch_settings(ui, switches, tint);
+    }
+
+    /// The footswitches this block's assignments land on, with the settings
+    /// that belong to the switch rather than to what it drives.
+    ///
+    /// A switch is four things: what it carries, what is written under it, what
+    /// colour it lights and whether it holds or toggles. Only the first is a
+    /// choice, and the assign menu is where a choice is made. The other three
+    /// are adjustments to something that already exists, which is what this
+    /// panel is for - they were in that popup because that is where the code
+    /// was, and it took two right-clicks and a bypass to find them.
+    fn switch_settings(
+        &mut self,
+        ui: &mut egui::Ui,
+        switches: std::collections::BTreeSet<u8>,
+        tint: egui::Color32,
+    ) {
+        let views: Vec<SwitchView> = switches
+            .into_iter()
+            .filter_map(|switch| self.switch_view(switch, tint))
+            .collect();
+        if views.is_empty() {
+            return;
+        }
+        let colours = self
+            .catalog
+            .as_ref()
+            .and_then(|c| c.menu(hx_catalog::FOOTSWITCH_LED))
+            .map(<[String]>::to_vec)
+            .unwrap_or_default();
+        let mut change = None;
+        for view in &views {
+            ui.add_space(6.0);
+            if let Some(chose) = switch_settings(ui, view, &colours) {
+                change = Some(chose);
+            }
+        }
+        if let Some(change) = change {
+            self.switch_action(change);
         }
     }
 
@@ -6499,6 +6864,7 @@ impl App {
                 .or_else(|| block.map(|b| self.block_colour(b)))
                 .unwrap_or(theme::ACCENT),
             driven: menu.under.map(|source| source.short()),
+            tint: block.map(|b| self.block_colour(b)).unwrap_or(theme::ACCENT),
             on_a_switch: carried.is_some(),
             auto_engage: menu
                 .under
@@ -7111,20 +7477,27 @@ impl App {
                                     }
                                 }
                             }
-                            // What controls this knob, if anything. Drawn as a
-                            // marker on the name rather than left to a
-                            // right-click nobody thinks to try: an assignment
-                            // you cannot see is an assignment you will be
-                            // surprised by on stage.
+                            // What controls this knob, if anything, said the
+                            // same way the chain says it: the source's own
+                            // badge, under the name, in the block's colour. An
+                            // assignment you cannot see is an assignment you
+                            // will be surprised by on stage, and a bare dot
+                            // told you only that there was one.
                             let menu = &menus[index];
                             let label = match menu.under {
-                                Some(_) => RichText::new(format!("• {}", param.name))
-                                    .color(theme::ACCENT),
+                                Some(_) => RichText::new(&param.name).color(theme::ACCENT),
                                 None => RichText::new(&param.name).color(theme::DIM),
                             };
                             let name = ui.add(
                                 egui::Label::new(label).sense(egui::Sense::click()),
                             );
+                            if let Some(source) = menu.under {
+                                parts.push(theme::tag(
+                                    ui,
+                                    &source.short(),
+                                    bypass.tint,
+                                ));
+                            }
                             let name = match menu.under {
                                 Some(source) => name.on_hover_text(format!(
                                     "{} controls this\nclick to change",
@@ -7685,77 +8058,64 @@ struct AssignMenu {
     under: Option<hx_proto::rpc::Source>,
     /// Every source this control can take, and what each already carries.
     sources: Vec<(hx_proto::rpc::Source, Vec<String>)>,
-    /// The footswitch under this control, when one is: it has settings of its
-    /// own, and this is where you are standing when you want them.
-    switch: Option<SwitchView>,
-    /// Which CC drives it, when MIDI does and the document says which. The
-    /// number is only offered while MIDI is the source; every other source has
-    /// no number to give.
-    cc: Option<i64>,
-    /// The LED colours HX Edit offers, index 0 being Auto Color. Empty without
-    /// the catalog, in which case the colour is not offered at all.
-    colours: Vec<String>,
 }
 
-/// A footswitch's own settings, as the menu draws them.
+/// A footswitch's own settings, as the panel draws them.
 struct SwitchView {
     switch: u8,
     /// The name in the field, which is the draft while one is being typed.
     label: String,
-    /// Whether the pedal is holding a name for it, so Clear knows whether it
-    /// has anything to do.
-    named: bool,
+    /// What the pedal writes under it when no name has been typed: the first
+    /// thing it carries. Shown as the field's hint, so an empty field says what
+    /// empty means rather than looking like a missing setting.
+    carries: Option<String>,
     colour: Option<i64>,
+    /// What it is lighting right now, which under Auto Color is the colour of
+    /// whatever it carries. A word for a colour is worth less than the colour.
+    lit: egui::Color32,
     momentary: bool,
+    /// The colour of the block these settings were reached through, so the
+    /// switch's badge matches the one on that block in the chain.
+    tint: egui::Color32,
 }
 
 /// What choosing something in that menu means.
 enum AssignAction {
     /// Put the control under this source, or take it off whatever has it.
     To(Option<hx_proto::rpc::Source>),
-    /// A change to the footswitch itself rather than to what it carries.
-    Switch {
+    /// Which CC drives it, once MIDI does. From the table rather than the menu:
+    /// the number is an adjustment, not a choice of source.
+    Cc(i64),
+}
+
+/// What the footswitch settings under the table were asked to do.
+enum SwitchChange {
+    /// A change to the switch itself rather than to what it carries.
+    Set {
         switch: u8,
         edit: session::SwitchEdit,
     },
     /// The name field is being typed into. Kept in the app so the draft
     /// survives the frame, the same as every other field here.
     Typing(u8, String),
-    /// Which CC drives it, once MIDI does.
-    Cc(i64),
 }
 
 /// What the pedal picks for itself when a MIDI assignment is made, and so what
 /// the field shows before anybody chooses.
 const DEFAULT_CC: i64 = 4;
 
-/// The CC number, as a field you can drag or type into.
-///
-/// Answers with a number only when it changed, so holding the menu open costs
-/// nothing. Dragging streams a value per frame, which is what HX Edit does too
-/// - the pedal takes them one at a time and the last one is what sticks.
-fn cc_row(ui: &mut egui::Ui, cc: i64) -> Option<i64> {
-    let mut value = cc;
-    let mut chosen = None;
-    ui.horizontal(|ui| {
-        ui.add_space(18.0);
-        ui.label(RichText::new("CC").small().color(theme::DIM));
-        // 0 to 127 is the whole of MIDI, and the pedal refuses anything else.
-        let field = ui.add(
-            egui::DragValue::new(&mut value)
-                .speed(0.15)
-                .range(0..=127)
-                .clamp_existing_to_range(true),
-        );
-        if field.changed() {
-            chosen = Some(value);
-        }
-        field.on_hover_text("which MIDI CC drives this - drag, or click to type");
-    });
-    chosen
-}
+/// The two travel columns of the assignments table, by index. Named because
+/// they are read back in three places and adding the CC column beside Source
+/// moved both of them.
+const LOW_END: usize = 3;
+const HIGH_END: usize = 4;
 
 /// The one assignment menu, for a knob and for a block's on/off alike.
+///
+/// It chooses what drives a control and nothing else. Everything that adjusts
+/// an assignment already made - which CC reaches it, where its two ends sit,
+/// what the switch carrying it is called - is in the ASSIGNMENTS panel, where
+/// you can see it without opening anything.
 fn assign_menu(ui: &mut egui::Ui, menu: &AssignMenu) -> Option<AssignAction> {
     ui.set_min_width(230.0);
     ui.label(
@@ -7779,77 +8139,72 @@ fn assign_menu(ui: &mut egui::Ui, menu: &AssignMenu) -> Option<AssignAction> {
             Some(what) if !on => format!("{}   carries {what}", source.label()),
             _ => source.label(),
         };
-        let row = ui.selectable_label(on, label);
-        // The pedal chooses the number and no captured message sets it, so the
-        // menu says which one it is rather than offering to change it.
-        if row.clicked() {
+        if ui.selectable_label(on, label).clicked() {
             action = Some(AssignAction::To((!on).then_some(*source)));
             ui.close_menu();
-        }
-        // The number, under the row that chose MIDI, because that is where a
-        // person is looking when they want it. Only while MIDI is the source:
-        // nothing else has a number to give.
-        if on && *source == hx_proto::rpc::Source::MidiCc {
-            if let Some(chosen) = cc_row(ui, menu.cc.unwrap_or(DEFAULT_CC)) {
-                action = Some(AssignAction::Cc(chosen));
-            }
-        }
-    }
-    if let Some(switch) = &menu.switch {
-        if let Some(chose) = switch_settings(ui, switch, &menu.colours) {
-            action = Some(chose);
         }
     }
     action
 }
 
-/// The footswitch's own three settings, under the sources that chose it.
+/// One footswitch's own settings, on one line under the table.
 ///
-/// What it is called, what colour it lights and whether it holds or toggles.
-/// The pedal has had opcodes for all three since the protocol was mapped and
-/// nothing to press them with.
+/// The switch itself, rather than what it carries: what is written under it on
+/// the pedal, what colour it lights, and what your foot gets for pressing it.
+/// The pedal has had opcodes for all three since the protocol was mapped, and
+/// for a long time nothing to press them with.
+///
+/// Every control says what it is in the words a person would use standing in
+/// front of the pedal. It read `[what it carries] [Auto Color] (o) Momentary`
+/// for a while, which is three settings none of which says what it is.
 fn switch_settings(
     ui: &mut egui::Ui,
     view: &SwitchView,
     colours: &[String],
-) -> Option<AssignAction> {
+) -> Option<SwitchChange> {
     use session::SwitchEdit;
-    let mut edit = None;
-    ui.add_space(4.0);
-    ui.separator();
-    ui.label(
-        RichText::new(format!("FOOTSWITCH {}", view.switch))
-            .small()
-            .color(theme::DIM),
-    );
+    let mut change = None;
+    let set = |edit| {
+        Some(SwitchChange::Set {
+            switch: view.switch,
+            edit,
+        })
+    };
+    let dim = |ui: &mut egui::Ui, text: &str| ui.label(RichText::new(text).color(theme::DIM));
 
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Name").color(theme::DIM));
+    // Wrapped rather than laid out in columns: the panel is as wide as the
+    // window leaves it, and controls that run off the edge of a narrow one are
+    // worse than controls that take two lines.
+    ui.horizontal_wrapped(|ui| {
+        theme::tag(ui, &format!("FS{}", view.switch), view.tint)
+            .on_hover_text("this footswitch, and what it is like to use");
+
+        dim(ui, "  Name");
         let mut text = view.label.clone();
         let field = ui.add(
             egui::TextEdit::singleline(&mut text)
                 .desired_width(110.0)
-                .hint_text("what it carries"),
+                // Empty, the pedal writes what the switch carries under it. So
+                // that is what the empty field shows, greyed: the hint is not a
+                // suggestion, it is what you will get.
+                .hint_text(view.carries.clone().unwrap_or_default()),
         );
         if field.changed() {
-            edit = Some(AssignAction::Typing(view.switch, text.clone()));
+            change = Some(SwitchChange::Typing(view.switch, text.clone()));
         }
         // Committed on Enter or on leaving, like every other field here. An
         // empty name is not a name: it clears back to what the switch carries,
         // which is the same thing opcode 60 does.
         if field.lost_focus() {
             let typed = text.trim();
-            let wanted = (!typed.is_empty()).then(|| typed.to_owned());
-            edit = Some(AssignAction::Switch {
-                switch: view.switch,
-                edit: SwitchEdit::Label(wanted),
-            });
+            change = set(SwitchEdit::Label(
+                (!typed.is_empty()).then(|| typed.to_owned()),
+            ));
         }
-    });
+        field.on_hover_text("what the pedal writes under this switch\nempty: whatever it carries");
 
-    if !colours.is_empty() {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Colour").color(theme::DIM));
+        if !colours.is_empty() {
+            dim(ui, "  Light");
             // Auto Color is index 0 of HX Edit's list and `None` here, because
             // the protocol reaches it by an opcode of its own rather than a
             // value.
@@ -7858,52 +8213,46 @@ fn switch_settings(
                 .get(chosen.max(0) as usize)
                 .cloned()
                 .unwrap_or_else(|| format!("Colour {chosen}"));
+            // The colour it is lighting, beside the name of it. Under Auto
+            // Color the name says nothing at all - the switch takes the colour
+            // of what it carries - and this is that colour.
+            theme::led_dot(ui, view.lit);
             egui::ComboBox::from_id_salt(("switch-colour", view.switch))
-                .selected_text(RichText::new(showing).color(theme::ACCENT))
-                .width(130.0)
+                .selected_text(RichText::new(&showing).color(theme::ACCENT))
+                .width(120.0)
                 .show_ui(ui, |ui| {
                     for (n, name) in colours.iter().enumerate() {
                         ui.horizontal(|ui| {
-                            theme::category_swatch(ui, theme::led_swatch(name));
+                            theme::led_dot(ui, theme::led_swatch(name));
                             if ui.selectable_label(n as i64 == chosen, name).clicked() {
-                                edit = Some(AssignAction::Switch {
-                                    switch: view.switch,
-                                    edit: SwitchEdit::Colour((n > 0).then_some(n as i64)),
-                                });
+                                change = set(SwitchEdit::Colour((n > 0).then_some(n as i64)));
                             }
                         });
                     }
-                });
-        });
-    }
+                })
+                .response
+                .on_hover_text("the colour this switch lights up");
+        }
 
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Momentary").color(theme::DIM));
-        let mut momentary = view.momentary;
-        if ui
-            .add(theme::switch(&mut momentary))
-            .on_hover_text("on: holds while your foot is down. off: toggles")
-            .changed()
-        {
-            edit = Some(AssignAction::Switch {
-                switch: view.switch,
-                edit: SwitchEdit::Momentary(momentary),
-            });
+        dim(ui, "  Press");
+        // Two words rather than a toggle called "Momentary". A toggle says
+        // "momentary: on" and leaves you to work out what the other one is;
+        // this says both, and one of them is lit.
+        for (momentary, word, what) in [
+            (false, "Toggles", "press once for on, press again for off"),
+            (true, "Holds", "on only while your foot is down"),
+        ] {
+            if ui
+                .selectable_label(view.momentary == momentary, word)
+                .on_hover_text(what)
+                .clicked()
+                && view.momentary != momentary
+            {
+                change = set(SwitchEdit::Momentary(momentary));
+            }
         }
     });
-    // Nothing to clear when nothing was typed, and a Clear that does nothing is
-    // a button that lies.
-    if view.named
-        && ui
-            .add(egui::Button::new(RichText::new("Clear the name").small()).frame(false))
-            .clicked()
-    {
-        edit = Some(AssignAction::Switch {
-            switch: view.switch,
-            edit: SwitchEdit::Label(None),
-        });
-    }
-    edit
+    change
 }
 
 /// What the bypass control shows, beyond the menu every control shares.
@@ -7913,8 +8262,10 @@ struct BypassView {
     /// The colour the pedal lights the switch, or the block's own until it has
     /// said.
     lit: egui::Color32,
-    /// What drives it, in four characters, for the control's own name.
+    /// What drives it, in four characters, for the badge beside its name.
     driven: Option<String>,
+    /// The block's own colour, which is what its badges are painted in.
+    tint: egui::Color32,
     /// Whether a footswitch has it, which is what the switch graphic shows.
     on_a_switch: bool,
     /// Whether what drives it is an expression pedal, which does not switch the
@@ -7973,25 +8324,45 @@ fn bypass_cell(ui: &mut egui::Ui, cell: egui::Vec2, view: &BypassView) -> Option
                 ),
             );
             // The name is the way in to the assignment, exactly as it is for a
-            // knob, and it wears the same dot when something drives it.
-            let name = match &view.driven {
-                Some(what) => RichText::new(format!("• {what}")).color(theme::ACCENT),
-                None => RichText::new("On/Off").color(theme::DIM),
-            };
-            let label = ui
-                .add(egui::Label::new(name).sense(egui::Sense::click()))
-                .on_hover_text(match (view.menu.under, view.auto_engage) {
-                    // A wah does not wait to be switched on: it engages itself
-                    // the moment the pedal leaves its heel.
-                    (Some(source), true) => format!(
-                        "{} engages this on its own when you move it\nclick to change",
-                        source.label()
-                    ),
-                    (Some(source), false) => {
-                        format!("{} switches this\nclick to change", source.label())
-                    }
-                    (None, _) => "click to put this under a footswitch or a CC".to_owned(),
-                });
+            // knob. It stays "On/Off" whatever drives it: a control that
+            // renames itself to whatever is driving it has stopped saying what
+            // it is. What drives it is the badge beside it, the same badge the
+            // block wears in the chain.
+            let label = ui.add(
+                egui::Label::new(RichText::new("On/Off").color(match view.driven {
+                    Some(_) => theme::ACCENT,
+                    None => theme::DIM,
+                }))
+                .selectable(false)
+                .sense(egui::Sense::click()),
+            );
+            // Under the name rather than beside it: a control cell is as wide
+            // as a knob, and "On/Off MIDI" on one line runs out over its
+            // neighbours.
+            let tagged = view.driven.as_ref().map(|what| {
+                ui.add_space(1.0);
+                theme::tag(ui, what, view.tint)
+            });
+            let label = label.on_hover_text(match (view.menu.under, view.auto_engage) {
+                // A wah does not wait to be switched on: it engages itself
+                // the moment the pedal leaves its heel.
+                (Some(source), true) => format!(
+                    "{} engages this on its own when you move it\nclick to change",
+                    source.label()
+                ),
+                (Some(source), false) => {
+                    format!("{} switches this\nclick to change", source.label())
+                }
+                (None, _) => "click to put this under a footswitch or a CC".to_owned(),
+            });
+            // The badge is part of the control, not a decoration on it: a
+            // person aiming at what drives this is aiming at the badge.
+            if let Some(tagged) = tagged {
+                if tagged.clicked() {
+                    open = true;
+                }
+                parts.push(tagged);
+            }
             if label.clicked() {
                 open = true;
             }
@@ -8027,7 +8398,11 @@ struct Row {
     target: hx_proto::preset::Target,
     /// What is driven: a parameter's name, or On/Off.
     name: String,
-    source: String,
+    /// What drives it. Kept as the source rather than its name, because what
+    /// the two ends are *called* depends on it.
+    source: hx_proto::rpc::Source,
+    /// Which CC reaches it, when MIDI is what drives it.
+    cc: Option<i64>,
     min: f32,
     max: f32,
     /// The same two, read the way that parameter reads under the knobs.

@@ -20,11 +20,21 @@ use std::sync::mpsc::{channel, Receiver};
 use crate::update::VERSION;
 
 /// Where the tone browser lives. The docs are on `docs.` beside it.
-pub const SITE: &str = "https://tonepush.rocks";
+///
+/// `TONEPUSH_SITE` points it somewhere else, which is how the publishing side
+/// is exercised against a site running on this machine. Nothing in the app
+/// offers to change it: a person has one tone browser.
+pub fn site() -> String {
+    std::env::var("TONEPUSH_SITE").unwrap_or_else(|_| SITE.to_owned())
+}
+
+const SITE: &str = "https://tonepush.rocks";
 
 /// The read half of the site's API. It needs no credential: reading what has
 /// been published is public, and only publishing needs an account.
-const TONES: &str = "https://tonepush.rocks/api/v1/tones";
+fn tones() -> String {
+    format!("{}/api/v1/tones", site())
+}
 
 /// How many pages of tones to walk before stopping.
 ///
@@ -64,7 +74,7 @@ fn fetch() -> Option<BTreeSet<String>> {
     let mut found = BTreeSet::new();
     let mut asked = 0usize;
     for page in 1..=PAGES {
-        let body = ureq::get(format!("{TONES}?page={page}"))
+        let body = ureq::get(format!("{}?page={page}", tones()))
             .header("User-Agent", format!("TonePush/{VERSION}"))
             .header("Accept", "application/json")
             .call()
@@ -130,7 +140,7 @@ fn summary_hashes(tone: &serde_json::Value) -> Option<Vec<String>> {
 /// and each of those is a separate file with its own hash. All of them count:
 /// the question is whether *this* file is up there, not whether its name is.
 fn hashes_of(id: i64) -> Vec<String> {
-    let Ok(mut response) = ureq::get(format!("{TONES}/{id}"))
+    let Ok(mut response) = ureq::get(format!("{}/{id}", tones()))
         .header("User-Agent", format!("TonePush/{VERSION}"))
         .header("Accept", "application/json")
         .call()
@@ -170,7 +180,214 @@ fn file_hashes(details: &serde_json::Value) -> Vec<String> {
 
 /// Where a person goes to see a tone that is already up there.
 pub fn tone_url(hash: &str) -> String {
-    format!("{SITE}/tones?q={hash}")
+    format!("{}/tones?q={hash}", site())
+}
+
+/// Signing this computer in, and publishing once it is.
+///
+/// The site signs people in by mailing them a link, and that mail is as likely
+/// to be read on a phone as on the machine running this. So the editor cannot
+/// wait for a browser to come back to it the way a command-line tool does: it
+/// asks the site for a pairing, shows the code, and asks about that pairing
+/// until somebody approves it from wherever they happen to be.
+fn pairings() -> String {
+    format!("{}/api/v1/pairings", site())
+}
+
+/// A pairing in progress: what to show the person, and what to ask about.
+#[derive(Debug, Clone)]
+pub struct Pairing {
+    pub code: String,
+    /// The page that approves it. Opened for them, and worth showing in case
+    /// the browser that opened is not the one they are signed in to.
+    pub url: String,
+}
+
+/// How the pairing ended.
+pub enum Linked {
+    /// Signed in, with the credential and who it belongs to.
+    In { token: String, account: String },
+    /// Nobody approved it in time, or the site stopped answering.
+    GaveUp(String),
+}
+
+/// Ask the site to start a pairing.
+pub fn start_pairing() -> Result<Pairing, String> {
+    let mut response = ureq::post(pairings())
+        .header("User-Agent", agent())
+        .header("Accept", "application/json")
+        .send_empty()
+        .map_err(|e| format!("the tone browser did not answer: {e}"))?;
+    let body = read_json(&mut response)?;
+    let (Some(code), Some(url)) = (
+        body.get("code").and_then(|c| c.as_str()),
+        body.get("url").and_then(|u| u.as_str()),
+    ) else {
+        return Err("the tone browser did not offer a code".to_owned());
+    };
+    Ok(Pairing {
+        code: code.to_owned(),
+        url: url.to_owned(),
+    })
+}
+
+/// Ask about a pairing once. `Ok(None)` means nobody has approved it yet.
+pub fn poll_pairing(code: &str) -> Result<Option<Linked>, String> {
+    let mut response = ureq::get(format!("{}/{code}", pairings()))
+        .header("User-Agent", agent())
+        .header("Accept", "application/json")
+        .call()
+        .map_err(|e| format!("the tone browser stopped answering: {e}"))?;
+    let body = read_json(&mut response)?;
+    match body.get("state").and_then(|s| s.as_str()) {
+        Some("linked") => {
+            let token = body
+                .get("token")
+                .and_then(|t| t.as_str())
+                .ok_or("the tone browser said linked and sent no credential")?;
+            let account = body
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("your account");
+            Ok(Some(Linked::In {
+                token: token.to_owned(),
+                account: account.to_owned(),
+            }))
+        }
+        Some("pending") => Ok(None),
+        _ => Ok(Some(Linked::GaveUp(
+            "that code expired. Ask for a fresh one".to_owned(),
+        ))),
+    }
+}
+
+fn agent() -> String {
+    format!("TonePush {VERSION} ({})", std::env::consts::OS)
+}
+
+/// The site's answer, as JSON. Anything unreadable is reported as such rather
+/// than left to look like a refusal.
+fn read_json(response: &mut ureq::http::Response<ureq::Body>) -> Result<serde_json::Value, String> {
+    let text = response
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| format!("the tone browser answered nothing readable: {e}"))?;
+    serde_json::from_str(&text)
+        .map_err(|e| format!("the tone browser answered something unreadable: {e}"))
+}
+
+/// What the site is told about a tone being published.
+///
+/// The library already asks for all of this, which is the point: a row that has
+/// been filled in is a listing, and one that has not cannot be published until
+/// it is. Nothing here is invented on anybody's behalf.
+#[derive(Debug, Default)]
+pub struct Publishing {
+    pub name: String,
+    pub artist: String,
+    pub song: String,
+    pub part: String,
+    pub description: String,
+    pub creator_name: String,
+    /// The portable copy. Its hash is what the library matches against, so this
+    /// is the `.hlx` and never the pedal's own bytes.
+    pub hlx: Vec<u8>,
+    pub filename: String,
+}
+
+/// Put one tone on the site, with its file.
+pub fn publish(token: &str, tone: &Publishing) -> Result<String, String> {
+    let kind = if tone.song.is_empty() {
+        "original"
+    } else {
+        "song"
+    };
+    let mut form = Multipart::new();
+    form.field("creator_name", &tone.creator_name);
+    form.field("tone[name]", &tone.name);
+    form.field("tone[kind]", kind);
+    form.field("tone[artist_name]", &tone.artist);
+    form.field("tone[song]", &tone.song);
+    form.field("tone[part]", &tone.part);
+    form.field("tone[description]", &tone.description);
+    form.field("tone[device_name]", "HX Stomp");
+    form.file("tone[preset]", &tone.filename, &tone.hlx);
+
+    let mut response = ureq::post(tones())
+        .header("User-Agent", agent())
+        .header("Accept", "application/json")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", form.content_type())
+        .send(form.finish())
+        .map_err(|e| format!("the tone browser refused it: {e}"))?;
+    let body = read_json(&mut response)?;
+    if let Some(errors) = body.get("errors").and_then(|e| e.as_array()) {
+        let said: Vec<&str> = errors.iter().filter_map(|e| e.as_str()).collect();
+        return Err(said.join("; "));
+    }
+    Ok(body
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or(&tone.name)
+        .to_owned())
+}
+
+/// A multipart body, built by hand.
+///
+/// A file has to go up as multipart - that is what the site's form takes - and
+/// that is thirty lines of joining bytes together. A crate for it would be a
+/// dependency for thirty lines.
+struct Multipart {
+    boundary: String,
+    body: Vec<u8>,
+}
+
+impl Multipart {
+    fn new() -> Self {
+        // Unique enough: it only has to not appear in the parts, and the parts
+        // are a preset file and some short strings.
+        let boundary = format!(
+            "----TonePush{:x}",
+            std::process::id() as u64 * 2_654_435_761
+        );
+        Multipart {
+            boundary,
+            body: Vec::new(),
+        }
+    }
+
+    fn field(&mut self, name: &str, value: &str) {
+        self.body.extend_from_slice(
+            format!(
+                "--{}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n",
+                self.boundary
+            )
+            .as_bytes(),
+        );
+    }
+
+    fn file(&mut self, name: &str, filename: &str, bytes: &[u8]) {
+        self.body.extend_from_slice(
+            format!(
+                "--{}\r\nContent-Disposition: form-data; name=\"{name}\"; \
+                 filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n",
+                self.boundary
+            )
+            .as_bytes(),
+        );
+        self.body.extend_from_slice(bytes);
+        self.body.extend_from_slice(b"\r\n");
+    }
+
+    fn content_type(&self) -> String {
+        format!("multipart/form-data; boundary={}", self.boundary)
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        self.body
+            .extend_from_slice(format!("--{}--\r\n", self.boundary).as_bytes());
+        self.body
+    }
 }
 
 #[cfg(test)]

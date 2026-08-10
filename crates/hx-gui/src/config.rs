@@ -19,6 +19,33 @@ pub struct Favorite {
 pub struct Config {
     #[serde(default)]
     pub favorites: Vec<Favorite>,
+    /// The credential for publishing, got by pairing this computer with an
+    /// account. It is a session on the site like any other, so signing out
+    /// there ends it here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// Who that account is, for the editor to say so without asking the site
+    /// every time it starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+}
+
+impl Config {
+    /// Remember the account this computer is signed in as.
+    pub fn sign_in(&mut self, token: String, account: String) {
+        self.token = Some(token);
+        self.account = Some(account);
+        self.save();
+    }
+
+    /// Forget it. The session is still live on the site until it is revoked
+    /// there, which is the honest thing to say rather than pretending this
+    /// reaches across the network.
+    pub fn sign_out(&mut self) {
+        self.token = None;
+        self.account = None;
+        self.save();
+    }
 }
 
 /// `~/.config/tonepush/config.json`, mirroring where extracted resources
@@ -107,10 +134,31 @@ mod tests {
                     slot: 11,
                 },
             ],
+            ..Default::default()
         };
         let json = serde_json::to_string(&config).unwrap();
         let back: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(back.favorites, config.favorites);
+    }
+
+    /// A file written before there was an account still loads, and one written
+    /// while signed out does not carry empty fields for it.
+    #[test]
+    fn an_account_is_remembered_and_forgotten() {
+        let mut config = Config::default();
+        assert!(config.token.is_none());
+
+        config.token = Some("secret".to_owned());
+        config.account = Some("Carmine".to_owned());
+        let json = serde_json::to_string(&config).unwrap();
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.token.as_deref(), Some("secret"));
+        assert_eq!(back.account.as_deref(), Some("Carmine"));
+
+        config.token = None;
+        config.account = None;
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(!json.contains("token"), "{json}");
     }
 
     #[test]
