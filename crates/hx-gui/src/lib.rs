@@ -308,6 +308,7 @@ impl App {
     /// rewrites the whole `Style`, which is pure waste sixty times a second.
     pub fn new(ctx: &egui::Context, to_device: Sender<Cmd>, from_device: Receiver<Evt>) -> Self {
         theme::fonts(ctx);
+        theme::register_icons(ctx);
         theme::apply(ctx);
         let mut app = App {
             to_device,
@@ -1534,7 +1535,8 @@ impl App {
     /// wants the readable form.
     fn keep_document(&mut self, name: &str, blob: &[u8]) {
         match library::keep_bytes(&sanitise(name), "hxpreset", blob) {
-            Ok(_) => {
+            Ok(path) => {
+                Self::remember_name(&path, name);
                 self.refresh_library();
                 self.note(format!("kept {name} in the library"));
             }
@@ -1557,14 +1559,17 @@ impl App {
                 continue;
             };
             match library::keep_bytes(&sanitise(&name), "hxpreset", &bytes) {
-                Ok(path) => kept.push(library::Slot {
-                    file: path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or_default()
-                        .to_owned(),
-                    name,
-                }),
+                Ok(path) => {
+                    Self::remember_name(&path, &name);
+                    kept.push(library::Slot {
+                        file: path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or_default()
+                            .to_owned(),
+                        name,
+                    });
+                }
                 Err(_) => {
                     failures += 1;
                     kept.push(library::Slot::default());
@@ -1591,6 +1596,22 @@ impl App {
                     .position(|(_, s)| s.name == setlist.name);
             }
             Err(why) => self.note(why),
+        }
+    }
+
+    /// Record a kept tone's real name in the index.
+    ///
+    /// A file name cannot hold a colon on every platform, so the name the pedal
+    /// shows and the name on disk are not the same string. The library shows
+    /// the pedal's.
+    fn remember_name(path: &std::path::Path, name: &str) {
+        let Some(file) = path.file_name().and_then(|n| n.to_str()) else {
+            return;
+        };
+        let mut meta = library::metadata().get(file).cloned().unwrap_or_default();
+        if meta.name != name {
+            meta.name = name.to_owned();
+            let _ = library::save_meta(file, &meta);
         }
     }
 
@@ -1645,7 +1666,11 @@ impl App {
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
                 .to_owned();
-            let (name, line) = self.library_facts(&file);
+            let (derived, line) = self.library_facts(&file);
+            // The recorded name wins: it is what the pedal shows, colon and
+            // all, where the file name has had those characters taken out.
+            let saved = meta.get(&file_name).map(|m| m.name.clone()).unwrap_or_default();
+            let name = if saved.is_empty() { derived } else { saved };
             let meta = meta.get(&file_name).cloned().unwrap_or_default();
             entries.push(LibEntry {
                 file,
@@ -5365,12 +5390,15 @@ fn model_picker(
             }
             let colour = theme::category_colour(category.colour);
             let on = !searching && category.id == showing;
-            let icon = catalog.category_artwork(category).map(|(path, frames)| {
-                let uri = format!("file://{}", path.display());
-                match frames {
-                    0 | 1 => theme::Art::whole(uri),
-                    n => theme::Art::strip(uri, 0, n),
-                }
+            // Ours first, HX Edit's only where we have not drawn one.
+            let icon = theme::category_icon(&category.name).or_else(|| {
+                catalog.category_artwork(category).map(|(path, frames)| {
+                    let uri = format!("file://{}", path.display());
+                    match frames {
+                        0 | 1 => theme::Art::whole(uri),
+                        n => theme::Art::strip(uri, 0, n),
+                    }
+                })
             });
             if theme::category_chip(ui, &category.name, icon.as_ref(), colour, on).clicked() {
                 *browsing = Some(category.id);
@@ -5625,7 +5653,11 @@ fn sanitise(name: &str) -> String {
         .trim()
         .chars()
         .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' {
+            // Spaces are fine in a file name on every platform this runs on;
+            // a colon is not, on two of them. Replacing everything that was
+            // not alphanumeric turned "CT-Day CLN" into "CT-Day_CLN" and then
+            // showed that back as the tone's name.
+            if c.is_alphanumeric() || " -_.()&+'".contains(c) {
                 c
             } else {
                 '_'
@@ -6199,7 +6231,12 @@ mod tests {
 
     #[test]
     fn a_preset_name_becomes_a_usable_filename() {
-        assert_eq!(sanitise("Brit / Clean"), "Brit___Clean");
+        // A space is legal in a file name everywhere this runs, and taking it
+        // out made the library show "CT-Day_CLN" for a preset the pedal calls
+        // "CT-Day CLN". Only what a filesystem actually objects to is replaced.
+        assert_eq!(sanitise("CT-Day CLN"), "CT-Day CLN");
+        assert_eq!(sanitise("DIR:USDoubleNrm"), "DIR_USDoubleNrm");
+        assert_eq!(sanitise("Brit / Clean"), "Brit _ Clean");
         assert_eq!(sanitise("  "), "preset");
         assert_eq!(sanitise("03A"), "03A");
     }

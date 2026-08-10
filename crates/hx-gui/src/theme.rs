@@ -109,6 +109,63 @@ pub fn apply(ctx: &egui::Context) {
 /// The artwork is what makes a chain readable at a glance — the same reason HX
 /// Edit draws it. Models without a picture fall back to the name alone rather
 /// than leaving a hole.
+/// Our own category icons: the category's name, and the SVG drawn for it.
+///
+/// Bundled rather than read off disk. Names and knob ranges have no substitute
+/// but HX Edit's own data; an icon is art we can simply make, so it is one less
+/// thing borrowed — and it is there whether or not HX Edit is installed.
+macro_rules! category_icons {
+    ($($name:literal => $file:literal),* $(,)?) => {
+        &[$((
+            $name,
+            concat!("bytes://category-", $file, ".svg"),
+            include_bytes!(concat!("../assets/icons/", $file, ".svg")).as_slice(),
+        )),*]
+    };
+}
+
+const CATEGORY_ICONS: &[(&str, &str, &[u8])] = category_icons! {
+    "Distortion" => "distortion",
+    "Dynamics" => "dynamics",
+    "EQ" => "eq",
+    "Modulation" => "modulation",
+    "Delay" => "delay",
+    "Reverb" => "reverb",
+    "Pitch/Synth" => "pitch-synth",
+    "Filter" => "filter",
+    "Wah" => "wah",
+    "Amp+Cab" => "amp-cab",
+    "Amp" => "amp",
+    "Preamp" => "preamp",
+    "Cab" => "cab",
+    "IR" => "ir",
+    "Volume/Pan" => "volume-pan",
+    "Send/Return" => "send-return",
+    "Looper" => "looper",
+    "Input" => "input",
+    "Output" => "output",
+    "Split" => "split",
+    "Merge" => "merge",
+    "Connected Devices" => "connected-devices",
+};
+
+/// Hand the icons to egui's loaders, once, so they can be drawn by URI like any
+/// other image.
+pub fn register_icons(ctx: &egui::Context) {
+    for (_, uri, bytes) in CATEGORY_ICONS {
+        ctx.include_bytes(*uri, *bytes);
+    }
+}
+
+/// The icon we have drawn for a category, if we have drawn one. A category we
+/// have not falls back to HX Edit's own.
+pub fn category_icon(name: &str) -> Option<Art> {
+    CATEGORY_ICONS
+        .iter()
+        .find(|(label, _, _)| *label == name)
+        .map(|(_, uri, _)| Art::whole((*uri).to_owned()))
+}
+
 /// A colour written as the three bytes it is.
 pub fn rgb((r, g, b): (u8, u8, u8)) -> Color32 {
     Color32::from_rgb(r, g, b)

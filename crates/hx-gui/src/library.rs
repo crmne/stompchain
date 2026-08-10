@@ -123,6 +123,12 @@ pub fn remove(path: &Path) -> Result<(), String> {
 /// stored here, so it can never drift from the file.
 #[derive(serde::Serialize, serde::Deserialize, Default, Clone, PartialEq)]
 pub struct Meta {
+    /// The tone's name as the pedal shows it - "DIR:USDoubleNrm", colon and
+    /// all. A file name cannot hold every character a preset name can, so the
+    /// name is kept here rather than read back off the file, which is what
+    /// made the library show "DIR_USDoubleNrm".
+    #[serde(default)]
+    pub name: String,
     pub description: String,
     pub tags: Vec<String>,
     pub character: String,          // clean / drive / hi-gain / fuzz / other
