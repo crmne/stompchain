@@ -370,8 +370,16 @@ jobs:
         run: |
           cd dist
           sha256sum * > checksums.txt
+      - name: The version, without the tag's v
+        id: version
+        run: echo "number=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - uses: softprops/action-gh-release@v2
         with:
+          # Named rather than left to default to the tag, so the releases page
+          # reads as a list of versions of a program rather than a list of tags.
+          # Every earlier release is titled this way.
+          name: TonePush ${{ steps.version.outputs.number }}
           files: dist/*
           generate_release_notes: true
           draft: false
