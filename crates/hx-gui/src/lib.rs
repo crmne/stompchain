@@ -1522,15 +1522,16 @@ impl App {
                 // looking somewhere else for something that belongs here.
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("PRESETS").small().color(theme::DIM));
-                    let mark = if self.show_favorites_only { "★" } else { "☆" };
-                    let color = if self.show_favorites_only {
-                        theme::ACCENT
+                    // The same drawn star as the rows use. As a small text
+                    // glyph it sat on its own baseline, a few pixels above the
+                    // word beside it.
+                    let (mark, colour) = if self.show_favorites_only {
+                        (theme::Icon::StarOn, theme::ACCENT)
                     } else {
-                        theme::DIM
+                        (theme::Icon::Star, theme::DIM)
                     };
-                    if ui
-                        .add(egui::Button::new(RichText::new(mark).small().color(color)).frame(false))
-                        .on_hover_text("Show favorites only")
+                    if theme::small_icon_button(ui, mark, Some(colour))
+                        .on_hover_text("Show favourites only")
                         .clicked()
                     {
                         self.show_favorites_only = !self.show_favorites_only;
