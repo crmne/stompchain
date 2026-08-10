@@ -214,6 +214,104 @@ jobs:
           path: dist/*.tar.xz
           if-no-files-found: error
 
+  # The Ruby extension is compiled on the installing machine against these two
+  # crates, so they have to exist on crates.io before the gem is any use to
+  # anybody. hx-proto goes first because hx-catalog depends on it and cargo
+  # verifies the package against the real index, not the working tree.
+  crates:
+    name: crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          for crate in hx-proto hx-catalog; do
+            # A re-run of a release must not fail on what it already did.
+            if curl -sSf "https://crates.io/api/v1/crates/${crate}" \
+               | grep -q "\"num\":\"${version}\""; then
+              echo "${crate} ${version} is already published"
+              continue
+            fi
+            # --no-verify would skip building the package; it is left on so a
+            # crate that cannot compile from its own published sources fails
+            # here rather than on somebody's machine.
+            cargo publish -p "$crate"
+          done
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  gem:
+    name: RubyGems
+    needs: [crates]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        working-directory: crates/hx-ruby
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Check whether this version needs publishing
+        id: check
+        run: |
+          set -euo pipefail
+          version="$(ruby -Ilib -rhx_ruby/version -e 'puts HxRuby::VERSION')"
+          echo "Local version: $version"
+          published="$(gem list ^hx_ruby$ -r --all 2>/dev/null \
+            | sed -n 's/.*(\(.*\)).*/\1/p' | tr ',' '\n' \
+            | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep . | sort -u || true)"
+          if echo "$published" | grep -Fxq "$version"; then
+            echo "already published"
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The gem ships sources, so this proves the extension still compiles from
+      # exactly what is in the package before the package is pushed anywhere.
+      - name: Build and smoke-test the gem
+        if: steps.check.outputs.needed == 'true'
+        run: |
+          set -euo pipefail
+          gem build hx_ruby.gemspec
+          gem install ./hx_ruby-*.gem
+          ruby -rhx_ruby -e 'puts "hx_ruby #{HxRuby::VERSION} loaded"'
+
+      - name: Publish to GitHub Packages
+        if: steps.check.outputs.needed == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.gem"
+          touch "$HOME/.gem/credentials"
+          chmod 0600 "$HOME/.gem/credentials"
+          printf -- "---\n:github: %s\n" "$GEM_HOST_API_KEY" > "$HOME/.gem/credentials"
+          gem push --KEY github \
+            --host "https://rubygems.pkg.github.com/${OWNER}" hx_ruby-*.gem
+        env:
+          GEM_HOST_API_KEY: "Bearer ${{ secrets.GITHUB_TOKEN }}"
+          OWNER: ${{ github.repository_owner }}
+
+      - name: Publish to RubyGems
+        if: steps.check.outputs.needed == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.gem"
+          touch "$HOME/.gem/credentials"
+          chmod 0600 "$HOME/.gem/credentials"
+          printf -- "---\n:rubygems_api_key: %s\n" "$GEM_HOST_API_KEY" > "$HOME/.gem/credentials"
+          gem push hx_ruby-*.gem
+        env:
+          GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_AUTH_TOKEN }}
+
   release:
     needs: [build, macos, vendor]
     runs-on: ubuntu-latest

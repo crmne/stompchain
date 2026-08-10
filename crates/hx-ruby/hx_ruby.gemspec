@@ -14,16 +14,18 @@ Gem::Specification.new do |spec|
     .hlx files with the same Rust code the desktop uses instead of
     reimplementing parsing in Ruby.
   DESC
-  spec.homepage = "https://github.com/crmne/tonepush"
+  spec.homepage = "https://docs.tonepush.rocks"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.1.0"
 
   spec.metadata["homepage_uri"] = spec.homepage
-  spec.metadata["source_code_uri"] = spec.homepage
+  spec.metadata["source_code_uri"] = "https://github.com/crmne/tonepush"
+  spec.metadata["changelog_uri"] = "https://github.com/crmne/tonepush/releases"
   spec.metadata["rubygems_mfa_required"] = "true"
 
-  # The sibling crates this extension depends on live in the Cargo workspace, so
-  # this gem is meant to be consumed by path, not built and pushed on its own.
+  # Sources only. The extension is compiled on the installing machine, which
+  # needs a Rust toolchain; the crates it builds against come from crates.io,
+  # which is why ext/hx_ruby/Cargo.toml names them by version and not by path.
   spec.files = Dir[
     "lib/**/*.rb",
     "ext/hx_ruby/extconf.rb",

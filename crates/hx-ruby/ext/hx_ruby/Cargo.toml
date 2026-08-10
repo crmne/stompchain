@@ -18,7 +18,14 @@ crate-type = ["cdylib"]
 # reimplementation. hx-proto is the preset model those facts ultimately describe
 # and is kept as a direct dependency so this binding can surface its types
 # without a manifest change.
-hx-catalog.workspace = true
-hx-proto.workspace = true
+#
+# Named by version and not by path, unlike every other crate here, because this
+# manifest is the one that leaves the repository: `gem build` copies it verbatim
+# into the gem, and it is then compiled on a machine that has no workspace and
+# no sibling crates. A path would point at nothing there. The workspace root
+# patches both back to the local sources, so building here still compiles what
+# is checked out rather than what was last published.
+hx-catalog = "0.3.0"
+hx-proto = "0.3.0"
 magnus = "0.8"
 serde_json = "1"

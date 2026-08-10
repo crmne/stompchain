@@ -10,17 +10,27 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/crmne/tonepush"
 rust-version = "1.87"
 
 [workspace.dependencies]
-hx-proto = { path = "crates/hx-proto", version = "0.2.0" }
-hx-usb = { path = "crates/hx-usb", version = "0.2.0" }
-hx-catalog = { path = "crates/hx-catalog", version = "0.2.0" }
+hx-proto = { path = "crates/hx-proto", version = "0.3.0" }
+hx-usb = { path = "crates/hx-usb", version = "0.3.0" }
+hx-catalog = { path = "crates/hx-catalog", version = "0.3.0" }
 nusb = "0.2"
 anyhow = "1"
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
+
+# The Ruby extension names hx-catalog and hx-proto by version rather than by
+# path, because its manifest is copied into the gem and compiled where no
+# sibling crate exists. That would otherwise mean building this workspace
+# against the last published crates instead of the working tree. Patching them
+# back to the local sources keeps `cargo build` here meaning what it has always
+# meant, while the gem still resolves them from crates.io.
+[patch.crates-io]
+hx-proto = { path = "crates/hx-proto" }
+hx-catalog = { path = "crates/hx-catalog" }

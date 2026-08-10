@@ -34,6 +34,49 @@ jobs:
         if: runner.os == 'Windows'
         run: cargo test --workspace --exclude hx-ruby
 
+  # `cargo test --workspace` compiles the extension, which says nothing about
+  # whether the *gem* is still shippable: the package carries only the files the
+  # gemspec lists, and its Cargo.toml has to resolve with no workspace around
+  # it. Building and loading it here is what catches a manifest that only works
+  # in this checkout.
+  gem:
+    name: gem
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/hx-ruby
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: No path dependencies escape into the package
+        run: |
+          set -euo pipefail
+          if grep -q 'path *=' ext/hx_ruby/Cargo.toml; then
+            echo "ext/hx_ruby/Cargo.toml has a path dependency; it would not" >&2
+            echo "resolve once the gem is unpacked somewhere else." >&2
+            exit 1
+          fi
+      - name: The gem's version matches the workspace's
+        run: |
+          set -euo pipefail
+          gem_version="$(ruby -Ilib -rhx_ruby/version -e 'puts HxRuby::VERSION')"
+          crate_version="$(sed -n 's/^version = "\(.*\)"/\1/p' ../../Cargo.toml | head -1)"
+          [ "$gem_version" = "$crate_version" ] || {
+            echo "gem is $gem_version, workspace is $crate_version" >&2
+            exit 1
+          }
+      # Only that the package builds. Installing it would compile against the
+      # crates.io copies of hx-catalog and hx-proto, which for the version being
+      # developed do not exist until that version is released - so the real
+      # standalone install is done by the release workflow, before it pushes,
+      # which is the earliest moment it can mean anything.
+      - name: Build the package
+        run: gem build hx_ruby.gemspec
+
   lint:
     runs-on: ubuntu-latest
     steps:

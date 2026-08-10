@@ -13,6 +13,9 @@ set -euo pipefail
 
 APP_NAME="TonePush"
 APP_SLUG="tonepush"
+# Read from the workspace rather than written down here, because a version kept
+# in two places is a version that disagrees with itself the release after next.
+VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 BIN_DIRS=("$HOME/.local/bin" "/usr/local/bin" "$HOME/bin")
 MAC_APPS="$HOME/Applications"
 LINUX_APPS="$HOME/.local/share/applications"
@@ -74,7 +77,7 @@ make_app_bundle() {
     <key>CFBundleIdentifier</key><string>rocks.tonepush.editor</string>
     <key>CFBundleExecutable</key><string>$APP_SLUG</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.2.1</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>
