@@ -650,13 +650,27 @@ impl App {
             Kind::Output => "Output".into(),
             Kind::Split => named("Split"),
             Kind::Join => named("Join"),
-            // An Amp+Cab is one block holding two models, and showing only the
-            // amp's name made it look like a bare amp - the difference between
-            // a rig you can plug into a desk and one that still needs a
-            // speaker. The cab rides along, so the name says so.
-            _ if block.paired.is_some() => format!("{} + Cab", self.model_name(block.model)),
             _ => self.model_name(block.model),
         }
+    }
+
+    /// The category a block belongs to, for the line under its name.
+    ///
+    /// Endpoints have none worth showing - "Input" already says what an input
+    /// is. A paired block says Amp+Cab, which is how the name gets to stay the
+    /// amp's own rather than growing a "+ Cab" that pushes it off the tile.
+    fn block_category(&self, block: &session::Block) -> Option<String> {
+        use hx_proto::preset::Kind;
+        if matches!(block.kind, Kind::Input | Kind::Output) {
+            return None;
+        }
+        if block.paired.is_some() {
+            return Some("Amp+Cab".to_owned());
+        }
+        let catalog = self.catalog.as_ref()?;
+        let model = catalog.model_number(block.model)?;
+        let id = catalog.category_of(&model.id)?;
+        Some(catalog.category(id)?.name.clone())
     }
 
     /// Only effects can have their model swapped from the browser.
@@ -1710,7 +1724,7 @@ impl App {
                 })
         };
         match tone {
-            Some(t) => (t.name.clone(), Self::tone_line(&t)),
+            Some(t) => (t.name.clone(), Self::tone_content(&t).to_owned()),
             None => (stem, String::new()),
         }
     }
@@ -3259,19 +3273,31 @@ impl App {
         }
     }
 
-    /// What a tone is, in one line: its makeup and what to play it through.
-    fn tone_line(tone: &hx_catalog::Tone) -> String {
-        let content = match tone.chain_content {
+    /// What a tone is made of, in two or three words.
+    ///
+    /// Short because it is a column. The sentence it used to be - "Full rig,
+    /// for FRFR or a PA" - said the same thing at four times the width, and a
+    /// hundred rows of it read as one grey block.
+    fn tone_content(tone: &hx_catalog::Tone) -> &'static str {
+        match tone.chain_content {
             hx_catalog::ChainContent::FullRig => "Full rig",
             hx_catalog::ChainContent::AmpAndCab => "Amp and cab",
             hx_catalog::ChainContent::AmpOnly => "Amp, no cab",
             hx_catalog::ChainContent::EffectsOnly => "Effects only",
-        };
-        let output = match tone.output_target_guess {
-            hx_catalog::OutputTarget::FrfrPa => "for FRFR or a PA",
-            hx_catalog::OutputTarget::GuitarCabOrDi => "for a real cab or the front of an amp",
-        };
-        format!("{content}, {output}")
+        }
+    }
+
+    /// What to play it through, equally short.
+    fn tone_output(tone: &hx_catalog::Tone) -> &'static str {
+        match tone.output_target_guess {
+            hx_catalog::OutputTarget::FrfrPa => "FRFR or PA",
+            hx_catalog::OutputTarget::GuitarCabOrDi => "Real cab",
+        }
+    }
+
+    /// Both together, for the one place with room for a sentence.
+    fn tone_line(tone: &hx_catalog::Tone) -> String {
+        format!("{}, {}", Self::tone_content(tone), Self::tone_output(tone))
     }
 
     /// Read a .hlx and show what it is, without touching the device.
@@ -4072,6 +4098,7 @@ impl App {
         let hit = theme::block_button_tinted(
             ui,
             &self.slot_label(&block),
+            self.block_category(&block).as_deref(),
             art.as_ref(),
             i == self.selected,
             block.enabled,
@@ -4147,6 +4174,7 @@ impl App {
         let hit = theme::block_button_tinted(
             ui,
             &self.slot_label(&block),
+            self.block_category(&block).as_deref(),
             art.as_ref(),
             i == self.selected,
             block.enabled,

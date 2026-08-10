@@ -189,6 +189,7 @@ pub fn category_colour(rgb: u32) -> Color32 {
 pub fn block_button_tinted(
     ui: &mut Ui,
     name: &str,
+    category: Option<&str>,
     artwork: Option<&Art>,
     selected: bool,
     enabled: bool,
@@ -239,13 +240,28 @@ pub fn block_button_tinted(
 
         // Model names routinely exceed the tile, so they are truncated with an
         // ellipsis; the full name is on the hover tooltip.
+        //
+        // The category goes underneath rather than into the name. An Amp+Cab
+        // block holds two models and saying so in the name - "Cali Rectifire +
+        // Cab" - only pushed the name itself off the tile. HX Edit puts the
+        // category here for the same reason.
+        let name_y = if category.is_some() { 20.0 } else { 11.0 };
         ui.painter().text(
-            rect.center_bottom() - Vec2::new(0.0, 11.0),
+            rect.center_bottom() - Vec2::new(0.0, name_y),
             egui::Align2::CENTER_CENTER,
             elide(name, 15),
             egui::FontId::proportional(11.0),
             text_colour,
         );
+        if let Some(category) = category {
+            ui.painter().text(
+                rect.center_bottom() - Vec2::new(0.0, 8.0),
+                egui::Align2::CENTER_CENTER,
+                elide(category, 16),
+                egui::FontId::proportional(9.0),
+                if enabled { DIM } else { DIM.gamma_multiply(0.6) },
+            );
+        }
     }
 
     response.on_hover_text(name)
