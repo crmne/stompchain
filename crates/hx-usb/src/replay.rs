@@ -24,6 +24,11 @@ pub enum Dir {
     In,
 }
 
+/// Bytes as the transcript writes them, for putting two side by side.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// A recorded conversation: every transfer, in order.
 #[derive(Clone, Default)]
 pub struct Transcript(pub Vec<(Dir, Vec<u8>)>);
@@ -117,19 +122,29 @@ impl Wire for RecordingWire {
 /// idle endpoint does (an empty transfer), so a drain loop ends cleanly.
 pub struct ReplayWire {
     transfers: VecDeque<(Dir, Vec<u8>)>,
+    drifted: Arc<Mutex<Vec<String>>>,
 }
 
 impl ReplayWire {
     pub fn new(transcript: Transcript) -> ReplayWire {
         ReplayWire {
             transfers: transcript.0.into(),
+            drifted: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
-    /// Whether every recorded transfer was consumed - a replay that ends with
-    /// leftovers ran a shorter conversation than was recorded.
-    pub fn is_drained(&self) -> bool {
-        self.transfers.iter().all(|(dir, _)| *dir != Dir::Out)
+    /// Every request whose bytes no longer match what was recorded.
+    ///
+    /// Returning the error from `send` is not enough on its own to fail a
+    /// replay. The commands being exercised are write commands, and a caller
+    /// checking that a *write* still encodes the same has no use for its
+    /// result - so they are called as `let _ = …`, and the error went nowhere.
+    /// The whole point of the fixture is that an encoding change fails offline
+    /// as a diff, and for a while it did not: a corrected assign message
+    /// changed recorded bytes and the suite stayed green. This is the record a
+    /// test can assert on.
+    pub fn drifted(&self) -> Arc<Mutex<Vec<String>>> {
+        self.drifted.clone()
     }
 }
 
@@ -137,12 +152,18 @@ impl Wire for ReplayWire {
     fn send(&mut self, bytes: &[u8]) -> Result<()> {
         match self.transfers.pop_front() {
             Some((Dir::Out, expected)) if expected == bytes => Ok(()),
-            Some((Dir::Out, expected)) => Err(Error::Protocol(format!(
-                "replay: a request no longer matches what was recorded \
-                 (sent {} bytes, recorded {})",
-                bytes.len(),
-                expected.len()
-            ))),
+            Some((Dir::Out, expected)) => {
+                // Recorded as well as returned, because the caller of a write
+                // command has no reason to look at its result and so never
+                // sees this.
+                let complaint = format!(
+                    "a request no longer matches what was recorded\n     sent {}\n     was  {}",
+                    hex(bytes),
+                    hex(&expected)
+                );
+                self.drifted.lock().unwrap().push(complaint.clone());
+                Err(Error::Protocol(format!("replay: {complaint}")))
+            }
             Some((Dir::In, _)) => Err(Error::Protocol(
                 "replay: the client sent where the device was recorded speaking".into(),
             )),

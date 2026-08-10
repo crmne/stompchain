@@ -62,8 +62,14 @@ enum Cmd {
     /// Send an impulse response to a slot (1-based), from a mono WAV.
     ///
     IrLoad { slot: i64, file: std::path::PathBuf },
-    /// Assign a MIDI CC to a block's bypass, by position as in `stompchain chain`.
-    Assign { block: i64, cc: i64 },
+    /// Put a block's bypass under MIDI, or take it off, by position as in
+    /// `stompchain chain`. The pedal picks the CC number; no captured message
+    /// sets it.
+    Assign {
+        block: i64,
+        #[arg(long)]
+        off: bool,
+    },
     /// Set the tempo of the loaded preset, in BPM.
     Tempo { bpm: f32 },
     /// Rename a snapshot (1-based).
@@ -224,6 +230,40 @@ enum Cmd {
     },
     /// Fetch an object by numeric id.
     Fetch { id: i64 },
+    /// Every controller assignment in the loaded preset, from its document.
+    Controllers,
+    /// What controls each of a block's parameters. Reads only.
+    Assignments { block: i64, count: i64 },
+    /// Put a parameter under a controller, by source ordinal. Edit buffer only.
+    AssignParam { block: i64, param: i64, source: i64 },
+    /// The raw reply behind one parameter's assignment. Reads only.
+    AssignmentRaw { block: i64, param: i64 },
+    /// Move one end of a controller's travel. Edit buffer only.
+    AssignRange { block: i64, param: i64, value: f32, #[arg(long)] max: bool },
+    /// Read a footswitch's configuration, for protocol work. Reads only.
+    Switch { switch: u8 },
+    /// Put a block's bypass on a footswitch, or take it off. Edit buffer only.
+    SwitchAssign {
+        block: i64,
+        switch: u8,
+        #[arg(long)]
+        off: bool,
+    },
+    /// Change a footswitch itself: what it is called, what colour it lights,
+    /// whether it holds or toggles. Edit buffer only.
+    ///
+    /// `--name ""` clears the name; `--colour 0` puts the LED back to Auto
+    /// Color. The colour is an index into HX Edit's own list, which starts
+    /// Auto Color, White, Red.
+    SwitchSet {
+        switch: u8,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        colour: Option<i64>,
+        #[arg(long)]
+        momentary: Option<bool>,
+    },
     /// Watch notifications the device pushes as you use the front panel.
     Watch,
     /// Decode a capture from `tools/hxsniff` without touching hardware.
@@ -321,9 +361,10 @@ fn on_device(cmd: Cmd) -> Result<()> {
         Cmd::Move { from, to } => move_block(s, from, to),
         Cmd::Snapshot { number } => snapshot(s, number),
         Cmd::IrLoad { slot, file } => load_ir(s, slot, &file),
-        Cmd::Assign { block, cc } => {
-            s.assign_bypass_cc(block - 1, cc)?;
-            println!("block {block} bypass follows CC{cc}");
+        Cmd::Assign { block, off } => {
+            s.assign_bypass_midi(block - 1, !off)?;
+            let what = if off { "no longer follows" } else { "follows" };
+            println!("block {block} bypass {what} MIDI");
             Ok(())
         }
         Cmd::Tempo { bpm } => {
@@ -470,6 +511,70 @@ fn on_device(cmd: Cmd) -> Result<()> {
         Cmd::Restore { file } => restore(s, &file),
         Cmd::BundleToPresets { file, output } => bundle_to_presets(s, &file, &output),
         Cmd::Fetch { id } => fetch(s, id),
+        Cmd::Controllers => {
+            let preset = s.read_preset()?;
+            for a in preset.assignments() {
+                println!(
+                    "block {} {:?}  {}  {:.0}%..{:.0}%",
+                    a.block,
+                    a.target,
+                    a.source.label(),
+                    a.min * 100.0,
+                    a.max * 100.0
+                );
+            }
+            Ok(())
+        }
+        Cmd::Assignments { block, count } => {
+            for param in 0..count {
+                match s.read_assignment(block, param)? {
+                    Some(a) => println!("{param}: {}", a.source.label()),
+                    None => println!("{param}: -"),
+                }
+            }
+            Ok(())
+        }
+        Cmd::AssignmentRaw { block, param } => {
+            println!("{:#?}", s.read_assignment_raw(block, param)?);
+            Ok(())
+        }
+        Cmd::AssignRange { block, param, value, max } => {
+            s.set_assign_range(block, param, value, max)?;
+            Ok(())
+        }
+        Cmd::AssignParam { block, param, source } => {
+            let source = hx_proto::rpc::Source::from_ordinal(source);
+            s.assign_parameter(block, param, source)?;
+            Ok(())
+        }
+        Cmd::Switch { switch } => {
+            println!("{:#?}", s.read_switch(switch)?);
+            Ok(())
+        }
+        Cmd::SwitchSet { switch, name, colour, momentary } => {
+            if let Some(name) = name {
+                // An empty name is not a name; it clears back to what the
+                // switch carries, which is what opcode 60 is for.
+                let name = name.trim();
+                s.set_switch_label(switch, (!name.is_empty()).then_some(name))?;
+            }
+            if let Some(colour) = colour {
+                s.set_switch_colour(switch, (colour > 0).then_some(colour))?;
+            }
+            if let Some(momentary) = momentary {
+                s.set_switch_momentary(switch, momentary)?;
+            }
+            println!("{:#?}", s.read_switch(switch)?);
+            Ok(())
+        }
+        Cmd::SwitchAssign { block, switch, off } => {
+            if off {
+                s.unassign_bypass_footswitch(block, switch)?;
+            } else {
+                s.assign_bypass_footswitch(block, switch)?;
+            }
+            Ok(())
+        }
         Cmd::Watch => watch(s),
 
         Cmd::List => list_devices(),
@@ -1080,9 +1185,18 @@ fn show_chain(session: &mut hx_usb::Session) -> Result<()> {
 }
 
 fn load_plan(file: &std::path::Path) -> Result<hlx::Plan> {
+    load_plan_for(file, None)
+}
+
+/// The same, against the chain the file is going onto, so a block on a branch
+/// lands on that branch rather than on the main line.
+fn load_plan_for(
+    file: &std::path::Path,
+    layout: Option<&hx_proto::preset::Layout>,
+) -> Result<hlx::Plan> {
     let catalog = hx_catalog::Catalog::load()
         .context("reading an .hlx needs HX Edit's catalog to translate model names")?;
-    hlx::read(file, &catalog)
+    hlx::read_for(file, &catalog, layout)
 }
 
 /// Read an .hlx and say what the tone is, touching no hardware.
@@ -1322,7 +1436,10 @@ fn show_import(file: &std::path::Path) -> Result<()> {
 
 fn apply_import(session: &mut hx_usb::Session, file: &std::path::Path) -> Result<()> {
     use hx_proto::msgpack::Value;
-    let plan = load_plan(file)?;
+    // Read the chain first: a `.hlx` gives a block's place along its branch's
+    // row, and only the target's own layout says which slot that is.
+    let layout = session.read_preset().ok().map(|p| p.layout());
+    let plan = load_plan_for(file, layout.as_ref())?;
 
     for step in &plan.steps {
         match step {

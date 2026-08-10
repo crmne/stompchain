@@ -145,24 +145,40 @@ pub fn slots_from_hlx(preset: &mut Preset, document: &Json, catalog: &Catalog) -
         let mut free = run.iter().copied();
         for (_, block_key) in named {
             let Some(node) = dsp.get(&block_key) else { continue };
-            // A file that records where a block sat is put back there; one that
-            // does not - HX Edit's own - packs from the front, which is what
-            // dense numbering means.
+            // Where the block sat, said one of two ways. `@slot` is ours and is
+            // the device's own index. `@path` and `@position` are HX Edit's:
+            // the branch, and the place along that branch's row, which is not
+            // the slot the moment a chain splits. A file with neither packs
+            // from the front, which is all a dense numbering can mean.
             let recorded = node
                 .get("@slot")
                 .and_then(Json::as_u64)
                 .map(|n| n as usize)
+                .or_else(|| {
+                    let branch = node.get("@path").and_then(Json::as_u64).unwrap_or(0);
+                    let position = node.get("@position").and_then(Json::as_u64)?;
+                    layout.slot_of(dsp_index, branch as usize, position as usize)
+                })
                 .filter(|n| run.contains(n));
             let Some(position) = recorded.or_else(|| free.next()) else {
                 skipped.push(format!("{block_key}: the chain has no room left"));
                 continue;
             };
-            let cab = recorded.and_then(|slot| {
-                cab_nodes
-                    .iter()
-                    .filter_map(|(_, key)| dsp.get(key))
-                    .find(|c| c.get("@slot").and_then(Json::as_u64) == Some(slot as u64))
-            });
+            // Whose cab it is, said rather than guessed — two ways again. HX
+            // Edit has the amp name its cab node, `"@cab": "cab0"`; ours has
+            // the cab name the amp's slot. Either beats counting cabs against
+            // amps and hoping the k-th is the k-th.
+            let cab = node
+                .get("@cab")
+                .and_then(Json::as_str)
+                .and_then(|key| dsp.get(key))
+                .or_else(|| {
+                    let slot = recorded?;
+                    cab_nodes
+                        .iter()
+                        .filter_map(|(_, key)| dsp.get(key))
+                        .find(|c| c.get("@slot").and_then(Json::as_u64) == Some(slot as u64))
+                });
 
             match build_slot(node, cab, catalog) {
                 Ok(slot) => {
@@ -173,6 +189,33 @@ pub fn slots_from_hlx(preset: &mut Preset, document: &Json, catalog: &Catalog) -
                     }
                 }
                 Err(why) => skipped.push(format!("{block_key}: {why}")),
+            }
+        }
+
+        // The wiring is the template's, not the file's. A `.hlx` says which
+        // kind of split it has and where it attaches, and writing either would
+        // mean building a junction slot rather than a block — a different shape
+        // this does not make. Where the two disagree, say so: a Y read as an
+        // A/B divides the signal differently, and a chain that quietly kept the
+        // wrong one is worse than one that says it did.
+        let Some(path) = layout.paths.get(dsp_index) else { continue };
+        for (node_key, junction) in [("split", path.split), ("join", path.join)] {
+            let Some(wanted) = dsp.get(node_key).and_then(|n| n.get("@model")).and_then(Json::as_str)
+            else {
+                continue;
+            };
+            let holding = junction
+                .and_then(|slot| preset.junction_model(slot))
+                .and_then(|number| catalog.symbol(number))
+                .map(|symbol| symbol.symbol.clone());
+            match holding {
+                Some(holding) if holding == wanted => {}
+                Some(holding) => skipped.push(format!(
+                    "{name}/{node_key}: the file wants {wanted}, the chain has {holding}"
+                )),
+                None => skipped.push(format!(
+                    "{name}/{node_key}: the file wants {wanted}, the chain has no {node_key}"
+                )),
             }
         }
     }
@@ -337,7 +380,7 @@ fn values_for(symbol: &crate::Symbol, node: &Json, catalog: &Catalog) -> Vec<f32
 /// the candidate whose list those keys match is the one that was written. Ties
 /// go to the lower wire number, which is the mono variant and the one a file
 /// naming neither is likelier to have meant.
-fn resolve<'a>(catalog: &'a Catalog, name: &str, node: &Json) -> Option<&'a crate::Symbol> {
+pub fn resolve<'a>(catalog: &'a Catalog, name: &str, node: &Json) -> Option<&'a crate::Symbol> {
     let candidates: Vec<&crate::Symbol> = catalog
         .symbols()
         .iter()

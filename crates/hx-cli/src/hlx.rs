@@ -47,13 +47,38 @@ pub struct Plan {
 }
 
 pub fn read(path: &Path, catalog: &Catalog) -> Result<Plan> {
+    read_for(path, catalog, None)
+}
+
+/// The same, against the chain the file is going onto. See [`plan_for`].
+pub fn read_for(
+    path: &Path,
+    catalog: &Catalog,
+    layout: Option<&hx_proto::preset::Layout>,
+) -> Result<Plan> {
     let text = std::fs::read_to_string(path).with_context(|| format!("reading {path:?}"))?;
     let json: serde_json::Value =
         serde_json::from_str(&text).with_context(|| format!("parsing {path:?} as JSON"))?;
-    plan(&json, catalog)
+    plan_for(&json, catalog, layout)
 }
 
 pub fn plan(json: &serde_json::Value, catalog: &Catalog) -> Result<Plan> {
+    plan_for(json, catalog, None)
+}
+
+/// The same, against the chain the file is going onto.
+///
+/// A `.hlx` says where a block sits as `@path` and `@position`: the branch, and
+/// the place along that branch's drawn row. That is only the device's own slot
+/// number on a chain that does not split, so translating it needs the target's
+/// layout. Without one the file is read the way it always was — the `blockN`
+/// number as the slot — which is right for a straight chain and wrong the
+/// moment there is a split.
+pub fn plan_for(
+    json: &serde_json::Value,
+    catalog: &Catalog,
+    layout: Option<&hx_proto::preset::Layout>,
+) -> Result<Plan> {
     let data = json
         .get("data")
         .context("no `data` object; is this an .hlx preset?")?;
@@ -68,31 +93,26 @@ pub fn plan(json: &serde_json::Value, catalog: &Catalog) -> Result<Plan> {
         ..Default::default()
     };
 
-    // Blocks live under dsp0/dsp1 as block0, block1, … We assume that number is
-    // the position the wire addresses, which holds for the single-path devices
-    // tested here. It is assumed, not confirmed — and on a two-DSP device
-    // `dsp1/block0` would collide with `dsp0/block0` under this reading. Rather
-    // than silently apply one over the other, dsp1 is reported as skipped.
-    if let Some(blocks) = tone.get("dsp0").and_then(|d| d.as_object()) {
-        for (key, value) in blocks {
-            let Some(position) = key
-                .strip_prefix("block")
-                .and_then(|n| n.parse::<i64>().ok())
+    // A `dspN` is a whole signal path, which only hardware with two DSPs has;
+    // a *branch* of one path is `@path` inside the same dsp. Reading dsp1 as a
+    // branch was what made its blocks land on dsp0's and get skipped instead.
+    for dsp_index in 0.. {
+        let name = format!("dsp{dsp_index}");
+        let Some(blocks) = tone.get(&name).and_then(|d| d.as_object()) else {
+            break;
+        };
+        for (key, node) in blocks {
+            // split, join, inputs and outputs are the wiring, not the tone, and
+            // they are not addressable as a block.
+            let Some(numbered) = key.strip_prefix("block").and_then(|n| n.parse::<i64>().ok())
             else {
-                continue; // split, join, inputs, outputs: not addressable this way
+                continue;
             };
-            read_block(&mut plan, position, value, catalog);
+            match slot_of(node, layout, dsp_index, numbered) {
+                Ok(position) => read_block(&mut plan, position, node, catalog),
+                Err(why) => plan.skipped.push(format!("{name}/{key}: {why}")),
+            }
         }
-    }
-    let second = tone
-        .get("dsp1")
-        .and_then(|d| d.as_object())
-        .map(|b| b.keys().filter(|k| k.starts_with("block")).count())
-        .unwrap_or(0);
-    if second > 0 {
-        plan.skipped.push(format!(
-            "dsp1: {second} blocks skipped; addressing unconfirmed"
-        ));
     }
 
     plan.steps.sort_by_key(|s| match s {
@@ -103,11 +123,50 @@ pub fn plan(json: &serde_json::Value, catalog: &Catalog) -> Result<Plan> {
     Ok(plan)
 }
 
+/// Which slot a block goes in, said three ways in decreasing exactness: our own
+/// `@slot`, HX Edit's `@path` and `@position` against the target's layout, and
+/// the `blockN` number for a file that carries neither.
+fn slot_of(
+    node: &serde_json::Value,
+    layout: Option<&hx_proto::preset::Layout>,
+    dsp: usize,
+    numbered: i64,
+) -> Result<i64, String> {
+    // Ours, and exact: the device's own index, which needs nothing to read it.
+    if let Some(slot) = node.get("@slot").and_then(|v| v.as_u64()) {
+        return Ok(slot as i64);
+    }
+    let position = node.get("@position").and_then(|v| v.as_u64());
+    let branch = node.get("@path").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    if let (Some(layout), Some(position)) = (layout, position) {
+        return layout
+            .slot_of(dsp, branch, position as usize)
+            .map(|slot| slot as i64)
+            .ok_or_else(|| {
+                format!("this chain has no path {dsp} branch {branch} position {position}")
+            });
+    }
+    // A row index and no chain to read it against. It is only a slot number
+    // when there is one path and one row; a second DSP or a lower branch would
+    // land on the main line and overwrite what is there.
+    if dsp > 0 || branch > 0 {
+        return Err(format!(
+            "on path {dsp} branch {branch}; placing it needs the chain it is going onto"
+        ));
+    }
+    Ok(position.map_or(numbered, |n| n as i64))
+}
+
 fn read_block(plan: &mut Plan, position: i64, block: &serde_json::Value, catalog: &Catalog) {
     let Some(symbol) = block.get("@model").and_then(|v| v.as_str()) else {
         return;
     };
-    let Some(model) = catalog.symbols().iter().find(|s| s.symbol == symbol) else {
+    // The same resolution the document builder uses. HX Edit writes the *shared*
+    // model id — `HD2_ReverbPlate` — where the firmware has a mono symbol and a
+    // stereo one, each with its own wire number. An exact match on the symbol
+    // found neither, so importing a genuine HX Edit file skipped most of its
+    // chain and said only "unknown model".
+    let Some(model) = hx_catalog::resolve(catalog, symbol, block) else {
         plan.skipped
             .push(format!("block{position}: unknown model {symbol}"));
         return;
@@ -252,7 +311,9 @@ mod tests {
         });
 
         let plan = plan(&json, &catalog).unwrap();
-        // Only dsp0's block is applied; dsp1 would land on the same wire index.
+        // Only dsp0's block is applied. Without the target's layout there is
+        // nothing to say where a second path begins, and dsp1/block0 read as a
+        // slot number would land on dsp0/block0.
         assert_eq!(
             plan.steps
                 .iter()
@@ -265,6 +326,71 @@ mod tests {
             "{:?}",
             plan.skipped
         );
+    }
+
+    /// The numbers HX Edit writes are places along a drawn row, not device
+    /// slots, and the two part company the moment a chain splits. Read against
+    /// the chain it is going onto, a block on the lower branch lands there.
+    ///
+    /// The layout here is a real one: the HX Stomp's factory `DIR:Relief`, whose
+    /// blocks the device holds in slots 1, 6 and 12 to 15 and whose HX Edit
+    /// export numbers 0, 5 and 1 to 4.
+    #[test]
+    fn a_branch_is_placed_against_the_target_chain() {
+        use hx_proto::preset::{Lane, Layout, Path};
+        let Some(catalog) = catalog() else { return };
+        let layout = Layout {
+            paths: vec![Path {
+                input: Some(0),
+                output: Some(9),
+                split: Some(10),
+                join: Some(19),
+                head: vec![1],
+                lanes: vec![
+                    Lane { branch: 0, blocks: vec![6], span: 2..7 },
+                    Lane { branch: 1, blocks: vec![12], span: 11..19 },
+                ],
+                tail: vec![],
+            }],
+        };
+        let json = serde_json::json!({
+            "data": { "tone": { "dsp0": {
+                "block0": { "@model": "HD2_DistScream808Mono", "@path": 0, "@position": 0 },
+                "block1": { "@model": "HD2_ReverbPlate", "@path": 0, "@position": 5 },
+                "block2": { "@model": "HD2_ReverbRoomStereo", "@path": 1, "@position": 1 }
+            }}}
+        });
+
+        let plan = plan_for(&json, &catalog, Some(&layout)).unwrap();
+        assert!(plan.skipped.is_empty(), "{:?}", plan.skipped);
+        let mut slots: Vec<i64> = plan
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::Model { block, .. } => Some(*block),
+                _ => None,
+            })
+            .collect();
+        slots.sort_unstable();
+        assert_eq!(slots, vec![1, 6, 12]);
+    }
+
+    /// Our own files say the slot outright, which needs no layout to read.
+    #[test]
+    fn our_own_slot_number_is_taken_as_written() {
+        let Some(catalog) = catalog() else { return };
+        let json = serde_json::json!({
+            "data": { "tone": { "dsp0": {
+                "block0": { "@model": "HD2_DistScream808Mono", "@slot": 12 }
+            }}}
+        });
+
+        let plan = plan(&json, &catalog).unwrap();
+        assert!(plan.skipped.is_empty(), "{:?}", plan.skipped);
+        assert!(plan.steps.iter().any(|s| matches!(
+            s,
+            Step::Model { block: 12, .. }
+        )));
     }
 
     #[test]

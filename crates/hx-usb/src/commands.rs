@@ -22,8 +22,70 @@ use crate::{checksum, Error, Result, Session};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Assignment {
     pub source: rpc::Source,
-    pub min: f32,
-    pub max: f32,
+}
+
+/// A footswitch, as the pedal describes it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Switch {
+    /// One-based, the way it is printed on the pedal.
+    pub switch: u8,
+    /// Momentary holds while your foot is down; latching toggles.
+    pub momentary: bool,
+    /// A name typed for it, if one has been.
+    pub label: Option<String>,
+    /// A colour chosen for it. `None` is Auto Color, where the switch takes
+    /// the colour of whatever it controls.
+    pub colour: Option<i64>,
+    /// What it controls. Usually one thing, sometimes several.
+    pub carries: Vec<Carried>,
+}
+
+impl Switch {
+    /// What to call this switch: the name typed for it, or what it controls,
+    /// or nothing at all.
+    pub fn describes(&self) -> Option<&str> {
+        if let Some(label) = self.label.as_deref() {
+            return Some(label);
+        }
+        self.carries.first().map(|c| c.name.as_str())
+    }
+
+    /// The colour to light it: the one chosen, or the one its block wears.
+    pub fn lit(&self) -> Option<i64> {
+        self.colour.or_else(|| self.carries.first().and_then(|c| c.colour))
+    }
+}
+
+/// One thing a footswitch controls.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Carried {
+    /// The block, as the device numbers them.
+    pub block: i64,
+    /// Its name, which the device sends along rather than making us look it up.
+    pub name: String,
+    /// The colour the device gives it, `0xRRGGBB`. This is the block's own
+    /// category colour, which is what makes an Auto Color switch match the
+    /// block it toggles.
+    pub colour: Option<i64>,
+    pub enabled: bool,
+}
+
+/// One entry of a switch's assignment list.
+fn carried(item: &Value) -> Option<Carried> {
+    let target = item.get(rpc::key::SWITCH_TARGET)?;
+    Some(Carried {
+        block: target.get(rpc::key::BLOCK).and_then(|v| v.as_i64())?,
+        name: target
+            .get(rpc::key::NAME)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned(),
+        colour: item.get(rpc::key::LED_COLOUR).and_then(|v| v.as_i64()),
+        enabled: item
+            .get(rpc::key::ENABLED)
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+    })
 }
 
 impl Session {
@@ -592,15 +654,23 @@ impl Session {
         )
     }
 
-    /// Assign a MIDI CC to a block's bypass.
+    /// Put a block's bypass under MIDI, or take it back off.
     ///
-    /// Mirrors HX Edit's Bypass/Controller Assign page. Only the bypass target
-    /// has been observed, so that is all this offers rather than pretending to
-    /// a generality we cannot test.
-    pub fn assign_bypass_cc(&mut self, block: i64, cc: i64) -> Result<()> {
-        /// Target 5 is "this block's bypass"; the other two were constant in
-        /// every capture.
+    /// HX Edit's assign page gives MIDI its own row rather than a place in the
+    /// source list, and this is that row. It carries **no CC number**: the
+    /// capture sends the bypass target and the on switch and nothing else, and
+    /// the pedal answers with the number it chose (`12: 0`). Which message sets
+    /// that number has not been caught, so this does not pretend to offer it.
+    ///
+    /// The keys were read straight off `mac-assign-capture.log`, where turning
+    /// the row on sends `{98: block, 95: 5, 96: 300, 74: 0, 71: 4}` and turning
+    /// it off sends the same with `71: 0`. Key 71 is the assignment's on
+    /// switch, the same as it is for a parameter — an earlier reading had the
+    /// CC number here, which would have written a number into that switch.
+    pub fn assign_bypass_midi(&mut self, block: i64, on: bool) -> Result<()> {
+        /// What is being controlled: this block's bypass.
         const BYPASS_TARGET: i64 = 5;
+        /// Constant across every captured assignment.
         const SCOPE: i64 = 300;
 
         self.command(
@@ -610,8 +680,8 @@ impl Session {
                 rpc::key::BLOCK => Value::Int(block),
                 rpc::key::ASSIGN_TARGET => Value::Int(BYPASS_TARGET),
                 rpc::key::ASSIGN_SCOPE => Value::Int(SCOPE),
-                rpc::key::ASSIGN_FLAGS => Value::Int(0),
-                rpc::key::CC => Value::Int(cc),
+                rpc::key::ASSIGN_FLAGS => Value::Int(rpc::Source::NONE),
+                rpc::key::ASSIGN_KIND => Value::Int(if on { 4 } else { 0 }),
             },
         )
     }
@@ -687,6 +757,19 @@ impl Session {
     ///
     /// `None` for a parameter nothing controls — which the device reports as
     /// source ordinal 0, the same "None" the assign page offers.
+    pub fn read_assignment_raw(&mut self, block: i64, param: i64) -> Result<Value> {
+        self.request(
+            ChannelId::DATA,
+            rpc::op::READ_ASSIGNMENT,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::COMMIT => Value::Bool(true),
+                rpc::key::PATH => Value::Int(0),
+                rpc::key::PARAM_INDEX => Value::Int(param),
+            },
+        )
+    }
+
     pub fn read_assignment(&mut self, block: i64, param: i64) -> Result<Option<Assignment>> {
         let reply = self.request(
             ChannelId::DATA,
@@ -698,22 +781,22 @@ impl Session {
                 rpc::key::PARAM_INDEX => Value::Int(param),
             },
         )?;
+        // The reply does not use the key the request did: opcode 37 takes the
+        // source at 74, opcode 36 answers with it at 0. Reading 74 here meant
+        // every parameter came back unassigned, which is why an assignment that
+        // the pedal had certainly made showed nothing at all in the editor.
+        //
+        // A parameter nothing controls answers `nil`, not a map with a zero in
+        // it, so `get` finding nothing is the same answer as ordinal 0.
         let ordinal = reply
-            .get(rpc::key::ASSIGN_FLAGS)
+            .get(rpc::key::ASSIGN_SOURCE)
             .and_then(|v| v.as_i64())
             .unwrap_or(rpc::Source::NONE);
         // Ordinal 0 is None, and `from_ordinal` says so by answering nothing.
         let Some(source) = rpc::Source::from_ordinal(ordinal) else {
             return Ok(None);
         };
-        let end = |key: i64, fallback: f32| {
-            reply.get(key).and_then(|v| v.as_f32()).unwrap_or(fallback)
-        };
-        Ok(Some(Assignment {
-            source,
-            min: end(rpc::key::ASSIGN_MIN, 0.0),
-            max: end(rpc::key::ASSIGN_MAX, 1.0),
-        }))
+        Ok(Some(Assignment { source }))
     }
 
     /// Make a footswitch toggle a block in and out.
@@ -729,6 +812,107 @@ impl Session {
                 rpc::key::SWITCH => Value::Int(switch.saturating_sub(1) as i64),
             },
         )
+    }
+
+    /// What a footswitch is set to.
+    ///
+    /// Opcode 33 counts from **one** on the way in and answers with a
+    /// **zero-based** index in key 102, which is the opposite of opcodes 56 and
+    /// 57. That was an open question in the protocol notes and is now settled by
+    /// asking the pedal: `read_switch(1)` comes back `{102: 0}`, and so on up.
+    /// The one-based number goes in here so a caller says "footswitch 3" and
+    /// means it.
+    pub fn read_switch(&mut self, switch: u8) -> Result<Switch> {
+        let reply = self.request(
+            ChannelId::DATA,
+            rpc::op::FOOTSWITCH_CONFIG,
+            hx_proto::msgmap! {
+                rpc::key::SWITCH => Value::Int(switch.max(1) as i64),
+            },
+        )?;
+        let carries = match reply.get(rpc::key::SWITCH_ASSIGNED) {
+            Some(Value::Array(items)) => items.iter().filter_map(carried).collect(),
+            _ => Vec::new(),
+        };
+        Ok(Switch {
+            switch,
+            momentary: reply
+                .get(rpc::key::MOMENTARY)
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            label: reply
+                .get(rpc::key::NAME)
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            colour: reply.get(rpc::key::LED_COLOUR).and_then(|v| v.as_i64()),
+            carries,
+        })
+    }
+
+    /// Every footswitch a device has, in order.
+    pub fn switches(&mut self) -> Result<Vec<Switch>> {
+        (1..=self.profile.switches)
+            .map(|switch| self.read_switch(switch))
+            .collect()
+    }
+
+    /// Latching, which toggles, or momentary, which holds while your foot is
+    /// down.
+    pub fn set_switch_momentary(&mut self, switch: u8, momentary: bool) -> Result<()> {
+        self.command(
+            ChannelId::DATA,
+            rpc::op::SWITCH_TYPE,
+            hx_proto::msgmap! {
+                rpc::key::SWITCH => Value::Int(switch.saturating_sub(1) as i64),
+                rpc::key::MOMENTARY => Value::Bool(momentary),
+            },
+        )
+    }
+
+    /// Write a name under a footswitch, or clear it back to whatever it
+    /// carries. Clearing is its own opcode rather than an empty string.
+    pub fn set_switch_label(&mut self, switch: u8, label: Option<&str>) -> Result<()> {
+        let switch = Value::Int(switch.saturating_sub(1) as i64);
+        match label {
+            Some(label) => self.command(
+                ChannelId::DATA,
+                rpc::op::SWITCH_LABEL,
+                hx_proto::msgmap! {
+                    rpc::key::SWITCH => switch,
+                    rpc::key::NAME => Value::Str(label.to_owned()),
+                },
+            ),
+            None => self.command(
+                ChannelId::DATA,
+                rpc::op::SWITCH_LABEL_CLEAR,
+                hx_proto::msgmap! { rpc::key::SWITCH => switch },
+            ),
+        }
+    }
+
+    /// Light a footswitch a chosen colour, or `None` for Auto Color, where it
+    /// takes the colour of whatever it controls.
+    ///
+    /// The colour is an index into HX Edit's `footswitchLED` list, not an RGB
+    /// value: the capture sets White by sending `66: 1`. Auto Color is index 0
+    /// of that list and has an opcode to itself.
+    pub fn set_switch_colour(&mut self, switch: u8, colour: Option<i64>) -> Result<()> {
+        let switch = Value::Int(switch.saturating_sub(1) as i64);
+        match colour {
+            Some(colour) => self.command(
+                ChannelId::DATA,
+                rpc::op::SWITCH_COLOUR,
+                hx_proto::msgmap! {
+                    rpc::key::SWITCH => switch,
+                    rpc::key::LED_COLOUR => Value::Int(colour),
+                },
+            ),
+            None => self.command(
+                ChannelId::DATA,
+                rpc::op::SWITCH_COLOUR_AUTO,
+                hx_proto::msgmap! { rpc::key::SWITCH => switch },
+            ),
+        }
     }
 
     /// Take a block's bypass off a footswitch again.

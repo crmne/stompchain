@@ -59,6 +59,10 @@ pub struct DeviceProfile {
     pub name: &'static str,
     /// Number of user preset slots.
     pub presets: u16,
+    /// How many footswitches a bypass can be put on. Three on an HX Stomp,
+    /// which is why its assign page offers five: FS1 to FS5 counts the two on
+    /// the sides that a Stomp does not have and a Helix does.
+    pub switches: u8,
     /// Family and member ids, as reported by a MIDI identity request and stored
     /// in `.hlx` files — HX Stomp is `0x00210006`.
     pub device_id: u32,
@@ -68,18 +72,21 @@ pub const HX_STOMP: DeviceProfile = DeviceProfile {
     product_id: 0x4246,
     name: "HX Stomp",
     presets: 126,
+    switches: 5,
     device_id: 0x0021_0006,
 };
 pub const HX_STOMP_XL: DeviceProfile = DeviceProfile {
     product_id: 0x4253,
     name: "HX Stomp XL",
     presets: 128,
+    switches: 8,
     device_id: 0x0021_000B,
 };
 pub const HELIX_FLOOR: DeviceProfile = DeviceProfile {
     product_id: 0x4248,
     name: "Helix Floor",
     presets: 128,
+    switches: 10,
     device_id: 0x0021_0001,
 };
 

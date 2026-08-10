@@ -10,8 +10,11 @@ use hx_catalog::{Catalog, Kind};
 
 mod config;
 mod eq;
-mod library;
+/// Public so the desktop entry point can bring an older library across before
+/// the first window opens. Nothing else here needs to be.
+pub mod library;
 mod session;
+mod table;
 mod theme;
 mod update;
 mod wav;
@@ -31,8 +34,11 @@ struct Preview {
     load: LoadKind,
     /// Which preset Load writes into. Defaults to the one open now.
     dest: i64,
-    /// The file this preview came from, so Keep knows what to copy.
-    source: std::path::PathBuf,
+    /// The tone exactly as it arrived, so Keep has something to store: the
+    /// bytes and the kind of document they are. A path would not do - a
+    /// preview can come from the library, where there is no file to point at
+    /// that a person would recognise.
+    source: (String, Vec<u8>),
 }
 
 /// How a previewed tone reaches the pedal: a byte-exact document is written
@@ -42,15 +48,42 @@ enum LoadKind {
     Steps(Vec<session::ApplyBlock>),
 }
 
-/// One row in the library browser: the file, its tone name and a one-line
-/// reading of the chain (both derived from the file), and its saved metadata.
+/// One row in the library browser: which tone it is (the hash of its bytes,
+/// which is its identity), what it is called, a one-line reading of the chain
+/// derived from the document, and its saved metadata.
 #[derive(Clone)]
 struct LibEntry {
-    file: std::path::PathBuf,
-    file_name: String,
+    hash: String,
     name: String,
     line: String,
     meta: library::Meta,
+}
+
+/// A tone kept under a name another tone already answers to: the bytes (in the
+/// store already, so the question can be asked safely), who holds the name, and
+/// the name being typed in case the answer is *Save as*.
+struct NameClash {
+    hash: String,
+    holder: String,
+    draft: String,
+}
+
+/// A tone on its way to the pedal, waiting for a slot to be picked.
+///
+/// One action rather than two. An "into the first empty slot" button and a
+/// "choose a slot" button ask a person to decide something before they can see
+/// what they are deciding between; this puts the list itself into a picking
+/// state, where every row says what it holds and therefore what it would cost.
+struct Sending {
+    hash: String,
+    name: String,
+}
+
+/// The three ways out of that question.
+enum Clash {
+    Override,
+    SaveAs(String),
+    Cancel,
 }
 
 pub struct App {
@@ -184,6 +217,11 @@ pub struct App {
     lib_showing: LibraryView,
     /// The setlists in the library, with the file each came from.
     lib_setlists: Vec<(std::path::PathBuf, library::Setlist)>,
+    /// Which column orders the setlist table, and which way.
+    lib_setlist_sort: (usize, bool),
+    /// A setlist cell being typed into: which setlist by name, which column,
+    /// and the text so far.
+    lib_setlist_editing: Option<(String, usize, String)>,
     /// Which setlist is open, and the draft of its details while it is edited.
     lib_setlist: Option<usize>,
     lib_setlist_draft: library::Setlist,
@@ -202,9 +240,27 @@ pub struct App {
     lib_anchor: Option<usize>,
     /// Which column orders the table, and which way.
     lib_sort: (LibColumn, bool),
+    /// Columns turned off. Off rather than on, so a column added later shows
+    /// up for everyone rather than only for people who have never touched this.
+    lib_hidden: std::collections::BTreeSet<LibColumn>,
+    /// The cell being typed into: which tone, which column, and the text so
+    /// far. In the app rather than the table, so it survives the frame.
+    lib_editing: Option<(String, LibColumn, String)>,
     /// Tones waiting on an answer about being deleted, and the setlists that
-    /// would lose them.
+    /// play them.
     confirm_delete: Option<(Vec<String>, Vec<String>)>,
+    /// A kept tone waiting on an answer about a name already in use.
+    name_clash: Option<NameClash>,
+    /// A tone from the library waiting for a slot on the pedal.
+    sending: Option<Sending>,
+    /// What each slot on the pedal is holding, by the hash of its bytes.
+    ///
+    /// Read out of the automatic backup rather than off the wire: that bundle
+    /// is a full copy taken on connect and refreshed one preset at a time after
+    /// every save, so it already knows, and asking the pedal for 126 documents
+    /// to draw 126 dots would be absurd. What it cannot know is the edit
+    /// buffer, which is what the unsaved dot in the title bar is for.
+    mirror: std::collections::BTreeMap<i64, String>,
     /// Comma-separated genres and a pending tag, edited in the inspector.
     lib_genres_buf: String,
     lib_tag_add: String,
@@ -215,15 +271,29 @@ pub struct App {
     param_draft: Option<(i64, i64, String)>,
     /// Snapshot being renamed, with its draft name.
     snapshot_draft: Option<(usize, String)>,
-    /// Which MIDI CC the "assign bypass" control offers.
-    assign_cc: i64,
-    /// What controls each parameter of the selected block, by parameter index.
-    /// Read when a block is selected; empty means nothing is assigned, or that
-    /// the answer has not come back yet.
-    assignments: std::collections::BTreeMap<i64, hx_usb::Assignment>,
-    /// Which block `assignments` describes, so a stale answer for the block you
-    /// just left is not drawn over the one you are looking at.
-    assignments_for: i64,
+    /// The row of Controlled by the pointer last landed on. A cell is only
+    /// typed into on a second click, the same rule the library table follows.
+    assign_selected: Option<hx_proto::preset::Target>,
+    /// The end of a controller's travel being typed: which assignment, whether
+    /// it is the high end, and the text so far.
+    assign_editing: Option<(hx_proto::preset::Target, bool, String)>,
+    /// A footswitch's name being typed, and which switch it belongs to.
+    switch_draft: Option<(u8, String)>,
+    /// Which block is waiting for a control to be picked, after Assign control
+    /// was pressed. Right-clicking a control does the same thing; this is the
+    /// way you find without being told.
+    assigning: Option<i64>,
+    /// Every footswitch and what it carries, as the pedal reports it. Read on
+    /// load and after every assignment, so what is on screen is what is on the
+    /// pedal rather than what was asked for.
+    switches: Vec<hx_usb::Switch>,
+    /// Everything a controller drives, for every block in the preset at once.
+    ///
+    /// Out of the preset document, which arrives with every load and every
+    /// reload after an edit, so there is no separate ask and nothing to go
+    /// stale between blocks. Opcode 36 used to answer this one parameter at a
+    /// time, for one block, and was wrong about the travel besides.
+    assignments: Vec<hx_proto::preset::Assignment>,
     /// Editable copy of the preset name, so typing does not fight the device.
     /// The preset being renamed - its slot index and the draft name. Drives the
     /// inline field on both the loaded title and any right-clicked list row.
@@ -287,8 +357,11 @@ enum CopyTarget {
 }
 
 /// A column of the library table, and what it sorts by.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum LibColumn {
+    /// Whether this tone is on the pedal. Not a column of text, and not one
+    /// that can be turned off: it is the thing you act on.
+    Sync,
     Name,
     Character,
     Genre,
@@ -297,7 +370,8 @@ enum LibColumn {
 }
 
 impl LibColumn {
-    const ALL: [LibColumn; 5] = [
+    const ALL: [LibColumn; 6] = [
+        LibColumn::Sync,
         LibColumn::Name,
         LibColumn::Character,
         LibColumn::Genre,
@@ -307,6 +381,7 @@ impl LibColumn {
 
     fn title(self) -> &'static str {
         match self {
+            LibColumn::Sync => "",
             LibColumn::Name => "Name",
             LibColumn::Character => "Character",
             LibColumn::Genre => "Genre",
@@ -315,10 +390,28 @@ impl LibColumn {
         }
     }
 
+    /// Columns that cannot be turned off. Without a name there is nothing to
+    /// read, and without the dot there is nothing to press.
+    fn always(self) -> bool {
+        matches!(self, LibColumn::Sync | LibColumn::Name)
+    }
+
+    fn column(self) -> table::Column {
+        match self {
+            LibColumn::Sync => table::Column::new("Where", 60.0),
+            LibColumn::Name => table::Column::new("Name", 190.0).editable(),
+            LibColumn::Character => table::Column::new("Character", 110.0).editable(),
+            LibColumn::Genre => table::Column::new("Genre", 130.0).editable(),
+            LibColumn::Artist => table::Column::new("Artist", 130.0).editable(),
+            LibColumn::Chain => table::Column::new("Chain", 130.0).fills(),
+        }
+    }
+
     /// What this column shows for a row, which is also what it sorts on - so
     /// the order can never disagree with what is on screen.
-    fn of(self, entry: &LibEntry) -> String {
+    fn text(self, entry: &LibEntry) -> String {
         match self {
+            LibColumn::Sync => String::new(),
             LibColumn::Name => entry.name.clone(),
             LibColumn::Character => entry.meta.character.clone(),
             LibColumn::Genre => entry.meta.genres.join(", "),
@@ -326,6 +419,37 @@ impl LibColumn {
             LibColumn::Chain => entry.line.clone(),
         }
     }
+
+    fn cell(self, entry: &LibEntry, state: theme::Sync) -> table::Cell {
+        match self {
+            // This row is a tone in the library, so the computer is not one
+            // of the icons: it shows the pedal, and the cloud when the tone
+            // browser exists to answer for it.
+            LibColumn::Sync => table::Cell::Places(vec![(
+                theme::Icon::Pedal,
+                state,
+                match state {
+                    theme::Sync::Absent => "Not on the pedal. Send it",
+                    theme::Sync::Same => "On the pedal",
+                    theme::Sync::Differs => {
+                        "On the pedal under this name, but different. Send this one"
+                    }
+                    theme::Sync::Unknown => "",
+                },
+            )]),
+            LibColumn::Chain => table::Cell::Dim(self.text(entry)),
+            _ => table::Cell::Text(self.text(entry)),
+        }
+    }
+}
+
+/// Put rows back in the order a sort worked out.
+fn reorder<T>(rows: Vec<T>, order: &[usize]) -> Vec<T> {
+    let mut held: Vec<Option<T>> = rows.into_iter().map(Some).collect();
+    order
+        .iter()
+        .filter_map(|&i| held.get_mut(i).and_then(Option::take))
+        .collect()
 }
 
 /// The two halves of the computer's library.
@@ -347,6 +471,8 @@ enum LibraryView {
 /// Restore, and they live on the list's header rather than on a preset.
 #[derive(Clone, Copy)]
 enum RowAction {
+    /// Put the library's tone of this name back in step with the pedal's.
+    Update,
     Copy,
     Paste,
     Export,
@@ -425,6 +551,8 @@ impl App {
             display_only: false,
             lib_showing: LibraryView::Tones,
             lib_setlists: Vec::new(),
+            lib_setlist_sort: (0, true),
+            lib_setlist_editing: None,
             lib_setlist: None,
             lib_setlist_draft: library::Setlist::default(),
             confirm_push: None,
@@ -436,14 +564,22 @@ impl App {
             lib_anchor: None,
             lib_sort: (LibColumn::Name, true),
             confirm_delete: None,
+            lib_hidden: Default::default(),
+            lib_editing: None,
+            name_clash: None,
+            sending: None,
+            mirror: Default::default(),
             lib_genres_buf: String::new(),
             lib_tag_add: String::new(),
             tempo_draft: None,
             param_draft: None,
             snapshot_draft: None,
-            assign_cc: 1,
-            assignments: Default::default(),
-            assignments_for: -1,
+            assign_selected: None,
+            assign_editing: None,
+            switch_draft: None,
+            switches: Vec::new(),
+            assigning: None,
+            assignments: Vec::new(),
             renaming: None,
             log: Vec::new(),
             show_activity: false,
@@ -462,6 +598,10 @@ impl App {
         // The library is on screen from the first frame, so it is read before
         // the first frame rather than when something happens to refresh it.
         app.refresh_library();
+        // Likewise what the pedal is holding, if a backup from a previous run
+        // is on disk: the dots should say something true on the first frame
+        // rather than after the first connection.
+        app.refresh_mirror();
         // Without the model data there is nothing to edit with, so the
         // welcome window opens immediately and stays until the data exists.
         app.show_onboarding = app.catalog.is_none();
@@ -544,6 +684,8 @@ impl App {
                     irs,
                 }) => {
                     self.working = None;
+                    self.refresh_mirror();
+                    self.write_hxb_beside(&dir);
                     self.note(format!(
                         "backed up {presets} presets, {settings} settings and {irs} \
                          impulse responses to {}",
@@ -558,9 +700,11 @@ impl App {
                     snapshots,
                     chain,
                     layout,
+                    assignments,
                     dirty,
                 }) => {
                     self.layout = layout;
+                    self.assignments = assignments;
                     // The worker's word, not a blanket reset: most reloads are
                     // edits taking effect, and those leave changes to save.
                     self.dirty = dirty;
@@ -593,15 +737,20 @@ impl App {
                             .unwrap_or(0);
                     }
                     self.selected = self.selected.min(self.chain.len().saturating_sub(1));
-                    // A different preset means different assignments, and the
-                    // ones on screen belong to the preset that just left.
-                    self.read_assignments();
+                    // The assignments came with the document; what a switch is
+                    // called and what colour it lights did not.
+                    self.read_switches();
                     self.browsing = None;
                     self.renaming = None;
                     self.tempo_draft = None;
                     self.snapshot_draft = None;
                 }
-                Ok(Evt::Saved) => self.dirty = false,
+                Ok(Evt::Saved) => {
+                    self.dirty = false;
+                    // The bundle was refreshed before this arrived, so the
+                    // dots can be brought in step with it now.
+                    self.refresh_mirror();
+                }
                 Ok(Evt::Busy(on)) => {
                     self.busy_since = if on {
                         self.busy_since.or(Some(std::time::Instant::now()))
@@ -628,17 +777,14 @@ impl App {
                             self.clipboard = Some((name.clone(), blob));
                             self.note(format!("copied {name} ({size} bytes)"));
                         }
-                        CopyTarget::Library => self.keep_document(&name, &blob),
+                        CopyTarget::Library => self.keep_tone(&name, "hxpreset", &blob),
                     }
                 }
                 Ok(Evt::Irs(slots)) => self.irs = slots,
                 Ok(Evt::Favourites(list)) => self.favourites = list,
                 Ok(Evt::Setlists(names)) => self.setlists = names,
                 Ok(Evt::CapturedSetlist(slots)) => self.keep_setlist(slots),
-                Ok(Evt::Assignments { block, found }) => {
-                    self.assignments_for = block;
-                    self.assignments = found.into_iter().collect();
-                }
+                Ok(Evt::Switches(switches)) => self.switches = switches,
                 Ok(Evt::Activity(line)) => self.note(line),
                 Ok(Evt::Failed(e)) => {
                     self.status = e.clone();
@@ -761,6 +907,15 @@ impl App {
     /// Only effects can have their model swapped from the browser.
     fn is_effect(&self, block: &session::Block) -> bool {
         block.kind == hx_proto::preset::Kind::Block
+    }
+
+    /// The same question by position, for the places that have one and not the
+    /// block itself.
+    fn is_effect_at(&self, position: i64) -> bool {
+        self.chain
+            .iter()
+            .find(|b| b.position == position)
+            .is_some_and(|b| self.is_effect(b))
     }
 
     /// The catalog entry describing a slot's controls.
@@ -965,12 +1120,20 @@ impl App {
                     } else {
                         self.device.clone()
                     };
+                    // A framed button, not a bare label. This is the way in
+                    // to everything about the device - its impulse responses,
+                    // its favourite blocks, and now backing it up and putting a
+                    // backup back - and a word you have to guess is clickable
+                    // is a door with no handle.
                     if ui
                         .add_enabled(
                             matches!(self.connection, Connection::Online),
-                            egui::Button::new(RichText::new(name).strong()).frame(false),
+                            egui::Button::new(RichText::new(name).strong()),
                         )
-                        .on_hover_text("the pedal's impulse responses and favourite blocks")
+                        .on_hover_text(
+                            "everything about the pedal: backup and restore, \
+                             impulse responses, favourite blocks",
+                        )
                         .clicked()
                     {
                         self.show_device = !self.show_device;
@@ -1188,10 +1351,39 @@ impl App {
                     self.open_tone_file(&path);
                 }
             }
-            RowAction::Keep => {
-                self.select_for_action(index);
-                self.pending_copy = CopyTarget::Library;
-                self.send(Cmd::CopyPreset);
+            // The bytes are already on this machine - the automatic backup
+            // holds every slot - so keeping from a row does not have to select
+            // the preset first. It used to, which threw away the edit buffer to
+            // save a preset the person was not even looking at.
+            RowAction::Keep => match self.slot_document(index) {
+                Some((name, bytes)) => self.keep_tone(&name, "hxpreset", &bytes),
+                None => {
+                    self.select_for_action(index);
+                    self.pending_copy = CopyTarget::Library;
+                    self.send(Cmd::CopyPreset);
+                }
+            },
+            // The directed version, for when the library already has this name
+            // holding something else: no question, because the dot has already
+            // said what it would do. The tone that held the name goes, its notes
+            // come across, and any setlist playing it is untouched.
+            RowAction::Update => {
+                let Some((name, bytes)) = self.slot_document(index) else {
+                    return self.row_action(index, RowAction::Keep);
+                };
+                let Some(old) = library::named(&name) else {
+                    return self.row_action(index, RowAction::Keep);
+                };
+                let outcome = library::store(&name, &bytes, "hxpreset")
+                    .and_then(|hash| library::override_with(&old.hash, &hash, &name));
+                match outcome {
+                    Ok(()) => {
+                        self.lib_showing = LibraryView::Tones;
+                        self.refresh_library();
+                        self.note(format!("updated {name} from the pedal"));
+                    }
+                    Err(why) => self.note(why),
+                }
             }
             // The only row action that asks first, and the only one that cannot
             // be taken back.
@@ -1517,6 +1709,9 @@ impl App {
     }
 
     fn preset_list(&mut self, ctx: &egui::Context) {
+        let mut capture = false;
+        let mut cancel_send = false;
+        let mut picked: Option<i64> = None;
         egui::SidePanel::left("presets")
             .default_width(216.0)
             .width_range(150.0..=340.0)
@@ -1527,7 +1722,10 @@ impl App {
                 // menu called "Preset" at the top of the window made you go
                 // looking somewhere else for something that belongs here.
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("PRESETS").small().color(theme::DIM));
+                    // SETLIST, not PRESETS: what the pedal holds is a setlist,
+                    // and it is the same word the device itself uses for a bank
+                    // of 126. Calling the panel Presets was always a half-truth.
+                    ui.label(RichText::new("SETLIST").small().color(theme::DIM));
                     // The same drawn star as the rows use. As a small text
                     // glyph it sat on its own baseline, a few pixels above the
                     // word beside it.
@@ -1542,10 +1740,45 @@ impl App {
                     {
                         self.show_favorites_only = !self.show_favorites_only;
                     }
+                    // The counterpart to the per-preset dot beside it: that
+                    // one keeps a tone, this one keeps the whole pedal. Backup
+                    // and Restore used to sit here too and do not belong: they
+                    // act on the whole device, settings and impulse responses
+                    // included, so they live behind the device's own button.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        self.backup_actions(ui);
+                        let live = matches!(self.connection, Connection::Online);
+                        if ui
+                            .add_enabled(live, egui::Button::new(RichText::new("CAPTURE").small()).frame(false))
+                            .on_hover_text(
+                                "keep every preset on the pedal, in order, as a setlist",
+                            )
+                            .clicked()
+                        {
+                            capture = true;
+                        }
                     });
                 });
+                // While a tone is on its way to the pedal, the list says so and
+                // says how to stop. Without this the highlighted rows would be
+                // a state with no explanation and no way out but a click.
+                if let Some(sending) = &self.sending {
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!("Choose a slot for {}", sending.name))
+                                .small()
+                                .color(theme::ACCENT),
+                        );
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if ui.small_button("Cancel").clicked() {
+                                    cancel_send = true;
+                                }
+                            },
+                        );
+                    });
+                }
                 ui.separator();
 
                 egui::ScrollArea::vertical()
@@ -1609,15 +1842,76 @@ impl App {
                                 // sits on the preset - beside its own star, not
                                 // in the list's title where it could only ever
                                 // mean the loaded one.
-                                if theme::small_icon_button(ui, theme::Icon::Keep, None)
-                                    .on_hover_text("Keep this preset in the library")
-                                    .clicked()
-                                {
-                                    menu_action = Some((index, RowAction::Keep));
+                                //
+                                // And it is a dot rather than a button, because
+                                // the question a person actually has is "is this
+                                // one saved?", which a button can only answer by
+                                // disappearing. Three states in one place: not
+                                // in the library, in it and identical, in it
+                                // under this name and different.
+                                // This row *is* the pedal, so the pedal is not
+                                // one of the icons: what it shows is the two
+                                // other places a tone can be.
+                                let state = self.slot_sync(index);
+                                let held = theme::place(ui, theme::Icon::Computer, state);
+                                let held = match state {
+                                    theme::Sync::Absent => {
+                                        held.on_hover_text("Not in your library. Keep it")
+                                    }
+                                    theme::Sync::Same => held.on_hover_text("In your library"),
+                                    theme::Sync::Differs => held.on_hover_text(
+                                        "In your library under this name, but different. \
+                                         Update it from the pedal",
+                                    ),
+                                    theme::Sync::Unknown => held,
+                                };
+                                if held.clicked() {
+                                    match state {
+                                        theme::Sync::Absent => {
+                                            menu_action = Some((index, RowAction::Keep))
+                                        }
+                                        theme::Sync::Differs => {
+                                            menu_action = Some((index, RowAction::Update))
+                                        }
+                                        _ => {}
+                                    }
                                 }
-                                let renaming_this =
-                                    matches!(&self.renaming, Some((i, _)) if *i == index);
-                                if renaming_this {
+                                let renaming_this = self.sending.is_none()
+                                    && matches!(&self.renaming, Some((i, _)) if *i == index);
+                                if self.sending.is_some() {
+                                    // Every row is a target now. An empty slot
+                                    // is the safe one and reads as such; an
+                                    // occupied one says what it would cost
+                                    // before it costs it, which is the whole
+                                    // reason for picking in the list rather
+                                    // than in a dialog with a slot number in it.
+                                    let empty = name.trim().is_empty();
+                                    let text = if empty {
+                                        RichText::new(format!(
+                                            "{}  empty",
+                                            hx_proto::rpc::slot_label(index)
+                                        ))
+                                        .color(theme::ACCENT)
+                                    } else {
+                                        RichText::new(&label).color(theme::DIM)
+                                    };
+                                    let target = ui.add(
+                                        egui::Button::new(text)
+                                            .frame(false)
+                                            .min_size(egui::vec2(
+                                                ui.available_width(),
+                                                18.0,
+                                            )),
+                                    );
+                                    let target = if empty {
+                                        target.on_hover_text("Put it here")
+                                    } else {
+                                        target.on_hover_text(format!("Replace {name}"))
+                                    };
+                                    if target.clicked() {
+                                        picked = Some(index);
+                                    }
+                                } else if renaming_this {
                                     if let Some((_, draft)) = self.renaming.as_mut() {
                                         let edit = ui.add(
                                             egui::TextEdit::singleline(draft)
@@ -1738,10 +2032,22 @@ impl App {
                         }
                     });
             });
+
+        if capture {
+            self.send(Cmd::CaptureSetlist);
+        }
+        if cancel_send {
+            self.sending = None;
+        }
+        if let Some(slot) = picked {
+            self.finish_sending(slot);
+        }
+        // Escape gets out of picking the way it gets out of everything else.
+        if self.sending.is_some() && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.sending = None;
+        }
     }
 
-    /// Keep the loaded preset's document in the library: as portable .hlx
-    /// when the catalog can name its models, as the exact bytes otherwise.
     /// Keep the loaded preset's document in the library, as the device's own
     /// bytes.
     ///
@@ -1751,12 +2057,123 @@ impl App {
     /// tones come back different from what went in is not a library. The bytes
     /// go in verbatim, and `.hlx` stays available on export for anyone who
     /// wants the readable form.
-    fn keep_document(&mut self, name: &str, blob: &[u8]) {
-        match library::keep_bytes(&sanitise(name), "hxpreset", blob) {
-            Ok(path) => {
-                Self::remember_name(&path, name);
+    fn keep_tone(&mut self, name: &str, ext: &str, blob: &[u8]) {
+        match library::keep(name, ext, blob) {
+            Ok((_, library::Keeping::Kept)) => {
+                self.lib_showing = LibraryView::Tones;
                 self.refresh_library();
                 self.note(format!("kept {name} in the library"));
+            }
+            // Keeping a tone that is already kept is not a mistake and not an
+            // error; it just has nothing to do. Saying which name it is under
+            // answers the question the person was really asking.
+            Ok((_, library::Keeping::Already(under))) => {
+                self.lib_showing = LibraryView::Tones;
+                self.note(if under == name {
+                    format!("{name} is already in your library")
+                } else {
+                    format!("that tone is already in your library, as “{under}”")
+                });
+            }
+            // A name in use by different bytes is the one thing the library
+            // will not decide on its own.
+            Ok((hash, library::Keeping::NameTaken { holder })) => {
+                self.name_clash = Some(NameClash {
+                    hash,
+                    draft: format!("{holder} 2"),
+                    holder,
+                });
+            }
+            Err(why) => self.note(why),
+        }
+    }
+
+    /// The question a taken name asks, and the two answers to it.
+    ///
+    /// Override and Save as, never a silent "-2": which of the two you meant is
+    /// not something a program can work out, and getting it wrong either buries
+    /// a tone you wanted or keeps one you did not.
+    fn name_clash_window(&mut self, ctx: &egui::Context) {
+        let Some(clash) = self.name_clash.as_mut() else {
+            return;
+        };
+        let holder = clash.holder.clone();
+        let hash = clash.hash.clone();
+        let mut decided = None;
+        egui::Window::new("That name is taken")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_max_width(380.0);
+                ui.label(format!(
+                    "Your library already has a different tone called “{holder}”."
+                ));
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(
+                        "Override keeps this one under that name and lets the old one \
+                         go. Any setlist playing the old one still plays it.",
+                    )
+                    .small()
+                    .color(theme::DIM),
+                );
+                ui.add_space(8.0);
+                ui.label(RichText::new("Save as").small().color(theme::DIM));
+                let free = library::name_is_free(&clash.draft, &hash);
+                ui.add(
+                    egui::TextEdit::singleline(&mut clash.draft)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("a name of its own"),
+                );
+                if !free {
+                    ui.label(
+                        RichText::new("that name is taken too")
+                            .small()
+                            .color(theme::ACCENT),
+                    );
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        decided = Some(Clash::Cancel);
+                    }
+                    if ui.button("Override").clicked() {
+                        decided = Some(Clash::Override);
+                    }
+                    let named = !clash.draft.trim().is_empty() && free;
+                    if ui
+                        .add_enabled(named, egui::Button::new("Save as"))
+                        .clicked()
+                    {
+                        decided = Some(Clash::SaveAs(clash.draft.trim().to_owned()));
+                    }
+                });
+            });
+
+        let Some(decided) = decided else { return };
+        let clash = self.name_clash.take().expect("checked above");
+        let outcome = match decided {
+            // Cancelling leaves the bytes in the store with nothing pointing at
+            // them, which is exactly what the sweep is for.
+            Clash::Cancel => {
+                library::collect_garbage();
+                return;
+            }
+            Clash::Override => library::named(&clash.holder)
+                .ok_or_else(|| "that tone is no longer in the library".to_owned())
+                .and_then(|old| {
+                    library::override_with(&old.hash, &clash.hash, &clash.holder)
+                        .map(|()| format!("“{}” is now this tone", clash.holder))
+                }),
+            Clash::SaveAs(name) => library::adopt(&clash.hash, &name)
+                .map(|()| format!("kept {name} in the library")),
+        };
+        match outcome {
+            Ok(said) => {
+                self.lib_showing = LibraryView::Tones;
+                self.refresh_library();
+                self.note(said);
             }
             Err(why) => self.note(why),
         }
@@ -1776,18 +2193,12 @@ impl App {
                 kept.push(library::Slot::default());
                 continue;
             };
-            match library::keep_bytes(&sanitise(&name), "hxpreset", &bytes) {
-                Ok(path) => {
-                    Self::remember_name(&path, &name);
-                    kept.push(library::Slot {
-                        file: path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or_default()
-                            .to_owned(),
-                        name,
-                    });
-                }
+            // Beside, not over: a capture is 126 tones at once, and stopping
+            // on each name already in use would be 126 questions. Two tones
+            // that really are different and really are both called "Lead" get
+            // a number; identical bytes are still one tone.
+            match library::keep_beside(&name, "hxpreset", &bytes) {
+                Ok((hash, _)) => kept.push(library::Slot::new(&hash, &name)),
                 Err(_) => {
                     failures += 1;
                     kept.push(library::Slot::default());
@@ -1817,22 +2228,6 @@ impl App {
         }
     }
 
-    /// Record a kept tone's real name in the index.
-    ///
-    /// A file name cannot hold a colon on every platform, so the name the pedal
-    /// shows and the name on disk are not the same string. The library shows
-    /// the pedal's.
-    fn remember_name(path: &std::path::Path, name: &str) {
-        let Some(file) = path.file_name().and_then(|n| n.to_str()) else {
-            return;
-        };
-        let mut meta = library::metadata().get(file).cloned().unwrap_or_default();
-        if meta.name != name {
-            meta.name = name.to_owned();
-            let _ = library::save_meta(file, &meta);
-        }
-    }
-
     /// A name for a freshly captured setlist that does not collide with one
     /// already in the library — capturing twice should give you two, not
     /// silently replace the first.
@@ -1855,6 +2250,108 @@ impl App {
             .unwrap_or(base)
     }
 
+    /// Put the preset list into a picking state for one library tone.
+    fn start_sending(&mut self, row: usize) {
+        let Some(entry) = self.lib_entries.get(row) else {
+            return;
+        };
+        if !matches!(self.connection, Connection::Online) {
+            return self.note("no pedal to send to".into());
+        }
+        self.sending = Some(Sending {
+            hash: entry.hash.clone(),
+            name: entry.name.clone(),
+        });
+    }
+
+    /// Write the tone being sent into the slot that was picked.
+    ///
+    /// No confirmation window. The row itself said what it was holding before
+    /// it was clicked, which is the same information a window would have shown
+    /// and one fewer thing between a person and the thing they meant.
+    fn finish_sending(&mut self, slot: i64) {
+        let Some(sending) = self.sending.take() else {
+            return;
+        };
+        let Some(bytes) = library::read(&sending.hash) else {
+            return self.note(format!("{} is missing from the library", sending.name));
+        };
+        self.note(format!(
+            "writing {} to {}",
+            sending.name,
+            hx_proto::rpc::slot_label(slot)
+        ));
+        self.send(Cmd::PushSetlist(vec![(slot, Some((sending.name, bytes)))]));
+    }
+
+    /// A slot's name and its bytes, out of the automatic backup.
+    ///
+    /// `None` when there is no backup to read, or when the slot in question is
+    /// the one being edited right now and the edit buffer has moved on: the
+    /// bundle holds what was saved, and what a person means by "keep this" is
+    /// what they can hear. That case goes the long way, through the device.
+    fn slot_document(&self, index: i64) -> Option<(String, Vec<u8>)> {
+        if index == self.preset_index && self.dirty {
+            return None;
+        }
+        let dir = session::automatic_dir()?;
+        let bytes = std::fs::read(hx_usb::backup::slot_files(&dir).get(&(index as usize))?).ok()?;
+        let name = self.presets.get(index as usize).cloned()?;
+        Some((name, bytes))
+    }
+
+    /// Re-read what the pedal is holding, from the automatic backup.
+    ///
+    /// Whole rather than one slot at a time: 126 small files hashed is under a
+    /// millisecond, and a mirror that is rebuilt entirely cannot drift, which
+    /// a mirror patched in six places eventually would.
+    fn refresh_mirror(&mut self) {
+        let Some(dir) = session::automatic_dir() else {
+            return;
+        };
+        self.mirror = hx_usb::backup::slot_files(&dir)
+            .into_iter()
+            .filter_map(|(slot, path)| {
+                let bytes = std::fs::read(path).ok()?;
+                Some((slot as i64, library::hash_of(&bytes)))
+            })
+            .collect();
+    }
+
+    /// Whether the library has what the pedal is holding in a slot, and if not,
+    /// whether it has something else under the same name.
+    fn slot_sync(&self, index: i64) -> theme::Sync {
+        let Some(hash) = self.mirror.get(&index) else {
+            // No backup yet, or an empty slot. Either way there is nothing
+            // truthful to say.
+            return theme::Sync::Unknown;
+        };
+        if library::holds(hash) && library::meta_of(hash).is_some() {
+            return theme::Sync::Same;
+        }
+        let name = self.presets.get(index as usize).cloned().unwrap_or_default();
+        if !name.is_empty() && library::named(&name).is_some() {
+            theme::Sync::Differs
+        } else {
+            theme::Sync::Absent
+        }
+    }
+
+    /// The same question from the library's side: is this tone on the pedal?
+    fn tone_sync(&self, hash: &str, name: &str) -> theme::Sync {
+        if self.mirror.is_empty() {
+            return theme::Sync::Unknown;
+        }
+        if self.mirror.values().any(|h| h == hash) {
+            return theme::Sync::Same;
+        }
+        if self.presets.iter().any(|n| n == name) {
+            theme::Sync::Differs
+        } else {
+            theme::Sync::Absent
+        }
+    }
+
     /// Rebuild the library rows from the files and the saved index, keeping the
     /// current selection pinned to its file across the refresh.
     fn refresh_library(&mut self) {
@@ -1872,64 +2369,138 @@ impl App {
                 .position(|(_, s)| s.name == name)
         });
 
-        let meta = library::metadata();
-        let selected_name = self
+        let selected = self
             .lib_selected
             .and_then(|i| self.lib_entries.get(i))
-            .map(|e| e.file_name.clone());
+            .map(|e| e.hash.clone());
         let mut entries = Vec::new();
-        for file in library::entries() {
-            let file_name = file
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_owned();
-            let (derived, line) = self.library_facts(&file);
+        for entry in library::entries() {
+            let (derived, line) = self.library_facts(&entry.hash);
             // The recorded name wins: it is what the pedal shows, colon and
-            // all, where the file name has had those characters taken out.
-            let saved = meta.get(&file_name).map(|m| m.name.clone()).unwrap_or_default();
-            let name = if saved.is_empty() { derived } else { saved };
-            let meta = meta.get(&file_name).cloned().unwrap_or_default();
+            // all, where a name read back off the document may not be.
+            let name = if entry.meta.name.is_empty() {
+                derived
+            } else {
+                entry.meta.name.clone()
+            };
             entries.push(LibEntry {
-                file,
-                file_name,
+                hash: entry.hash,
                 name,
                 line,
-                meta,
+                meta: entry.meta,
             });
         }
         self.lib_entries = entries;
         self.lib_selected =
-            selected_name.and_then(|n| self.lib_entries.iter().position(|e| e.file_name == n));
+            selected.and_then(|h| self.lib_entries.iter().position(|e| e.hash == h));
+        self.write_portable_copies();
     }
 
-    /// The tone name and a one-line chain reading for a library file, read
-    /// through the same codec the preview uses.
-    fn library_facts(&self, file: &std::path::Path) -> (String, String) {
-        let stem = file
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("tone")
-            .to_owned();
+    /// Write the portable copy of every tone that has not got one.
+    ///
+    /// Both formats, always, rather than on request. A `.hxpreset` is the
+    /// device's own document and the only thing that restores a tone exactly;
+    /// a `.hlx` is what HX Edit, CustomTone and anything else can read. Keeping
+    /// one without the other makes the library either lossy or a place tones
+    /// cannot leave, and which of the two you need is not knowable in advance.
+    ///
+    /// Idempotent and quiet: it writes the ones that are missing, which after
+    /// the first pass is the one just kept.
+    fn write_portable_copies(&mut self) {
         let Some(catalog) = self.catalog.as_ref() else {
-            return (stem, String::new());
+            // No catalog, no symbol names, no honest `.hlx`. The byte-exact
+            // copy is already safe on disk; this can wait for the model data.
+            return;
         };
-        let tone = if file.extension().is_some_and(|e| e.eq_ignore_ascii_case("hlx")) {
-            std::fs::read_to_string(file)
+        let mut written = 0;
+        let mut refused = 0;
+        for (hash, name) in library::awaiting_portable() {
+            let Some(bytes) = library::read(&hash) else {
+                continue;
+            };
+            let Some(preset) = hx_proto::preset::Preset::parse(&bytes) else {
+                refused += 1;
+                continue;
+            };
+            let hlx = hx_catalog::to_hlx(&preset, catalog, &name).to_pretty_string();
+            if library::attach_portable(&hash, &hlx).is_ok() {
+                written += 1;
+            }
+        }
+        if written > 0 {
+            self.log.push(format!("wrote {written} portable copies"));
+        }
+        if refused > 0 {
+            self.log
+                .push(format!("{refused} tones could not be read as presets"));
+        }
+    }
+
+    /// Write the HX Edit bundle beside one of ours.
+    ///
+    /// The same bargain as a tone: `.hxbundle` is the pedal's own bytes and is
+    /// what a restore should use, `.hxb` is what HX Edit will open. One is
+    /// exact, the other travels, and there is no reason to make a person choose
+    /// between them after the fact.
+    fn write_hxb_beside(&mut self, bundle: &std::path::Path) {
+        let Some(catalog) = self.catalog.as_ref() else {
+            return;
+        };
+        let Ok((manifest, presets, globals)) = hx_usb::backup::for_export(bundle) else {
+            return;
+        };
+        let tones: Vec<(String, Option<serde_json::Value>)> = presets
+            .into_iter()
+            .map(|(name, bytes)| {
+                let tone = bytes
+                    .and_then(|b| hx_proto::preset::Preset::parse(&b))
+                    .map(|p| {
+                        hx_catalog::to_hlx(&p, catalog, &name).document["data"]["tone"].clone()
+                    });
+                (name, tone)
+            })
+            .collect();
+        let bytes = hx_catalog::write_backup(&hx_catalog::NewBackup {
+            setlist: manifest
+                .setlists
+                .first()
+                .map(String::as_str)
+                .unwrap_or("PRESETS"),
+            presets: &tones,
+            globals,
+            device: 0x0021_0006,
+            device_version: 0x0380_0000,
+            captured: manifest.captured as u32,
+        });
+        let target = bundle.with_extension("hxb");
+        match std::fs::write(&target, &bytes) {
+            Ok(()) => self.log.push(format!("wrote {}", target.display())),
+            Err(e) => self.log.push(format!("could not write the .hxb: {e}")),
+        }
+    }
+
+    /// The tone name and a one-line chain reading for a stored tone, read
+    /// through the same codec the preview uses.
+    fn library_facts(&self, hash: &str) -> (String, String) {
+        let fallback = library::short(hash).to_owned();
+        let Some(catalog) = self.catalog.as_ref() else {
+            return (fallback, String::new());
+        };
+        let Some(bytes) = library::read(hash) else {
+            return (fallback, String::new());
+        };
+        let tone = if library::kind(hash).as_deref() == Some("hlx") {
+            serde_json::from_slice::<serde_json::Value>(&bytes)
                 .ok()
-                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
                 .map(|json| hx_catalog::inspect(&json, catalog))
         } else {
-            std::fs::read(file)
-                .ok()
-                .and_then(|b| hx_proto::preset::Preset::parse(&b))
-                .map(|p| {
-                    hx_catalog::inspect(&hx_catalog::to_hlx(&p, catalog, &stem).document, catalog)
-                })
+            hx_proto::preset::Preset::parse(&bytes).map(|p| {
+                hx_catalog::inspect(&hx_catalog::to_hlx(&p, catalog, &fallback).document, catalog)
+            })
         };
         match tone {
             Some(t) => (t.name.clone(), Self::tone_content(&t).to_owned()),
-            None => (stem, String::new()),
+            None => (fallback, String::new()),
         }
     }
 
@@ -1978,8 +2549,9 @@ impl App {
                         match self.lib_showing {
                             // Keeping a preset lives on the preset list now,
                             // beside the star: it is a thing you do to a
-                            // preset, not a thing the library does.
-                            LibraryView::Tones => {}
+                            // preset, not a thing the library does. What is
+                            // left here belongs to the table itself.
+                            LibraryView::Tones => self.column_menu(ui),
                             LibraryView::Setlists => {
                                 if ui
                                     .add_enabled(live, egui::Button::new("Capture the pedal"))
@@ -2024,20 +2596,17 @@ impl App {
                         egui::CentralPanel::default()
                             .show_inside(ui, |ui| self.library_table(ui));
                     }
+                    // Setlists on the left, what is in the chosen one on the
+                    // right, drawn by the same table the tones use. A setlist
+                    // is a list of tones, so it should look like one.
                     LibraryView::Setlists => {
                         egui::SidePanel::left("lib-setlists")
-                            .resizable(false)
-                            .default_width(190.0)
-                            .show_inside(ui, |ui| self.setlist_rail(ui));
-                        egui::SidePanel::right("lib-setlist-details")
                             .resizable(true)
-                            .default_width(310.0)
-                            .show_inside(ui, |ui| {
-                                egui::ScrollArea::vertical()
-                                    .auto_shrink([false, false])
-                                    .id_salt("lib-setlist-scroll")
-                                    .show(ui, |ui| self.setlist_details(ui));
-                            });
+                            .default_width(340.0)
+                            // Not wrapped in a scroll area: the table does its
+                            // own scrolling, and a virtualised table inside a
+                            // scroll is two scrollbars fighting over one wheel.
+                            .show_inside(ui, |ui| self.setlist_rail(ui));
                         egui::CentralPanel::default()
                             .show_inside(ui, |ui| self.setlist_slots(ui));
                     }
@@ -2049,49 +2618,162 @@ impl App {
         }
         self.confirm_push_window(ctx);
         self.confirm_delete_window(ctx);
+        self.name_clash_window(ctx);
         self.confirm_switch_window(ctx);
     }
 
-    /// Every setlist in the library, by name.
+    /// Every setlist in the library, down the left, as the table everything
+    /// else uses.
+    ///
+    /// A setlist is a thing with a name, a place, a date and a size, which is a
+    /// row. It was a hand-rolled stack of two-line cards, which meant a second
+    /// way of listing things to learn, no sorting, and no way to correct a
+    /// venue without going to a panel below. The table brings all three along.
     fn setlist_rail(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
-        if self.lib_setlists.is_empty() {
-            ui.label(
-                RichText::new("No setlists yet. Capture the pedal to make one.")
-                    .small()
-                    .color(theme::DIM),
-            );
-            return;
+        let mut grid = table::Grid {
+            columns: vec![
+                table::Column::new("Setlist", 120.0).editable().fills(),
+                table::Column::new("Venue", 90.0).editable(),
+                table::Column::new("Date", 80.0).editable(),
+                table::Column::new("#", 34.0),
+            ],
+            sticky: 1,
+            sort: self.lib_setlist_sort,
+            menu: vec!["Remove this setlist".to_owned()],
+            nothing_yet: "No setlists yet. Press CAPTURE above the preset list \
+                          to keep the pedal as one.",
+            ..Default::default()
+        };
+        for (_, setlist) in &self.lib_setlists {
+            grid.rows.push(vec![
+                table::Cell::Text(setlist.name.clone()),
+                table::Cell::Text(setlist.venue.clone()),
+                table::Cell::Text(setlist.date.clone()),
+                table::Cell::Dim(setlist.filled().to_string()),
+            ]);
         }
-        let mut pick = None;
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                for (i, (_, setlist)) in self.lib_setlists.iter().enumerate() {
-                    let on = self.lib_setlist == Some(i);
-                    let text = if on {
-                        RichText::new(&setlist.name).color(theme::ACCENT).strong()
-                    } else {
-                        RichText::new(&setlist.name)
-                    };
-                    ui.horizontal(|ui| {
-                        if ui.selectable_label(on, text).clicked() {
-                            pick = Some(i);
-                        }
-                        ui.label(
-                            RichText::new(format!("{}", setlist.filled()))
-                                .small()
-                                .color(theme::DIM),
-                        );
-                    });
+
+        // Sorted on the very strings the table shows, so the order on screen
+        // and the order underneath can never disagree.
+        let (sorting, ascending) = grid.sort;
+        let mut order: Vec<usize> = (0..grid.rows.len()).collect();
+        order.sort_by_key(|&r| grid.rows[r][sorting.min(3)].key());
+        if !ascending {
+            order.reverse();
+        }
+        grid.rows = reorder(std::mem::take(&mut grid.rows), &order);
+        grid.selected = self
+            .lib_setlist
+            .and_then(|sel| order.iter().position(|&r| r == sel));
+        if let Some((name, column, draft)) = self.lib_setlist_editing.clone() {
+            grid.editing = order
+                .iter()
+                .position(|&r| self.lib_setlists[r].1.name == name)
+                .map(|row| (row, column));
+            grid.draft = draft;
+        }
+
+        // Its own height, so the details below it keep theirs. A long library
+        // takes a little over half the panel and scrolls inside that.
+        let wanted = table::ROW_HEIGHT * (grid.rows.len() + 1) as f32 + 6.0;
+        let height = wanted.min((ui.available_height() * 0.55).max(table::ROW_HEIGHT * 4.0));
+        let did = ui
+            .allocate_ui(egui::vec2(ui.available_width(), height), |ui| {
+                table::show(ui, "setlists", &mut grid)
+            })
+            .inner;
+
+        if let Some(col) = did.sort {
+            self.lib_setlist_sort = if col == self.lib_setlist_sort.0 {
+                (col, !self.lib_setlist_sort.1)
+            } else {
+                (col, true)
+            };
+        }
+        if let Some((row, ..)) = did.clicked {
+            if let Some(&i) = order.get(row) {
+                self.select_setlist_entry(i);
+            }
+        }
+        self.setlist_draft_edit(&grid, &did, &order);
+        if let Some((row, _)) = did.chose {
+            if let Some((path, _)) = order.get(row).and_then(|&i| self.lib_setlists.get(i)).cloned()
+            {
+                match library::remove_setlist(&path) {
+                    Ok(()) => {
+                        self.lib_setlist = None;
+                        self.refresh_library();
+                    }
+                    Err(why) => self.note(why),
                 }
-            });
-        if let Some(i) = pick {
-            self.select_setlist_entry(i);
+            }
+        }
+
+        // The chosen setlist's notes and the two things you do to it, under the
+        // list rather than in a panel of their own: they are read far less
+        // often than the presets on the right.
+        if self.lib_setlist.is_some() {
+            ui.add_space(8.0);
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .id_salt("lib-setlist-details")
+                .show(ui, |ui| self.setlist_details(ui));
         }
     }
 
-    /// The chosen setlist, slot by slot, in the pedal's own order.
+    /// Begin, carry on, or finish typing in a setlist's cell.
+    fn setlist_draft_edit(&mut self, grid: &table::Grid, did: &table::Did, order: &[usize]) {
+        if let Some((row, col)) = did.edit {
+            if let Some(setlist) = order.get(row).and_then(|&i| self.lib_setlists.get(i)) {
+                let was = match col {
+                    1 => setlist.1.venue.clone(),
+                    2 => setlist.1.date.clone(),
+                    _ => setlist.1.name.clone(),
+                };
+                self.lib_setlist_editing = Some((setlist.1.name.clone(), col, was));
+            }
+            return;
+        }
+        // The draft lives in the app, not the table, so it survives the frame.
+        if let Some((_, _, draft)) = self.lib_setlist_editing.as_mut() {
+            draft.clone_from(&grid.draft);
+        }
+        if did.cancelled {
+            self.lib_setlist_editing = None;
+        }
+        if did.committed {
+            if let Some((name, column, draft)) = self.lib_setlist_editing.take() {
+                self.commit_setlist_cell(&name, column, draft.trim());
+            }
+        }
+    }
+
+    /// Write what was typed into a cell back to the setlist it belongs to.
+    fn commit_setlist_cell(&mut self, name: &str, column: usize, typed: &str) {
+        let Some(i) = self.lib_setlists.iter().position(|(_, s)| s.name == name) else {
+            return;
+        };
+        // Through the draft, so a rename takes the same path a rename from the
+        // details below does: write the new file, then forget the old one.
+        self.select_setlist_entry(i);
+        match column {
+            1 => self.lib_setlist_draft.venue = typed.to_owned(),
+            2 => self.lib_setlist_draft.date = typed.to_owned(),
+            // A setlist with no name has no file to live in.
+            _ if typed.is_empty() => return,
+            _ => self.lib_setlist_draft.name = typed.to_owned(),
+        }
+        self.save_setlist_draft();
+    }
+
+    /// What is in the chosen setlist, drawn by the table the tones use.
+    ///
+    /// The same columns, because these are the same kind of thing: a setlist is
+    /// a list of tones in an order, and the order is the one extra column. A
+    /// second way of listing tones would be a second thing to learn for no
+    /// reason.
     fn setlist_slots(&mut self, ui: &mut egui::Ui) {
         let Some(i) = self.lib_setlist else {
             ui.add_space(8.0);
@@ -2102,54 +2784,87 @@ impl App {
             return;
         };
         let live = matches!(self.connection, Connection::Online);
-        let mut send_one = None;
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                for (slot, entry) in setlist.slots.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(hx_proto::rpc::slot_label(slot as i64))
-                                .monospace()
-                                .color(theme::DIM),
-                        );
-                        if entry.is_empty() {
-                            ui.label(RichText::new("empty").color(theme::DIM.gamma_multiply(0.7)));
-                            return;
-                        }
-                        ui.label(&entry.name);
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                // One preset at a time, into the slot it came
-                                // from: the common repair is one preset, not
-                                // the whole pedal.
-                                if ui
-                                    .add_enabled(live, egui::Button::new("Send").small())
-                                    .on_hover_text(format!(
-                                        "put “{}” back in {}",
-                                        entry.name,
-                                        hx_proto::rpc::slot_label(slot as i64)
-                                    ))
-                                    .clicked()
-                                {
-                                    send_one = Some((slot as i64, entry.clone()));
-                                }
-                            },
-                        );
-                    });
+
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(&setlist.name).strong());
+            ui.label(
+                RichText::new(format!("{} presets", setlist.filled()))
+                    .small()
+                    .color(theme::DIM),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_enabled(live, egui::Button::new("Put this setlist on the pedal"))
+                    .on_hover_text("write every preset, in order, over what is on the pedal now")
+                    .clicked()
+                {
+                    self.confirm_push = Some(i);
                 }
             });
-        if let Some((slot, entry)) = send_one {
-            self.send_one_slot(slot, &entry);
+        });
+        ui.add_space(2.0);
+
+        // Only the slots that hold something. 126 rows of "empty" is not a
+        // setlist, it is a form.
+        let played: Vec<(usize, library::Slot)> = setlist
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| !slot.is_empty())
+            .map(|(n, slot)| (n, slot.clone()))
+            .collect();
+
+        let mut grid = table::Grid {
+            columns: vec![
+                table::Column::new("Where", 46.0),
+                table::Column::new("Slot", 54.0),
+                table::Column::new("Name", 190.0),
+                table::Column::new("Artist", 130.0),
+                table::Column::new("Chain", 130.0).fills(),
+            ],
+            sticky: 3,
+            menu: vec!["Send this preset to its slot".to_owned()],
+            nothing_yet: "Nothing in this setlist.",
+            ..Default::default()
+        };
+        for (slot, entry) in &played {
+            let held = library::holds(&entry.hash);
+            let meta = library::meta_of(&entry.hash).unwrap_or_default();
+            let (_, line) = self.library_facts(&entry.hash);
+            grid.rows.push(vec![
+                table::Cell::Places(vec![(
+                    theme::Icon::Computer,
+                    if held { theme::Sync::Same } else { theme::Sync::Absent },
+                    if held {
+                        "kept for this setlist"
+                    } else {
+                        "missing from the library"
+                    },
+                )]),
+                table::Cell::Dim(hx_proto::rpc::slot_label(*slot as i64)),
+                table::Cell::Text(entry.name.clone()),
+                table::Cell::Text(meta.artist),
+                table::Cell::Dim(line),
+            ]);
+            grid.chosen.push(false);
+        }
+
+        let did = table::show(ui, "setlist-slots", &mut grid);
+        // A row is one preset out of the setlist, and the one repair anybody
+        // needs is putting it back where it came from.
+        let send = did.double_clicked.or(did.chose.map(|(row, _)| row));
+        if let Some(row) = send.filter(|_| live) {
+            if let Some((slot, entry)) = played.get(row).cloned() {
+                self.send_one_slot(slot as i64, &entry);
+            }
         }
     }
 
     /// Put one preset out of a setlist back into its slot.
     fn send_one_slot(&mut self, slot: i64, entry: &library::Slot) {
-        let Some(dir) = library::dir() else { return };
-        match std::fs::read(dir.join(&entry.file)) {
-            Ok(bytes) => {
+        match library::read(&entry.hash) {
+            Some(bytes) => {
                 self.note(format!(
                     "writing {} to {}",
                     entry.name,
@@ -2160,7 +2875,7 @@ impl App {
                     Some((entry.name.clone(), bytes)),
                 )]));
             }
-            Err(e) => self.note(format!("could not read {}: {e}", entry.file)),
+            None => self.note(format!("{} is missing from the library", entry.name)),
         }
     }
 
@@ -2171,17 +2886,10 @@ impl App {
             ui.label(RichText::new("Select a setlist to edit its details.").color(theme::DIM));
             return;
         };
+        // Name, venue and date are columns in the table above and are typed
+        // into there, the same as a tone's. What is left is the one field no
+        // column could hold.
         let mut changed = false;
-        for (label, field) in [
-            ("Name", &mut self.lib_setlist_draft.name),
-            ("Venue", &mut self.lib_setlist_draft.venue),
-            ("Date", &mut self.lib_setlist_draft.date),
-        ] {
-            ui.label(RichText::new(label).small().color(theme::DIM));
-            changed |= ui
-                .add(egui::TextEdit::singleline(field).desired_width(f32::INFINITY))
-                .changed();
-        }
         ui.label(RichText::new("Notes").small().color(theme::DIM));
         changed |= ui
             .add(
@@ -2306,7 +3014,6 @@ impl App {
 
     /// Read every tone the setlist names and send the lot to the pedal.
     fn push_setlist(&mut self, setlist: &library::Setlist) {
-        let Some(dir) = library::dir() else { return };
         let mut slots = Vec::with_capacity(setlist.slots.len());
         let mut missing = 0;
         for (index, entry) in setlist.slots.iter().enumerate() {
@@ -2314,12 +3021,12 @@ impl App {
                 slots.push((index as i64, None));
                 continue;
             }
-            match std::fs::read(dir.join(&entry.file)) {
-                Ok(bytes) => slots.push((index as i64, Some((entry.name.clone(), bytes)))),
+            match library::read(&entry.hash) {
+                Some(bytes) => slots.push((index as i64, Some((entry.name.clone(), bytes)))),
                 // A tone that is gone leaves its slot alone rather than
                 // emptying it: losing a file should not also lose the preset
                 // that is still on the pedal.
-                Err(_) => missing += 1,
+                None => missing += 1,
             }
         }
         if missing > 0 {
@@ -2350,9 +3057,6 @@ impl App {
     /// The middle table: one row per tone, filtered by the chosen tag. Click to
     /// select for the inspector; double-click to open its preview.
     fn library_table(&mut self, ui: &mut egui::Ui) {
-        use egui_extras::{Column, TableBuilder};
-
-
         let filter = self.lib_tag_filter.clone();
         let rows: Vec<usize> = self
             .lib_entries
@@ -2362,141 +3066,188 @@ impl App {
             .map(|(i, _)| i)
             .collect();
 
-        // Sorted by the column that was last clicked, and the sort is done on
-        // the very strings the table shows - so the order can never disagree
-        // with what is on screen.
-        let (column, ascending) = self.lib_sort;
-        let mut rows = rows;
-        rows.sort_by(|a, b| {
-            let key = |i: &usize| column.of(&self.lib_entries[*i]).to_lowercase();
-            let ord = key(a).cmp(&key(b));
-            if ascending { ord } else { ord.reverse() }
-        });
-
-        let mut select: Option<(usize, bool, bool)> = None;
-        let mut open_preview = None;
-        let mut delete = false;
-        let chosen = self.lib_chosen.clone();
-
-        // Read before the table takes the ui: a row's click needs to know
-        // whether a modifier was down, and by then `ui` is spoken for.
-        let (ctrl, shift) = ui.input(|i| (i.modifiers.command, i.modifiers.shift));
-        let mut table = TableBuilder::new(ui)
-            .striped(true)
-            .sense(egui::Sense::click());
-        for _ in 0..LibColumn::ALL.len() - 1 {
-            table = table.column(Column::auto().at_least(90.0).resizable(true));
+        let shown = self.shown_columns();
+        let mut grid = table::Grid {
+            columns: shown.iter().map(|c| c.column()).collect(),
+            sort: (
+                shown.iter().position(|c| *c == self.lib_sort.0).unwrap_or(0),
+                self.lib_sort.1,
+            ),
+            // The dot and the name travel together when the table is scrolled
+            // sideways: a row whose name has gone off the left edge is a row you
+            // cannot act on.
+            sticky: 2.min(shown.len()),
+            menu: vec![if self.lib_chosen.len() > 1 {
+                format!("Delete {} tones", self.lib_chosen.len())
+            } else {
+                "Delete".to_owned()
+            }],
+            nothing_yet: "No tones yet. Press the dot beside a preset to keep it here.",
+            ..Default::default()
+        };
+        for &i in &rows {
+            let entry = &self.lib_entries[i];
+            let state = self.tone_sync(&entry.hash, &entry.name);
+            grid.rows.push(
+                shown
+                    .iter()
+                    .map(|c| c.cell(entry, state))
+                    .collect(),
+            );
+            grid.chosen.push(self.lib_chosen.contains(&entry.hash));
         }
-        table = table.column(Column::remainder());
 
-        let mut sort_by = None;
-        table
-            .header(22.0, |mut header| {
-                for col in LibColumn::ALL {
-                    header.col(|ui| {
-                        // The whole cell sorts, not just the few pixels the
-                        // words cover. A header is a target the width of its
-                        // column; anything less is a game of hunt-the-arrow.
-                        let arrow = if col == column {
-                            if ascending { " ↑" } else { " ↓" }
-                        } else {
-                            ""
-                        };
-                        let size = ui.available_size();
-                        let (rect, hit) = ui.allocate_exact_size(size, egui::Sense::click());
-                        if ui.is_rect_visible(rect) {
-                            if hit.hovered() {
-                                ui.painter().rect_filled(
-                                    rect,
-                                    egui::Rounding::same(3.0),
-                                    egui::Color32::from_rgb(0x25, 0x29, 0x31),
-                                );
-                            }
-                            ui.painter().text(
-                                rect.left_center() + egui::vec2(4.0, 0.0),
-                                egui::Align2::LEFT_CENTER,
-                                format!("{}{arrow}", col.title()),
-                                egui::TextStyle::Body.resolve(ui.style()),
-                                if col == column { theme::ACCENT } else { theme::TEXT },
-                            );
-                        }
-                        if hit.on_hover_text("sort by this column").clicked() {
-                            sort_by = Some(col);
-                        }
-                    });
-                }
-            })
-            .body(|mut body| {
-                for &i in &rows {
-                    let e = &self.lib_entries[i];
-                    let picked = chosen.contains(&e.file_name);
-                    body.row(22.0, |mut row| {
-                        row.set_selected(picked || self.lib_selected == Some(i));
-                        for col in LibColumn::ALL {
-                            row.col(|ui| {
-                                // Not selectable. egui makes label text
-                                // selectable by default, which puts an I-beam
-                                // and a highlight on every cell - it reads as
-                                // an edit field that refuses to be edited.
-                                let text = col.of(e);
-                                let text = if col == LibColumn::Chain {
-                                    RichText::new(text).color(theme::DIM)
-                                } else {
-                                    RichText::new(text)
-                                };
-                                ui.add(
-                                    egui::Label::new(text)
-                                        .selectable(false)
-                                        // Truncated, not wrapped: a wrapped
-                                        // name makes one row twice the height
-                                        // of its neighbours and the table
-                                        // ripples.
-                                        .truncate(),
-                                );
-                            });
-                        }
-                        let r = row.response();
-                        if r.clicked() {
-                            select = Some((i, ctrl, shift));
-                        }
-                        if r.double_clicked() {
-                            open_preview = Some(e.file.clone());
-                        }
-                        r.context_menu(|ui| {
-                            let n = chosen.len().max(1);
-                            if ui
-                                .button(if n > 1 {
-                                    format!("Delete {n} tones")
-                                } else {
-                                    "Delete".to_owned()
-                                })
-                                .clicked()
-                            {
-                                delete = true;
-                                ui.close_menu();
-                            }
-                        });
-                    });
-                }
-            });
+        // Sorted on the very strings the table shows, so the order can never
+        // disagree with what is on screen.
+        let (sorting, ascending) = grid.sort;
+        let mut order: Vec<usize> = (0..grid.rows.len()).collect();
+        order.sort_by_key(|&r| grid.rows[r][sorting].key());
+        if !ascending {
+            order.reverse();
+        }
+        let rows: Vec<usize> = order.iter().map(|&r| rows[r]).collect();
+        grid.rows = reorder(std::mem::take(&mut grid.rows), &order);
+        grid.chosen = order.iter().map(|&r| grid.chosen[r]).collect();
+        grid.selected = self
+            .lib_selected
+            .and_then(|sel| rows.iter().position(|&r| r == sel));
 
-        if let Some(col) = sort_by {
+        if let Some((hash, column, draft)) = self.lib_editing.clone() {
+            let cell = rows
+                .iter()
+                .position(|&r| self.lib_entries[r].hash == hash)
+                .zip(shown.iter().position(|c| *c == column));
+            grid.editing = cell;
+            grid.draft = draft;
+        }
+
+        let did = table::show(ui, "library", &mut grid);
+        self.lib_draft_edit(&grid, &did, &rows, &shown);
+
+        if let Some(col) = did.sort {
+            let col = shown[col];
             // Clicking the column that is already sorting turns it around.
-            self.lib_sort = if col == column {
-                (col, !ascending)
+            self.lib_sort = if col == self.lib_sort.0 {
+                (col, !self.lib_sort.1)
             } else {
                 (col, true)
             };
         }
-        if let Some((i, ctrl, shift)) = select {
-            self.pick_lib_row(&rows, i, ctrl, shift);
+        if let Some((row, ctrl, shift)) = did.clicked {
+            self.pick_lib_row(&rows, rows[row], ctrl, shift);
         }
-        if delete {
+        if let Some(row) = did.double_clicked {
+            let hash = self.lib_entries[rows[row]].hash.clone();
+            self.open_tone(&hash);
+        }
+        if let Some((row, _)) = did.place {
+            self.start_sending(rows[row]);
+        }
+        if did.chose.is_some() {
             self.ask_to_delete();
         }
-        if let Some(file) = open_preview {
-            self.open_tone_file(&file);
+    }
+
+    /// Begin, carry on, or finish typing in a cell.
+    fn lib_draft_edit(
+        &mut self,
+        grid: &table::Grid,
+        did: &table::Did,
+        rows: &[usize],
+        shown: &[LibColumn],
+    ) {
+        if let Some((row, col)) = did.edit {
+            let entry = &self.lib_entries[rows[row]];
+            let column = shown[col];
+            self.lib_editing = Some((
+                entry.hash.clone(),
+                column,
+                column.text(entry),
+            ));
+            return;
         }
+        // The draft lives in the app, not the table, so it survives the frame.
+        if let Some((_, _, draft)) = self.lib_editing.as_mut() {
+            draft.clone_from(&grid.draft);
+        }
+        if did.cancelled {
+            self.lib_editing = None;
+        }
+        if did.committed {
+            if let Some((hash, column, draft)) = self.lib_editing.take() {
+                self.commit_cell(&hash, column, draft.trim());
+            }
+        }
+    }
+
+    /// Write what was typed into a cell back to the tone it belongs to.
+    fn commit_cell(&mut self, hash: &str, column: LibColumn, typed: &str) {
+        let Some(i) = self.lib_entries.iter().position(|e| e.hash == hash) else {
+            return;
+        };
+        let mut meta = self.lib_entries[i].meta.clone();
+        match column {
+            // A name has to stay unique, and a taken one is refused rather than
+            // quietly turned into something else.
+            LibColumn::Name => {
+                if typed.is_empty() {
+                    return;
+                }
+                if !library::name_is_free(typed, hash) {
+                    return self.note(format!("another tone is already called {typed}"));
+                }
+                meta.name = typed.to_owned();
+            }
+            LibColumn::Character => meta.character = typed.to_owned(),
+            LibColumn::Artist => meta.artist = typed.to_owned(),
+            LibColumn::Genre => {
+                meta.genres = typed
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|g| !g.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+            }
+            LibColumn::Sync | LibColumn::Chain => return,
+        }
+        if let Err(why) = library::save_meta(hash, &meta) {
+            return self.note(why);
+        }
+        if self.lib_selected == Some(i) {
+            self.lib_draft = meta.clone();
+            self.lib_genres_buf = meta.genres.join(", ");
+        }
+        self.lib_entries[i].meta = meta;
+        self.lib_entries[i].name = self.lib_entries[i].meta.name.clone();
+    }
+
+    /// Which columns the table is showing, in order, skipping the ones turned
+    /// off. The dot and the name are not offered: a table of tones with no
+    /// names is not a table of anything.
+    fn shown_columns(&self) -> Vec<LibColumn> {
+        LibColumn::ALL
+            .into_iter()
+            .filter(|c| c.always() || !self.lib_hidden.contains(c))
+            .collect()
+    }
+
+    /// The menu that turns columns on and off.
+    fn column_menu(&mut self, ui: &mut egui::Ui) {
+        ui.menu_button(RichText::new("COLUMNS").small(), |ui| {
+            for column in LibColumn::ALL {
+                if column.always() {
+                    continue;
+                }
+                let mut on = !self.lib_hidden.contains(&column);
+                if ui.checkbox(&mut on, column.title()).changed() {
+                    if on {
+                        self.lib_hidden.remove(&column);
+                    } else {
+                        self.lib_hidden.insert(column);
+                    }
+                }
+            }
+        });
     }
 
     /// What a click on a row means, with and without modifiers.
@@ -2505,12 +3256,12 @@ impl App {
     /// takes everything between here and the last plain click - the three
     /// gestures every list in every file manager has had for thirty years.
     fn pick_lib_row(&mut self, rows: &[usize], row: usize, ctrl: bool, shift: bool) {
-        let file = |app: &Self, i: usize| app.lib_entries[i].file_name.clone();
+        let of = |app: &Self, i: usize| app.lib_entries[i].hash.clone();
         match (ctrl, shift) {
             (true, _) => {
-                let name = file(self, row);
-                if !self.lib_chosen.remove(&name) {
-                    self.lib_chosen.insert(name);
+                let hash = of(self, row);
+                if !self.lib_chosen.remove(&hash) {
+                    self.lib_chosen.insert(hash);
                 }
                 self.lib_anchor = Some(row);
             }
@@ -2521,10 +3272,10 @@ impl App {
                     rows.iter().position(|&r| r == row).unwrap_or(0),
                 );
                 let span = if from <= to { from..=to } else { to..=from };
-                self.lib_chosen = span.map(|k| file(self, rows[k])).collect();
+                self.lib_chosen = span.map(|k| of(self, rows[k])).collect();
             }
             _ => {
-                self.lib_chosen = [file(self, row)].into_iter().collect();
+                self.lib_chosen = [of(self, row)].into_iter().collect();
                 self.lib_anchor = Some(row);
             }
         }
@@ -2535,7 +3286,7 @@ impl App {
     fn ask_to_delete(&mut self) {
         let chosen: Vec<String> = if self.lib_chosen.is_empty() {
             self.lib_selected
-                .map(|i| self.lib_entries[i].file_name.clone())
+                .map(|i| self.lib_entries[i].hash.clone())
                 .into_iter()
                 .collect()
         } else {
@@ -2544,12 +3295,12 @@ impl App {
         if chosen.is_empty() {
             return;
         }
-        // A setlist points at library files, so deleting one takes it out of
-        // every setlist that plays it. Saying which is the difference between
-        // a warning and a scare.
+        // A setlist names bytes, so deleting a tone from the library cannot
+        // take it out of one. Saying which setlists still play it is the
+        // reassurance, not the warning it used to be.
         let affected: Vec<String> = library::setlists()
             .into_iter()
-            .filter(|(_, s)| s.slots.iter().any(|slot| chosen.contains(&slot.file)))
+            .filter(|(_, s)| chosen.iter().any(|hash| s.plays(hash)))
             .map(|(_, s)| s.name)
             .collect();
         self.confirm_delete = Some((chosen, affected));
@@ -2576,7 +3327,7 @@ impl App {
                     ui.add_space(6.0);
                     ui.label(
                         RichText::new(format!(
-                            "{} in the {} {}, and will be kept for them.",
+                            "{} played by the {} {}, and will keep playing there.",
                             if chosen.len() == 1 { "This tone is" } else { "Some of them are" },
                             if affected.len() == 1 { "setlist" } else { "setlists" },
                             affected
@@ -2585,14 +3336,17 @@ impl App {
                                 .collect::<Vec<_>>()
                                 .join(", ")
                         ))
-                        .color(theme::ACCENT),
+                        .color(theme::DIM),
                     );
                 }
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new("They go to the library's trash, not out of existence.")
-                        .small()
-                        .color(theme::DIM),
+                    RichText::new(
+                        "Nothing else playing them goes to the library's trash, \
+                         not out of existence.",
+                    )
+                    .small()
+                    .color(theme::DIM),
                 );
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -2607,46 +3361,22 @@ impl App {
         match decided {
             Some(true) => {
                 self.confirm_delete = None;
-                let Some(dir) = library::dir() else { return };
-                // A tone a setlist plays is moved aside rather than trashed,
-                // and the setlists are repointed at where it went. Deleting
-                // from the library should never cost a setlist its tone.
-                let mut setlists = library::setlists();
+                // Nothing here has to think about the setlists. Forgetting a
+                // tone takes it out of the library; the object survives exactly
+                // as long as something still points at it, which is the whole
+                // reason the store is addressed by content.
                 let mut gone = 0;
-                let mut kept_for = 0;
-                for file in &chosen {
-                    let played = setlists
-                        .iter()
-                        .any(|(_, s)| s.slots.iter().any(|slot| &slot.file == file));
-                    let outcome = if played {
-                        library::retire(&dir.join(file)).map(Some)
-                    } else {
-                        library::remove(&dir.join(file)).map(|()| None)
-                    };
-                    match outcome {
-                        Ok(moved) => {
-                            gone += 1;
-                            if let Some(now) = moved {
-                                kept_for += 1;
-                                for (_, setlist) in setlists.iter_mut() {
-                                    for slot in setlist.slots.iter_mut() {
-                                        if &slot.file == file {
-                                            slot.file = now.clone();
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                for hash in &chosen {
+                    match library::forget(hash) {
+                        Ok(()) => gone += 1,
                         Err(why) => self.note(why),
                     }
                 }
-                for (_, setlist) in &setlists {
-                    let _ = library::save_setlist(setlist);
-                }
-                if kept_for > 0 {
-                    self.note(format!("{kept_for} are still held for their setlists"));
-                }
-                self.note(format!("removed {gone} tones"));
+                self.note(if gone == 1 {
+                    "removed 1 tone".to_owned()
+                } else {
+                    format!("removed {gone} tones")
+                });
                 self.lib_chosen.clear();
                 self.lib_selected = None;
                 self.refresh_library();
@@ -2675,7 +3405,30 @@ impl App {
             ui.label(RichText::new("Select a tone to edit its details.").color(theme::DIM));
             return;
         };
-        ui.label(RichText::new(&self.lib_entries[i].name).strong());
+        // The name is editable here, and only here. It is a label rather than
+        // an identity now, so changing it moves nothing and breaks no setlist;
+        // what it must stay is unique, or the library grows two things a
+        // person cannot tell apart.
+        let hash = self.lib_entries[i].hash.clone();
+        let free = library::name_is_free(&self.lib_draft.name, &hash);
+        let name = ui.add(
+            egui::TextEdit::singleline(&mut self.lib_draft.name)
+                .desired_width(f32::INFINITY)
+                .font(egui::TextStyle::Heading)
+                .hint_text("name this tone"),
+        );
+        if !free {
+            ui.label(
+                RichText::new("another tone has that name")
+                    .small()
+                    .color(theme::ACCENT),
+            );
+        }
+        // Held back until the field is done being typed in, so a name in
+        // mid-flight is not written and then written again.
+        if name.lost_focus() && !free {
+            self.lib_draft.name = self.lib_entries[i].meta.name.clone();
+        }
         if !self.lib_entries[i].line.is_empty() {
             ui.label(RichText::new(&self.lib_entries[i].line).small().color(theme::DIM));
         }
@@ -2767,13 +3520,21 @@ impl App {
                 });
             });
 
-        // Persist as the fields change; one row's metadata, index untouched.
-        if self.lib_draft != self.lib_entries[i].meta {
-            let file_name = self.lib_entries[i].file_name.clone();
-            if let Err(e) = library::save_meta(&file_name, &self.lib_draft) {
+        // Persist as the fields change; one tone's metadata, the rest of the
+        // index untouched. A name that is not free is the one thing not
+        // written: it would put two tones under one name for as long as it
+        // took to finish typing the rest of it.
+        if self.lib_draft != self.lib_entries[i].meta && free {
+            let hash = self.lib_entries[i].hash.clone();
+            if let Err(e) = library::save_meta(&hash, &self.lib_draft) {
                 self.note(e);
             }
             self.lib_entries[i].meta = self.lib_draft.clone();
+            // The table reads this rather than the metadata, so a rename shows
+            // in the row as it is typed.
+            if !self.lib_draft.name.is_empty() {
+                self.lib_entries[i].name = self.lib_draft.name.clone();
+            }
         }
 
         ui.add_space(10.0);
@@ -2797,9 +3558,9 @@ impl App {
             .add(egui::Button::new(RichText::new("Remove from library").color(theme::DIM)).frame(false))
             .clicked()
         {
-            let file = self.lib_entries[i].file.clone();
+            let hash = self.lib_entries[i].hash.clone();
             let name = self.lib_entries[i].name.clone();
-            match library::remove(&file) {
+            match library::forget(&hash) {
                 Ok(()) => self.note(format!("removed {name}")),
                 Err(why) => self.note(why),
             }
@@ -2832,13 +3593,12 @@ impl App {
         };
 
         let stem = sanitise(&entry.name);
-        let document = match std::fs::read(&entry.file) {
-            Ok(bytes) => bytes,
-            Err(e) => return self.note(format!("could not read {}: {e}", entry.name)),
+        let Some(document) = library::read(&entry.hash) else {
+            return self.note(format!("{} is missing from the library", entry.name));
         };
         // A library tone is a device document; the site wants the symbolic
         // form. A tone kept as .hlx already is passed through untouched.
-        let hlx = if entry.file.extension().is_some_and(|e| e.eq_ignore_ascii_case("hlx")) {
+        let hlx = if library::kind(&entry.hash).as_deref() == Some("hlx") {
             String::from_utf8_lossy(&document).into_owned()
         } else {
             match hx_proto::preset::Preset::parse(&document) {
@@ -2889,6 +3649,20 @@ impl App {
                         .color(theme::DIM),
                 );
                 ui.separator();
+
+                ui.heading("The whole pedal");
+                ui.label(
+                    RichText::new(
+                        "A backup is every preset, every setting and every impulse \
+                         response, as the device's own bytes. One is taken automatically \
+                         whenever stompchain connects, and kept current as you save.",
+                    )
+                    .small()
+                    .color(theme::DIM),
+                );
+                ui.add_space(4.0);
+                ui.horizontal(|ui| self.backup_actions(ui));
+                ui.add_space(10.0);
 
                 ui.heading("Impulse responses");
                 ui.label(
@@ -3213,35 +3987,248 @@ impl App {
         }
     }
 
-    /// Ask what controls the selected block's parameters.
+    /// Ask what each footswitch is called and what colour it lights.
     ///
-    /// One read per parameter and no opcode that asks about a whole block, so
-    /// this runs when the selection changes rather than on a timer. The answer
-    /// clears first: showing the previous block's assignments against this
-    /// block's knobs would be worse than showing none.
-    fn read_assignments(&mut self) {
-        self.assignments.clear();
-        self.assignments_for = -1;
+    /// The document says what every controller drives, so this is no longer
+    /// where assignments come from. What it still knows, and the document does
+    /// not, is the switch's own furniture: a typed label, an LED colour,
+    /// latching or momentary. A handful of round trips, once per preset.
+    fn read_switches(&mut self) {
         if !matches!(self.connection, Connection::Online) {
+            self.switches.clear();
             return;
         }
-        let Some(block) = self.chain.get(self.selected) else {
-            return;
+        self.send(Cmd::ReadSwitches);
+    }
+
+    /// Everything driving anything, from both places the pedal keeps it.
+    ///
+    /// The document's controller table has every parameter assignment and the
+    /// bypasses an expression pedal drives — a wah's auto-engage — but **not a
+    /// bypass on a footswitch**, which is not a controller assignment at all:
+    /// it lives in the footswitch's own configuration, where opcode 33 reads
+    /// it. Checked across every preset on the pedal: not one footswitch bypass
+    /// appears in the document. Reading only the document was why the on/off
+    /// switch never showed what carried it.
+    fn all_assignments(&self) -> Vec<hx_proto::preset::Assignment> {
+        use hx_proto::preset::{Assignment, Target};
+        let mut found = self.assignments.clone();
+        for switch in &self.switches {
+            for carried in &switch.carries {
+                let source = hx_proto::rpc::Source::Footswitch(switch.switch);
+                // A switch's list names everything it drives on that block,
+                // parameters included, and does not say which is which. The
+                // document names every parameter assignment and no footswitch
+                // bypass, so an entry the document already accounts for *is*
+                // that parameter, and only one it does not know about is the
+                // bypass. Matching on the block alone invented an On/Off row
+                // for a switch that was really driving a knob.
+                if found
+                    .iter()
+                    .any(|a| a.block == carried.block && a.source == source)
+                {
+                    continue;
+                }
+                found.push(Assignment {
+                    block: carried.block,
+                    source,
+                    target: Target::Bypass,
+                    // A switch is on or off; there is no travel to move.
+                    min: 0.0,
+                    max: 1.0,
+                });
+            }
+        }
+        found
+    }
+
+    /// What drives one thing on one block, if anything does.
+    fn assignment(
+        &self,
+        block: i64,
+        target: hx_proto::preset::Target,
+    ) -> Option<hx_proto::preset::Assignment> {
+        self.all_assignments()
+            .into_iter()
+            .find(|a| a.block == block && a.target == target)
+    }
+
+    /// Everything driving one block, in source order so the list does not
+    /// reshuffle itself when an assignment is added.
+    fn assignments_on(&self, block: i64) -> Vec<hx_proto::preset::Assignment> {
+        let mut found: Vec<_> = self
+            .all_assignments()
+            .into_iter()
+            .filter(|a| a.block == block)
+            .collect();
+        found.sort_by_key(|a| (a.source.ordinal(), a.target != hx_proto::preset::Target::Bypass));
+        found
+    }
+
+    /// Whether an assignment is Line 6's auto-engage.
+    ///
+    /// A bypass under an expression pedal does not mean the pedal switches the
+    /// block: it means the block switches *itself* on when the pedal moves off
+    /// its heel, which is how every wah on the device works. "Expression Pedal
+    /// 1 controls On/Off" is true and says none of that.
+    fn auto_engage(
+        source: hx_proto::rpc::Source,
+        target: hx_proto::preset::Target,
+    ) -> bool {
+        matches!(
+            (source, target),
+            (
+                hx_proto::rpc::Source::Expression(_),
+                hx_proto::preset::Target::Bypass
+            )
+        )
+    }
+
+    /// What to call what an assignment drives: the parameter's name out of the
+    /// catalog, or On/Off for a bypass.
+    fn target_name(&self, block: i64, target: hx_proto::preset::Target) -> String {
+        use hx_proto::preset::Target;
+        let index = match target {
+            Target::Bypass => return "On/Off".to_owned(),
+            Target::Param(index) => index,
         };
-        if !self.is_effect(block) {
-            return;
+        self.chain
+            .iter()
+            .find(|b| b.position == block)
+            .and_then(|b| self.slot_model(b))
+            .and_then(|model| {
+                let catalog = self.catalog.as_ref()?;
+                Some(catalog.ordered_params(model).get(index as usize)?.name.clone())
+            })
+            .unwrap_or_else(|| format!("Parameter {index}"))
+    }
+
+    /// One control's assignment menu, gathered before it draws.
+    ///
+    /// The same gathering for a knob and for a block's on/off, because they ask
+    /// the same question. They used to be two menus with two vocabularies, and
+    /// only one of them could tell you the footswitch you were reaching for is
+    /// already carrying something else.
+    fn assign_view(
+        &self,
+        block: i64,
+        target: hx_proto::preset::Target,
+        name: String,
+    ) -> AssignMenu {
+        use hx_proto::preset::Target;
+        use hx_proto::rpc::Source;
+        let bypass = target == Target::Bypass;
+        let switches = self.switch_count();
+        let driving = self.all_assignments();
+        let sources = Source::all()
+            .into_iter()
+            // A bypass is a switch, so a pedal that sweeps cannot drive it.
+            .filter(|source| !bypass || source.switches())
+            // The protocol has room for five footswitches; a Stomp has three,
+            // and offering the two it does not have is offering nothing.
+            .filter(|source| !matches!(source, Source::Footswitch(n) if *n > switches))
+            .map(|source| {
+                let mut carries: Vec<String> = driving
+                    .iter()
+                    .filter(|a| a.source == source && (a.block, a.target) != (block, target))
+                    .map(|a| self.target_name(a.block, a.target))
+                    .collect();
+                // A switch with a name typed for it answers to that name: it is
+                // what is written under your foot.
+                if let Source::Footswitch(n) = source {
+                    if let Some(label) = self
+                        .switches
+                        .iter()
+                        .find(|s| s.switch == n)
+                        .and_then(|s| s.label.clone())
+                    {
+                        carries.insert(0, label);
+                    }
+                }
+                (source, carries)
+            })
+            .collect();
+        let under = self.assignment(block, target).map(|a| a.source);
+        AssignMenu {
+            name,
+            under,
+            sources,
+            // The switch under this block, when there is one. A footswitch is
+            // three things besides what it drives — a name, a colour, a hold or
+            // a toggle — and this popup is where you are standing when you
+            // think about any of them.
+            switch: match under {
+                Some(Source::Footswitch(n)) if bypass => self
+                    .switches
+                    .iter()
+                    .find(|s| s.switch == n)
+                    .map(|s| SwitchView {
+                        switch: n,
+                        label: self
+                            .switch_draft
+                            .as_ref()
+                            .filter(|(drafting, _)| *drafting == n)
+                            .map(|(_, text)| text.clone())
+                            .unwrap_or_else(|| s.label.clone().unwrap_or_default()),
+                        named: s.label.is_some(),
+                        colour: s.colour,
+                        momentary: s.momentary,
+                    }),
+                _ => None,
+            },
+            colours: self
+                .catalog
+                .as_ref()
+                .and_then(|c| c.menu(hx_catalog::FOOTSWITCH_LED))
+                .map(<[String]>::to_vec)
+                .unwrap_or_default(),
         }
-        let params = self
-            .slot_model(block)
-            .and_then(|model| self.catalog.as_ref().map(|c| c.ordered_params(model).len()))
-            .unwrap_or(0) as i64;
-        if params == 0 {
-            return;
+    }
+
+    /// Carry out what a control's assignment menu was asked to do.
+    fn assign_action(
+        &mut self,
+        block: i64,
+        target: hx_proto::preset::Target,
+        action: AssignAction,
+    ) {
+        use hx_proto::preset::Target;
+        use hx_proto::rpc::Source;
+        let source = match action {
+            AssignAction::To(source) => source,
+            AssignAction::Typing(switch, text) => {
+                self.switch_draft = Some((switch, text));
+                return;
+            }
+            AssignAction::Switch { switch, edit } => {
+                if matches!(edit, session::SwitchEdit::Label(_)) {
+                    self.switch_draft = None;
+                }
+                self.edit(Cmd::EditSwitch { switch, edit });
+                return;
+            }
+        };
+        match target {
+            Target::Param(param) => self.edit(Cmd::AssignParameter { block, param, source }),
+            Target::Bypass => match source {
+                Some(Source::Footswitch(switch)) => {
+                    self.edit(Cmd::AssignBypassFootswitch { block, switch, on: true })
+                }
+                Some(Source::MidiCc) => self.edit(Cmd::AssignMidi { block, on: true }),
+                // The menu offers a bypass nothing else, so this is unreachable
+                // rather than unhandled.
+                Some(_) => {}
+                // Taking it off means undoing whatever the document says has
+                // it, and the two are different messages.
+                None => match self.assignment(block, Target::Bypass).map(|a| a.source) {
+                    Some(Source::Footswitch(switch)) => {
+                        self.edit(Cmd::AssignBypassFootswitch { block, switch, on: false })
+                    }
+                    Some(Source::MidiCc) => self.edit(Cmd::AssignMidi { block, on: false }),
+                    _ => {}
+                },
+            },
         }
-        self.send(Cmd::ReadAssignments {
-            block: block.position,
-            params,
-        });
     }
 
     /// Whether every value the EQ panel drives has actually been read off the
@@ -3699,10 +4686,31 @@ impl App {
     /// Open a tone file of either kind for a look. The extension decides the
     /// reader; both end at the same preview window.
     fn open_tone_file(&mut self, path: &std::path::Path) {
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) => return self.note(format!("could not read {}: {e}", path.display())),
+        };
+        let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Untitled");
         if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("hlx")) {
-            self.preview_hlx(path);
+            self.preview_hlx(name, bytes);
         } else {
-            self.preview_hxpreset(path);
+            self.preview_hxpreset(name, bytes);
+        }
+    }
+
+    /// Show a tone the library holds, read out of the object store.
+    fn open_tone(&mut self, hash: &str) {
+        let Some(bytes) = library::read(hash) else {
+            return self.note("that tone is missing from the library".into());
+        };
+        let name = library::meta_of(hash)
+            .map(|m| m.name)
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| library::short(hash).to_owned());
+        if library::kind(hash).as_deref() == Some("hlx") {
+            self.preview_hlx(&name, bytes);
+        } else {
+            self.preview_hxpreset(&name, bytes);
         }
     }
 
@@ -3734,22 +4742,15 @@ impl App {
     }
 
     /// Read a .hlx and show what it is, without touching the device.
-    fn preview_hlx(&mut self, path: &std::path::Path) {
-        let text = match std::fs::read_to_string(path) {
-            Ok(t) => t,
-            Err(e) => {
-                self.note(format!("could not read {}: {e}", path.display()));
-                return;
-            }
-        };
+    fn preview_hlx(&mut self, label: &str, bytes: Vec<u8>) {
         let Some(catalog) = self.catalog.as_ref() else {
             self.note("reading a tone needs HX Edit's model data first".into());
             return;
         };
-        let json: serde_json::Value = match serde_json::from_str(&text) {
+        let json: serde_json::Value = match serde_json::from_slice(&bytes) {
             Ok(j) => j,
             Err(e) => {
-                self.note(format!("{} is not a readable .hlx: {e}", path.display()));
+                self.note(format!("{label} is not a readable .hlx: {e}"));
                 return;
             }
         };
@@ -3849,33 +4850,23 @@ impl App {
             skipped,
             load: LoadKind::Steps(blocks),
             dest: self.preset_index.max(0),
-            source: path.to_owned(),
+            source: ("hlx".to_owned(), bytes),
         });
     }
 
     /// Read a .hxpreset and show what it is, through the same codec the .hlx
     /// path uses, so one window understands either. The original bytes are kept
     /// so Load can write the document exactly.
-    fn preview_hxpreset(&mut self, path: &std::path::Path) {
-        let bytes = match std::fs::read(path) {
-            Ok(b) => b,
-            Err(e) => {
-                self.note(format!("could not read {}: {e}", path.display()));
-                return;
-            }
-        };
+    fn preview_hxpreset(&mut self, label: &str, bytes: Vec<u8>) {
         let Some(catalog) = self.catalog.as_ref() else {
             self.note("reading a tone needs HX Edit's model data first".into());
             return;
         };
         let Some(preset) = hx_proto::preset::Preset::parse(&bytes) else {
-            self.note(format!("{} is not a readable preset", path.display()));
+            self.note(format!("{label} is not a readable preset"));
             return;
         };
-        let name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Untitled");
+        let name = label;
         // The document knows its own chain and layout; the codec supplies the
         // one-line reading of what the tone is.
         let written = hx_catalog::to_hlx(&preset, catalog, name);
@@ -3888,9 +4879,9 @@ impl App {
             chain: session::chain_of(&preset),
             layout: preset.layout(),
             skipped: tone.skipped,
-            load: LoadKind::Document(bytes),
+            load: LoadKind::Document(bytes.clone()),
             dest: self.preset_index.max(0),
-            source: path.to_owned(),
+            source: ("hxpreset".to_owned(), bytes),
         });
     }
 
@@ -3937,6 +4928,10 @@ impl App {
         let mut open = true;
         let mut load = false;
         let mut cancel = false;
+        // Kept after the window closes, not inside it: keeping can ask a
+        // question of its own, and a window opened from inside another one's
+        // closure is a window that draws underneath it.
+        let mut keeping: Option<(String, String, Vec<u8>)> = None;
 
         // The one renderer draws whatever chain and layout the app holds, so
         // for the length of this window it holds the file's. The selection
@@ -4011,26 +5006,21 @@ impl App {
                     if ui.button("Cancel").clicked() {
                         cancel = true;
                     }
-                    // A tone worth keeping goes into the library, unless it
-                    // is already there.
-                    if !library::holds(&preview.source)
-                        && ui
-                            .button("Keep")
-                            .on_hover_text("copy this file into your library")
-                            .clicked()
-                    {
-                        match library::keep(&preview.source) {
-                            Ok(kept) => {
-                                preview.source = kept;
-                                // The library is always on screen, so the row
-                                // simply appears; it only has to be the tones
-                                // half that is showing.
-                                self.lib_showing = LibraryView::Tones;
-                                self.refresh_library();
-                                self.note(format!("kept {}", preview.name));
-                            }
-                            Err(why) => self.note(why),
-                        }
+                    // A tone worth keeping goes into the library. The button
+                    // stays put and says which of the two it is, rather than
+                    // vanishing: a hidden control is not an answer to "is this
+                    // one saved?", it is the same question with less to go on.
+                    let (kind, bytes) = &preview.source;
+                    let held = library::holds(&library::hash_of(bytes));
+                    let keep = ui
+                        .add_enabled(!held, egui::Button::new("Keep"))
+                        .on_hover_text(if held {
+                            "this tone is already in your library"
+                        } else {
+                            "copy this tone into your library"
+                        });
+                    if keep.clicked() {
+                        keeping = Some((preview.name.clone(), kind.clone(), bytes.clone()));
                     }
                 });
             });
@@ -4039,6 +5029,10 @@ impl App {
         self.selected = selected;
         std::mem::swap(&mut self.chain, &mut preview.chain);
         std::mem::swap(&mut self.layout, &mut preview.layout);
+
+        if let Some((name, kind, bytes)) = keeping {
+            self.keep_tone(&name, &kind, &bytes);
+        }
 
         if load {
             self.loading = true;
@@ -4162,7 +5156,6 @@ impl App {
                     self.selected = i;
                     self.browsing = None;
                     self.browsing_shelf = None;
-                    self.read_assignments();
                 }
             });
     }
@@ -4537,7 +5530,34 @@ impl App {
             block.enabled,
             colour,
         );
+        // A block something reaches wears a small tag saying what. An
+        // assignment you cannot see is one you find out about on stage, and the
+        // chain is the only place you see every block at once.
         if !self.display_only {
+            if let Some(marks) = self.control_marks().get(&block.position) {
+                // One tag per source, however many things that source drives on
+                // this block: two entries reading "EXP1 EXP1" say nothing the
+                // one says, and the room is four characters wide.
+                let mut shown: Vec<String> = Vec::new();
+                for (source, _) in marks {
+                    let short = source.short();
+                    if !shown.contains(&short) {
+                        shown.push(short);
+                    }
+                }
+                theme::block_tag(ui, hit.rect, &shown.join(" "), colour);
+                let listed: Vec<String> = marks
+                    .iter()
+                    .map(|(source, what)| match what.as_str() {
+                        "Auto-engage" => format!(
+                            "{} engages this on its own when you move it",
+                            source.label()
+                        ),
+                        what => format!("{} controls {what}", source.label()),
+                    })
+                    .collect();
+                hit.clone().on_hover_text(listed.join("\n"));
+            }
             self.block_rects.push((slot, hit.rect));
             if hit.drag_started() {
                 self.dragging = Some(slot);
@@ -4709,8 +5729,6 @@ impl App {
                 self.endpoint_editor(ui, &block);
                 return;
             }
-
-            self.bypass_assignment(ui, &block);
 
             let Some(model) = self.slot_model(&block).cloned() else {
                 ui.label(RichText::new("Install HX Edit for model names").color(theme::DIM));
@@ -4970,15 +5988,22 @@ impl App {
             }
             ui.add_space(12.0);
 
-            let mut on = block.enabled;
-            if ui.checkbox(&mut on, "Engaged").changed() {
-                self.edit(Cmd::SetEnabled {
-                    block: block.position,
-                    enabled: on,
-                });
-                self.chain[self.selected].enabled = on;
+            // The way in that does not need to be discovered. Right-clicking a
+            // control does the same thing and is faster once you know; nobody
+            // finds a right-click on a knob by looking at it.
+            let picking = self.assigning == Some(block.position);
+            if ui
+                .selectable_label(picking, "Assign control")
+                .on_hover_text(
+                    "put a knob or the on/off switch under a footswitch, \
+                     an expression pedal or MIDI",
+                )
+                .clicked()
+            {
+                self.assigning = (!picking).then_some(block.position);
             }
-            ui.add_space(4.0);
+            ui.add_space(8.0);
+
             if theme::icon_button(ui, theme::Icon::Copy, true)
                 .on_hover_text("Copy this block")
                 .clicked()
@@ -5007,72 +6032,332 @@ impl App {
         });
     }
 
-    /// What drives this block's bypass.
+    /// What reaches each block, by block, out of the preset document.
     ///
-    /// HX Edit's assignment page in miniature: bypass is a switch, so a
-    /// footswitch or a MIDI CC can drive it but an expression pedal cannot —
-    /// HX Edit lists pedals here and then steps over them, so they are simply
-    /// not offered. Parameters take the full range of sources; see the knob
-    /// context menus.
-    fn bypass_assignment(&mut self, ui: &mut egui::Ui, block: &session::Block) {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new("Bypass switched by")
-                    .small()
-                    .color(theme::DIM),
-            );
+    /// Every source, not only the footswitches: an expression pedal on a wah is
+    /// exactly the assignment you want to see without hunting for it, and the
+    /// document lists it beside the switches at no extra cost. This used to come
+    /// from opcode 33, which knows about switches and nothing else.
+    fn control_marks(
+        &self,
+    ) -> std::collections::BTreeMap<i64, Vec<(hx_proto::rpc::Source, String)>> {
+        let mut marks: std::collections::BTreeMap<i64, Vec<_>> = Default::default();
+        for assignment in self.all_assignments() {
+            marks
+                .entry(assignment.block)
+                .or_default()
+                .push((assignment.source, assignment.target));
+        }
+        marks
+            .into_iter()
+            .map(|(block, mut found)| {
+                found.sort_by_key(|(source, _)| source.ordinal());
+                let named = found
+                    .into_iter()
+                    .map(|(source, target)| {
+                        let what = match Self::auto_engage(source, target) {
+                            true => "Auto-engage".to_owned(),
+                            false => self.target_name(block, target),
+                        };
+                        (source, what)
+                    })
+                    .collect();
+                (block, named)
+            })
+            .collect()
+    }
 
-            for switch in 1..=5u8 {
-                if ui
-                    // Spelled out: "FS3" is the pedal's shorthand, not
-                    // a word, and this is the one place a person has to work
-                    // out which switch they mean.
-                    .button(format!("Footswitch {switch}"))
-                    .on_hover_text(format!("footswitch {switch} toggles this block"))
-                    .clicked()
-                {
-                    self.edit(Cmd::AssignBypassFootswitch {
-                        block: block.position,
-                        switch,
-                        on: true,
-                    });
+    /// Every assignment on this block, as the table everything else uses.
+    ///
+    /// The markers on the controls say *that* something is assigned; this says
+    /// what, all of it in one place, which is the thing you want when you are
+    /// working out why a switch does two things at once. The ends of the travel
+    /// are the other half of an assignment, so they are columns here — drawn as
+    /// the pedal's own knobs, in the parameter's own units, because that is what
+    /// they are. The document knows them; opcode 36 reports the defaults however
+    /// far they have been dragged.
+    fn assignment_list(&mut self, ui: &mut egui::Ui, position: i64) {
+        use hx_proto::preset::Target;
+        let listed: Vec<Row> = self
+            .assignments_on(position)
+            .into_iter()
+            .map(|a| {
+                let travel = self.travel_of(position, a.target);
+                let reading = |value: f32| match (&travel, self.catalog.as_ref()) {
+                    (Some(travel), Some(catalog)) => catalog.format(&travel.param, value),
+                    _ => format!("{value:.2}"),
+                };
+                Row {
+                    target: a.target,
+                    // A wah's bypass under EXP 1 is auto-engage, and the row
+                    // should say the thing it does rather than the thing it is.
+                    name: match Self::auto_engage(a.source, a.target) {
+                        true => "Auto-engage".to_owned(),
+                        false => self.target_name(position, a.target),
+                    },
+                    source: a.source.label(),
+                    min: a.min,
+                    max: a.max,
+                    min_text: reading(a.min),
+                    max_text: reading(a.max),
+                    travel,
                 }
-            }
-            ui.separator();
+            })
+            .collect();
+        if listed.is_empty() {
+            return;
+        }
 
-            let mut cc = self.assign_cc;
-            if ui
-                .add(
-                    egui::DragValue::new(&mut cc)
-                        .range(0..=127)
-                        .prefix("MIDI CC "),
-                )
-                .changed()
-            {
-                self.assign_cc = cc.clamp(0, 127);
-            }
-            if ui.button("Assign").clicked() {
-                self.edit(Cmd::AssignCc {
-                    block: block.position,
-                    cc: self.assign_cc,
-                });
-            }
-            ui.separator();
-            if ui
-                .button("Clear")
-                .on_hover_text("take the bypass off every footswitch")
-                .clicked()
-            {
-                for switch in 1..=5u8 {
-                    self.edit(Cmd::AssignBypassFootswitch {
-                        block: block.position,
-                        switch,
-                        on: false,
-                    });
-                }
-            }
-        });
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(4.0);
+        ui.label(RichText::new("ASSIGNMENTS").small().color(theme::DIM));
         ui.add_space(2.0);
+
+        let mut grid = table::Grid {
+            columns: vec![
+                table::Column::new("Control", 110.0).fills(),
+                table::Column::new("Source", 130.0),
+                table::Column::new("Min", 70.0).editable(),
+                table::Column::new("Max", 70.0).editable(),
+            ],
+            sticky: 1,
+            menu: vec!["Remove".to_owned()],
+            row_height: 74.0,
+            ..Default::default()
+        };
+        for row in &listed {
+            // A switch has no travel to move: it is on or off. A parameter's
+            // ends are values of that parameter, so they wear its own knob.
+            let end = |value: f32, text: &str| match &row.travel {
+                Some(travel) => table::Cell::Knob {
+                    value,
+                    range: travel.range.clone(),
+                    text: text.to_owned(),
+                },
+                None => table::Cell::Dim("—".to_owned()),
+            };
+            grid.rows.push(vec![
+                table::Cell::Text(row.name.clone()),
+                table::Cell::Dim(row.source.clone()),
+                end(row.min, &row.min_text),
+                end(row.max, &row.max_text),
+            ]);
+        }
+        let row_of = |target: Target| listed.iter().position(|row| row.target == target);
+        grid.selected = self.assign_selected.and_then(row_of);
+        if let Some((target, high, draft)) = self.assign_editing.clone() {
+            grid.editing = row_of(target).map(|row| (row, if high { 3 } else { 2 }));
+            grid.draft = draft;
+        }
+
+        // Bounded to its own rows: it sits inside the panel's scroll area, and
+        // a virtualised table handed the rest of the page would take it.
+        let height = 74.0 * listed.len() as f32 + table::ROW_HEIGHT + 4.0;
+        let did = ui
+            .allocate_ui(egui::vec2(ui.available_width(), height), |ui| {
+                table::show(ui, "assignments", &mut grid)
+            })
+            .inner;
+
+        if let Some((row, ..)) = did.clicked {
+            self.assign_selected = listed.get(row).map(|row| row.target);
+        }
+        // Turning a knob writes as it turns, the way the pedal's own do.
+        if let Some((row, col, value)) = did.turned {
+            if let Some(row) = listed.get(row) {
+                self.move_travel(position, row.target, col == 3, value);
+            }
+        }
+        if let Some((row, col)) = did.edit {
+            match listed.get(row) {
+                Some(row) if row.travel.is_some() => {
+                    let high = col == 3;
+                    let text = if high { &row.max_text } else { &row.min_text };
+                    self.assign_editing = Some((row.target, high, text.clone()));
+                }
+                // A switch answers a click by selecting, as it did before.
+                _ => self.assign_selected = listed.get(row).map(|row| row.target),
+            }
+        } else {
+            // The draft lives in the app, not the table, so it survives the
+            // frame.
+            if let Some((_, _, draft)) = self.assign_editing.as_mut() {
+                draft.clone_from(&grid.draft);
+            }
+            if did.cancelled {
+                self.assign_editing = None;
+            }
+            if did.committed {
+                if let Some((target, high, draft)) = self.assign_editing.take() {
+                    let typed = listed
+                        .iter()
+                        .find(|row| row.target == target)
+                        .and_then(|row| row.travel.as_ref())
+                        .and_then(|travel| {
+                            let value = match self.catalog.as_ref() {
+                                Some(catalog) => catalog.parse(&travel.param, draft.trim()),
+                                None => draft.trim().parse().ok(),
+                            }?;
+                            Some(value.clamp(*travel.range.start(), *travel.range.end()))
+                        });
+                    if let Some(value) = typed {
+                        self.move_travel(position, target, high, value);
+                    }
+                }
+            }
+        }
+        if let Some((row, _)) = did.chose {
+            if let Some(row) = listed.get(row) {
+                self.assign_action(position, row.target, AssignAction::To(None));
+            }
+        }
+    }
+
+    /// Move one end of an assignment's travel.
+    fn move_travel(
+        &mut self,
+        block: i64,
+        target: hx_proto::preset::Target,
+        high_end: bool,
+        value: f32,
+    ) {
+        // 65 and 66 take a parameter index, so a bypass has no end to move.
+        let hx_proto::preset::Target::Param(param) = target else {
+            return;
+        };
+        // Keep our own copy in step as it turns. Dragging streams one write per
+        // intermediate value and the worker does not re-read the document for
+        // each — that would be a document read per pixel — so nothing else
+        // brings the new value back. Without this the knob is redrawn from the
+        // value it had before the drag started and springs back under the
+        // pointer, which is what a knob that cannot be moved looks like.
+        if let Some(moved) = self
+            .assignments
+            .iter_mut()
+            .find(|a| a.block == block && a.target == target)
+        {
+            if high_end {
+                moved.max = value;
+            } else {
+                moved.min = value;
+            }
+        }
+        self.edit(Cmd::SetAssignRange { block, param, value, high_end });
+    }
+
+    /// The parameter an assignment drives, for drawing its ends the way that
+    /// parameter is drawn everywhere else. `None` for a bypass, which is a
+    /// switch and has no travel.
+    fn travel_of(&self, block: i64, target: hx_proto::preset::Target) -> Option<Travel> {
+        let hx_proto::preset::Target::Param(index) = target else {
+            return None;
+        };
+        let catalog = self.catalog.as_ref()?;
+        let model = self
+            .chain
+            .iter()
+            .find(|b| b.position == block)
+            .and_then(|b| self.slot_model(b))?;
+        let param = catalog.ordered_params(model).get(index as usize).copied()?;
+        Some(Travel {
+            range: param.min..=param.max,
+            param: param.clone(),
+        })
+    }
+
+    /// Everything the bypass control needs, gathered before the controls draw.
+    ///
+    /// Gathered rather than looked up while drawing because the control sits in
+    /// the same grid as the knobs, and that grid is laid out holding a borrow
+    /// of the catalog. A value cannot fight a borrow.
+    fn bypass_view(&self, position: i64) -> BypassView {
+        use hx_proto::preset::Target;
+        let block = self.chain.iter().find(|b| b.position == position);
+        let carried = self.carrying_switch(position);
+        let menu = self.assign_view(position, Target::Bypass, "On/Off".to_owned());
+        BypassView {
+            position,
+            enabled: block.is_some_and(|b| b.enabled),
+            lit: carried
+                .as_ref()
+                .map(|s| self.led_colour(s.lit()))
+                .or_else(|| block.map(|b| self.block_colour(b)))
+                .unwrap_or(theme::ACCENT),
+            driven: menu.under.map(|source| source.short()),
+            on_a_switch: carried.is_some(),
+            auto_engage: menu
+                .under
+                .is_some_and(|source| Self::auto_engage(source, Target::Bypass)),
+            menu,
+        }
+    }
+
+    /// Carry out what the bypass control was asked to do.
+    fn bypass_action(&mut self, position: i64, action: BypassAction) {
+        match action {
+            BypassAction::Toggle(enabled) => {
+                self.edit(Cmd::SetEnabled { block: position, enabled });
+                if let Some(slot) = self.chain.iter_mut().find(|b| b.position == position) {
+                    slot.enabled = enabled;
+                }
+            }
+            BypassAction::Assign(chose) => {
+                self.assign_action(position, hx_proto::preset::Target::Bypass, chose)
+            }
+        }
+    }
+
+    /// The footswitch carrying this block's bypass, if one is.
+    fn carrying_switch(&self, block: i64) -> Option<hx_usb::Switch> {
+        self.switches
+            .iter()
+            .find(|s| s.carries.iter().any(|c| c.block == block))
+            .cloned()
+    }
+
+    /// How many footswitches to offer, from the device's own profile.
+    fn switch_count(&self) -> u8 {
+        if self.switches.is_empty() {
+            5
+        } else {
+            self.switches.len() as u8
+        }
+    }
+
+    /// What colour to paint a footswitch.
+    ///
+    /// The pedal speaks two dialects in the one field, and they are told apart
+    /// by size. A colour *chosen* for a switch reads back as the index opcode
+    /// 61 took: setting 1, 2, 5, 6, 8 and 11 and reading each back gave the
+    /// same number every time, and Auto Color reads back as nothing at all.
+    /// A colour *inherited* from what the switch carries is a real `0xRRGGBB`,
+    /// and the darkest of those is far above the end of that list.
+    fn led_colour(&self, colour: Option<i64>) -> egui::Color32 {
+        let colours = self
+            .catalog
+            .as_ref()
+            .and_then(|c| c.menu(hx_catalog::FOOTSWITCH_LED))
+            .unwrap_or_default();
+        if let Some(name) = colour
+            .filter(|n| *n >= 0)
+            .and_then(|n| colours.get(n as usize))
+        {
+            return theme::led_swatch(name);
+        }
+        Self::rgb_colour(colour)
+    }
+
+    /// The pedal sends an assignment's colour as `0xRRGGBB`.
+    fn rgb_colour(colour: Option<i64>) -> egui::Color32 {
+        match colour {
+            Some(rgb) => egui::Color32::from_rgb(
+                ((rgb >> 16) & 0xff) as u8,
+                ((rgb >> 8) & 0xff) as u8,
+                (rgb & 0xff) as u8,
+            ),
+            None => theme::DIM,
+        }
     }
 
     /// Inputs, outputs, splits and joins: routing, and their own parameters.
@@ -5388,9 +6673,7 @@ impl App {
         };
 
         let mut edit = None;
-        let mut assign: Option<(i64, Option<hx_proto::rpc::Source>)> = None;
-        // Which end of a controller's travel moved, if either.
-        let mut range: Option<(i64, f32, bool)> = None;
+        let mut assign: Option<(i64, AssignAction)> = None;
         // The pedal, at a size worth looking at. This is the thing being
         // worked on, so it gets the room; the shelf next door is deliberately
         // smaller.
@@ -5413,43 +6696,98 @@ impl App {
         // An input's list starts with `@input`, which carries no value, and
         // using it directly shifted every knob by one.
         let params = catalog.ordered_params(model);
-        // The device is asked about this many when a block is selected, and
-        // told this many when one changes, so both sides agree on the range.
-        let parameter_count = params.len() as i64;
 
         // Knobs sit in rows under the pedal like the face of one, every row
         // starting at the same left edge so the columns line up — a wrapped
         // row that started at the margin made twelve knobs look scattered.
         let cell = egui::vec2(84.0, 100.0);
         let pitch = cell.x + ui.spacing().item_spacing.x;
+        // The bypass is a control like any other and leads them: it is the
+        // first thing you reach for on a real pedal, and putting it on a line
+        // of its own said it was a different kind of thing, which was the whole
+        // problem with the row of buttons it replaced. `None` is the bypass.
+        let cells: Vec<Option<(usize, f32)>> = self
+            .is_effect_at(position)
+            .then_some(None)
+            .into_iter()
+            .chain(values.iter().copied().enumerate().map(Some))
+            .collect();
         let columns = ((ui.available_width() / pitch).floor() as usize)
             .clamp(1, 8)
-            .min(values.len().max(1));
+            .min(cells.len().max(1));
         let indent = ((ui.available_width() - columns as f32 * pitch) / 2.0).max(0.0);
         let draft = self.param_draft.clone();
         let mut set_draft: Option<Option<(i64, i64, String)>> = None;
-        for row in values
+        let bypass = self.bypass_view(position);
+        // Every knob's menu, gathered before the knobs draw: the grid below is
+        // laid out holding a borrow of the catalog, and a lookup on `self`
+        // cannot fight a borrow.
+        let menus: Vec<AssignMenu> = params
             .iter()
             .enumerate()
-            .collect::<Vec<_>>()
-            .chunks(columns)
-        {
+            .map(|(index, param)| {
+                self.assign_view(
+                    position,
+                    hx_proto::preset::Target::Param(index as i64),
+                    param.name.clone(),
+                )
+            })
+            .collect();
+        let mut bypassed = None;
+        // Which control a pick landed on, if the header's button is armed.
+        let mut pick: Option<usize> = None;
+        let mut pick_bypass = false;
+        let catalog = self.catalog.as_ref().expect("checked above");
+        let params = catalog.ordered_params(model);
+        for row in cells.chunks(columns) {
             ui.horizontal(|ui| {
                 ui.add_space(indent);
-                for (index, value) in row {
-                    let index = *index;
+                for slot in row {
+                    let Some((index, value)) = *slot else {
+                        // The on/off switch is a control, so a pick lands on it
+                        // like any other.
+                        let before = ui.cursor().min;
+                        if let Some(chose) = bypass_cell(ui, cell, &bypass) {
+                            bypassed = Some(chose);
+                        }
+                        if self.assigning == Some(position) {
+                            let rect = egui::Rect::from_min_size(before, cell);
+                            ui.painter().rect_stroke(
+                                rect.shrink(1.0),
+                                egui::Rounding::same(4.0),
+                                egui::Stroke::new(1.0_f32, theme::ACCENT),
+                            );
+                            if ui
+                                .put(rect, egui::Button::new("").frame(false))
+                                .on_hover_text("assign the on/off switch")
+                                .clicked()
+                            {
+                                pick_bypass = true;
+                            }
+                        }
+                        continue;
+                    };
                     let Some(param) = params.get(index).copied() else {
                         continue;
                     };
-                    let mut current = **value;
+                    let mut current = value;
 
-                    ui.allocate_ui(cell, |ui| {
+                    // Every part of a control opens its assignment menu, not
+                    // only its name: a person right-clicks the knob, because
+                    // the knob is the control. Collected as they are drawn and
+                    // hooked up after, because the menu needs the whole cell's
+                    // worth of state.
+                    let mut parts: Vec<egui::Response> = Vec::new();
+                    let picking = self.assigning == Some(position);
+                    let drawn = ui.allocate_ui(cell, |ui| {
                         ui.vertical_centered(|ui| {
                             let mut changed = false;
                             match param.kind {
                                 Kind::Switch => {
                                     let mut on = current >= 0.5;
-                                    changed = ui.add(theme::switch(&mut on)).changed();
+                                    let hit = ui.add(theme::switch(&mut on));
+                                    changed = hit.changed();
+                                    parts.push(hit);
                                     current = on as u8 as f32;
                                     ui.label(
                                         RichText::new(catalog.format(param, current))
@@ -5497,9 +6835,9 @@ impl App {
                                         current = param.default;
                                         changed = true;
                                     }
-                                    hit.on_hover_text(
-                                        "drag to turn; double-click to reset\nclick the value to type it",
-                                    );
+                                    parts.push(hit.clone().on_hover_text(
+                                        "drag to turn; double-click to reset\nclick the value to type it\nright-click to assign a control",
+                                    ));
                                     match &draft {
                                         Some((block, i, text))
                                             if *block == position && *i == index as i64 =>
@@ -5542,16 +6880,16 @@ impl App {
                                                 )
                                                 .sense(egui::Sense::click()),
                                             );
-                                            if shown
-                                                .on_hover_text("click to type a value")
-                                                .clicked()
-                                            {
+                                            let shown = shown
+                                                .on_hover_text("click to type a value");
+                                            if shown.clicked() {
                                                 set_draft = Some(Some((
                                                     position,
                                                     index as i64,
                                                     catalog.format(param, current),
                                                 )));
                                             }
+                                            parts.push(shown);
                                         }
                                     }
                                 }
@@ -5561,12 +6899,8 @@ impl App {
                             // right-click nobody thinks to try: an assignment
                             // you cannot see is an assignment you will be
                             // surprised by on stage.
-                            let under = self
-                                .assignments
-                                .get(&(index as i64))
-                                .filter(|_| self.assignments_for == position)
-                                .copied();
-                            let label = match under {
+                            let menu = &menus[index];
+                            let label = match menu.under {
                                 Some(_) => RichText::new(format!("• {}", param.name))
                                     .color(theme::ACCENT),
                                 None => RichText::new(&param.name).color(theme::DIM),
@@ -5574,12 +6908,10 @@ impl App {
                             let name = ui.add(
                                 egui::Label::new(label).sense(egui::Sense::click()),
                             );
-                            let name = match under {
-                                Some(a) => name.on_hover_text(format!(
-                                    "{} controls this, over {:.0}% to {:.0}%\nclick to change",
-                                    a.source.label(),
-                                    a.min * 100.0,
-                                    a.max * 100.0
+                            let name = match menu.under {
+                                Some(source) => name.on_hover_text(format!(
+                                    "{} controls this\nclick to change",
+                                    source.label(),
                                 )),
                                 None => name.on_hover_text(
                                     "click to put this under a pedal or a switch",
@@ -5591,60 +6923,22 @@ impl App {
                             if name.clicked() {
                                 ui.memory_mut(|m| m.toggle_popup(popup_id(position, index)));
                             }
-                            let menu = |ui: &mut egui::Ui,
-                                        assign: &mut Option<(i64, Option<hx_proto::rpc::Source>)>| {
-                                ui.label(
-                                    RichText::new(format!("Control {} with", param.name))
-                                        .small()
-                                        .color(theme::DIM),
-                                );
-                                if ui
-                                    .selectable_label(under.is_none(), "None")
-                                    .clicked()
-                                {
-                                    *assign = Some((index as i64, None));
-                                    ui.close_menu();
-                                }
-                                for source in hx_proto::rpc::Source::all() {
-                                    let on = under.is_some_and(|a| a.source == source);
-                                    if ui.selectable_label(on, source.label()).clicked() {
-                                        *assign = Some((index as i64, Some(source)));
-                                        ui.close_menu();
+                            parts.push(name.clone());
+                            for part in &parts {
+                                part.context_menu(|ui| {
+                                    if let Some(chose) = assign_menu(ui, menu) {
+                                        assign = Some((index as i64, chose));
                                     }
-                                }
-                            };
-                            name.context_menu(|ui| menu(ui, &mut assign));
+                                });
+                            }
                             egui::popup::popup_below_widget(
                                 ui,
                                 popup_id(position, index),
                                 &name,
                                 egui::PopupCloseBehavior::CloseOnClick,
                                 |ui| {
-                                    ui.set_min_width(150.0);
-                                    menu(ui, &mut assign);
-                                    if let Some(a) = under {
-                                        ui.separator();
-                                        ui.label(
-                                            RichText::new("Travel")
-                                                .small()
-                                                .color(theme::DIM),
-                                        );
-                                        for (label, mut value, high) in
-                                            [("Min", a.min, false), ("Max", a.max, true)]
-                                        {
-                                            if ui
-                                                .add(
-                                                    egui::Slider::new(&mut value, 0.0..=1.0)
-                                                        .text(label)
-                                                        .custom_formatter(|v, _| {
-                                                            format!("{:.0}%", v * 100.0)
-                                                        }),
-                                                )
-                                                .changed()
-                                            {
-                                                range = Some((index as i64, value, high));
-                                            }
-                                        }
+                                    if let Some(chose) = assign_menu(ui, menu) {
+                                        assign = Some((index as i64, chose));
                                     }
                                 },
                             );
@@ -5653,37 +6947,53 @@ impl App {
                             }
                         });
                     });
+                    if picking {
+                        let rect = drawn.response.rect;
+                        ui.painter().rect_stroke(
+                            rect.shrink(1.0),
+                            egui::Rounding::same(4.0),
+                            egui::Stroke::new(1.0_f32, theme::ACCENT),
+                        );
+                        // On top of the control, so a pick cannot turn a knob
+                        // by accident. It goes away the moment one is chosen.
+                        let target = ui.put(
+                            rect,
+                            egui::Button::new("").frame(false).fill(
+                                egui::Color32::TRANSPARENT,
+                            ),
+                        );
+                        if target
+                            .on_hover_text(format!("assign {}", param.name))
+                            .clicked()
+                        {
+                            pick = Some(index);
+                        }
+                    }
                 }
             });
+        }
+        if let Some(index) = pick {
+            self.assigning = None;
+            ui.memory_mut(|m| m.open_popup(popup_id(position, index)));
+        }
+        if pick_bypass {
+            self.assigning = None;
+            ui.memory_mut(|m| m.open_popup(bypass_popup_id(position)));
         }
         if let Some(update) = set_draft {
             self.param_draft = update;
         }
-
-        if let Some((param, value, high_end)) = range {
-            // Held locally too, so the slider follows the finger rather than
-            // waiting on a round trip and snapping back.
-            if let Some(a) = self.assignments.get_mut(&param) {
-                if high_end {
-                    a.max = value;
-                } else {
-                    a.min = value;
-                }
-            }
-            self.send(Cmd::SetAssignRange {
-                block: position,
-                param,
-                value,
-                high_end,
-            });
+        if let Some(action) = bypassed {
+            self.bypass_action(position, action);
         }
-        if let Some((param, source)) = assign {
-            self.edit(Cmd::AssignParameter {
-                block: position,
-                param,
-                source,
-                params: parameter_count,
-            });
+        // Once per block, not once per model: an Amp+Cab draws these controls
+        // twice and there is one list of what drives the block.
+        if !paired {
+            self.assignment_list(ui, position);
+        }
+
+        if let Some((param, chose)) = assign {
+            self.assign_action(position, hx_proto::preset::Target::Param(param), chose);
         }
         if let Some(to) = reroute {
             self.edit(Cmd::SetRouting {
@@ -6146,8 +7456,342 @@ fn eq_cut_group(
     write
 }
 
-/// The popup for one parameter's assignment menu. Keyed by block and
-/// parameter, so two knobs cannot share one open menu.
+/// What one control's assignment menu shows, as values rather than lookups.
+///
+/// One shape for a knob and for a block's on/off. They were two menus once, and
+/// only the bypass one could say "Footswitch 1 carries Trinity Chorus" — which
+/// is the sentence you most want before putting a second thing on a switch.
+struct AssignMenu {
+    /// The control's own name, for the menu's first line.
+    name: String,
+    /// What drives it now.
+    under: Option<hx_proto::rpc::Source>,
+    /// Every source this control can take, and what each already carries.
+    sources: Vec<(hx_proto::rpc::Source, Vec<String>)>,
+    /// The footswitch under this control, when one is: it has settings of its
+    /// own, and this is where you are standing when you want them.
+    switch: Option<SwitchView>,
+    /// The LED colours HX Edit offers, index 0 being Auto Color. Empty without
+    /// the catalog, in which case the colour is not offered at all.
+    colours: Vec<String>,
+}
+
+/// A footswitch's own settings, as the menu draws them.
+struct SwitchView {
+    switch: u8,
+    /// The name in the field, which is the draft while one is being typed.
+    label: String,
+    /// Whether the pedal is holding a name for it, so Clear knows whether it
+    /// has anything to do.
+    named: bool,
+    colour: Option<i64>,
+    momentary: bool,
+}
+
+/// What choosing something in that menu means.
+enum AssignAction {
+    /// Put the control under this source, or take it off whatever has it.
+    To(Option<hx_proto::rpc::Source>),
+    /// A change to the footswitch itself rather than to what it carries.
+    Switch {
+        switch: u8,
+        edit: session::SwitchEdit,
+    },
+    /// The name field is being typed into. Kept in the app so the draft
+    /// survives the frame, the same as every other field here.
+    Typing(u8, String),
+}
+
+/// The one assignment menu, for a knob and for a block's on/off alike.
+fn assign_menu(ui: &mut egui::Ui, menu: &AssignMenu) -> Option<AssignAction> {
+    ui.set_min_width(230.0);
+    ui.label(
+        RichText::new(format!("Control {} with", menu.name))
+            .small()
+            .color(theme::DIM),
+    );
+    let mut action = None;
+    if ui.selectable_label(menu.under.is_none(), "Nothing").clicked() {
+        action = Some(AssignAction::To(None));
+        ui.close_menu();
+    }
+    for (source, carries) in &menu.sources {
+        let on = menu.under == Some(*source);
+        // Say what a source is already busy with, so a footswitch is not
+        // quietly given a second job the night you find out about it.
+        let label = match carries.first() {
+            Some(what) if !on => format!("{}   carries {what}", source.label()),
+            _ => source.label(),
+        };
+        let row = ui.selectable_label(on, label);
+        // The pedal chooses the number and no captured message sets it, so the
+        // menu says which one it is rather than offering to change it.
+        let row = match source {
+            hx_proto::rpc::Source::MidiCc => row.on_hover_text(
+                "the pedal picks the CC number; nothing we have caught sets it",
+            ),
+            _ => row,
+        };
+        if row.clicked() {
+            action = Some(AssignAction::To((!on).then_some(*source)));
+            ui.close_menu();
+        }
+    }
+    if let Some(switch) = &menu.switch {
+        if let Some(chose) = switch_settings(ui, switch, &menu.colours) {
+            action = Some(chose);
+        }
+    }
+    action
+}
+
+/// The footswitch's own three settings, under the sources that chose it.
+///
+/// What it is called, what colour it lights and whether it holds or toggles.
+/// The pedal has had opcodes for all three since the protocol was mapped and
+/// nothing to press them with.
+fn switch_settings(
+    ui: &mut egui::Ui,
+    view: &SwitchView,
+    colours: &[String],
+) -> Option<AssignAction> {
+    use session::SwitchEdit;
+    let mut edit = None;
+    ui.add_space(4.0);
+    ui.separator();
+    ui.label(
+        RichText::new(format!("FOOTSWITCH {}", view.switch))
+            .small()
+            .color(theme::DIM),
+    );
+
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Name").color(theme::DIM));
+        let mut text = view.label.clone();
+        let field = ui.add(
+            egui::TextEdit::singleline(&mut text)
+                .desired_width(110.0)
+                .hint_text("what it carries"),
+        );
+        if field.changed() {
+            edit = Some(AssignAction::Typing(view.switch, text.clone()));
+        }
+        // Committed on Enter or on leaving, like every other field here. An
+        // empty name is not a name: it clears back to what the switch carries,
+        // which is the same thing opcode 60 does.
+        if field.lost_focus() {
+            let typed = text.trim();
+            let wanted = (!typed.is_empty()).then(|| typed.to_owned());
+            edit = Some(AssignAction::Switch {
+                switch: view.switch,
+                edit: SwitchEdit::Label(wanted),
+            });
+        }
+    });
+
+    if !colours.is_empty() {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Colour").color(theme::DIM));
+            // Auto Color is index 0 of HX Edit's list and `None` here, because
+            // the protocol reaches it by an opcode of its own rather than a
+            // value.
+            let chosen = view.colour.unwrap_or(0);
+            let showing = colours
+                .get(chosen.max(0) as usize)
+                .cloned()
+                .unwrap_or_else(|| format!("Colour {chosen}"));
+            egui::ComboBox::from_id_salt(("switch-colour", view.switch))
+                .selected_text(RichText::new(showing).color(theme::ACCENT))
+                .width(130.0)
+                .show_ui(ui, |ui| {
+                    for (n, name) in colours.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            theme::category_swatch(ui, theme::led_swatch(name));
+                            if ui.selectable_label(n as i64 == chosen, name).clicked() {
+                                edit = Some(AssignAction::Switch {
+                                    switch: view.switch,
+                                    edit: SwitchEdit::Colour((n > 0).then_some(n as i64)),
+                                });
+                            }
+                        });
+                    }
+                });
+        });
+    }
+
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Momentary").color(theme::DIM));
+        let mut momentary = view.momentary;
+        if ui
+            .add(theme::switch(&mut momentary))
+            .on_hover_text("on: holds while your foot is down. off: toggles")
+            .changed()
+        {
+            edit = Some(AssignAction::Switch {
+                switch: view.switch,
+                edit: SwitchEdit::Momentary(momentary),
+            });
+        }
+    });
+    // Nothing to clear when nothing was typed, and a Clear that does nothing is
+    // a button that lies.
+    if view.named
+        && ui
+            .add(egui::Button::new(RichText::new("Clear the name").small()).frame(false))
+            .clicked()
+    {
+        edit = Some(AssignAction::Switch {
+            switch: view.switch,
+            edit: SwitchEdit::Label(None),
+        });
+    }
+    edit
+}
+
+/// What the bypass control shows, beyond the menu every control shares.
+struct BypassView {
+    position: i64,
+    enabled: bool,
+    /// The colour the pedal lights the switch, or the block's own until it has
+    /// said.
+    lit: egui::Color32,
+    /// What drives it, in four characters, for the control's own name.
+    driven: Option<String>,
+    /// Whether a footswitch has it, which is what the switch graphic shows.
+    on_a_switch: bool,
+    /// Whether what drives it is an expression pedal, which does not switch the
+    /// block so much as let it switch itself. See `App::auto_engage`.
+    auto_engage: bool,
+    menu: AssignMenu,
+}
+
+/// What pressing something on it means.
+enum BypassAction {
+    Toggle(bool),
+    Assign(AssignAction),
+}
+
+/// The block's bypass, drawn as the footswitch it is and sitting with the
+/// block's other controls.
+///
+/// It used to be a tick box called "Engaged" in the header and a row of buttons
+/// called "Bypass switched by" underneath: two controls and two vocabularies
+/// for one thing. It is one thing. A switch is on or off, and something can be
+/// assigned to drive it, so it looks like a switch, it sits where the other
+/// controls are, and its name opens the same kind of popup a knob's name does.
+fn bypass_cell(ui: &mut egui::Ui, cell: egui::Vec2, view: &BypassView) -> Option<BypassAction> {
+    let mut action = None;
+    let mut open = false;
+    // Every part of the control opens its menu, the same as a knob's.
+    let mut parts: Vec<egui::Response> = Vec::new();
+    ui.allocate_ui(cell, |ui| {
+        ui.vertical_centered(|ui| {
+            let switch =
+                theme::footswitch(ui, view.enabled, Some(view.lit), view.on_a_switch);
+            let switch = switch.on_hover_text(if view.enabled {
+                "on. Press to turn it off\nright-click to assign a control"
+            } else {
+                "off. Press to turn it on\nright-click to assign a control"
+            });
+            if switch.clicked() {
+                action = Some(BypassAction::Toggle(!view.enabled));
+            }
+            parts.push(switch);
+            // "On" and "Off", because that is what a guitarist calls a pedal
+            // that is or is not doing anything. "Engaged" and "Bypassed" are
+            // the engineer's words for the same two states.
+            parts.push(
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(if view.enabled { "On" } else { "Off" })
+                            .monospace()
+                            .color(if view.enabled { theme::ACCENT } else { theme::DIM }),
+                    )
+                    .selectable(false)
+                    .sense(egui::Sense::click()),
+                ),
+            );
+            // The name is the way in to the assignment, exactly as it is for a
+            // knob, and it wears the same dot when something drives it.
+            let name = match &view.driven {
+                Some(what) => RichText::new(format!("• {what}")).color(theme::ACCENT),
+                None => RichText::new("On/Off").color(theme::DIM),
+            };
+            let label = ui
+                .add(egui::Label::new(name).sense(egui::Sense::click()))
+                .on_hover_text(match (view.menu.under, view.auto_engage) {
+                    // A wah does not wait to be switched on: it engages itself
+                    // the moment the pedal leaves its heel.
+                    (Some(source), true) => format!(
+                        "{} engages this on its own when you move it\nclick to change",
+                        source.label()
+                    ),
+                    (Some(source), false) => {
+                        format!("{} switches this\nclick to change", source.label())
+                    }
+                    (None, _) => "click to put this under a footswitch or a CC".to_owned(),
+                });
+            if label.clicked() {
+                open = true;
+            }
+            egui::popup::popup_below_widget(
+                ui,
+                bypass_popup_id(view.position),
+                &label,
+                egui::PopupCloseBehavior::CloseOnClickOutside,
+                |ui| {
+                    if let Some(chose) = assign_menu(ui, &view.menu) {
+                        action = Some(BypassAction::Assign(chose));
+                    }
+                },
+            );
+            parts.push(label);
+            for part in &parts {
+                part.context_menu(|ui| {
+                    if let Some(chose) = assign_menu(ui, &view.menu) {
+                        action = Some(BypassAction::Assign(chose));
+                    }
+                });
+            }
+        });
+    });
+    if open {
+        ui.memory_mut(|m| m.toggle_popup(bypass_popup_id(view.position)));
+    }
+    action
+}
+
+/// One row of the assignments table, gathered before it draws.
+struct Row {
+    target: hx_proto::preset::Target,
+    /// What is driven: a parameter's name, or On/Off.
+    name: String,
+    source: String,
+    min: f32,
+    max: f32,
+    /// The same two, read the way that parameter reads under the knobs.
+    min_text: String,
+    max_text: String,
+    /// The parameter the ends are values of. `None` for a bypass.
+    travel: Option<Travel>,
+}
+
+/// The parameter an assignment's ends belong to.
+///
+/// They are not percentages: the document holds a pitch block's ends as 7 and
+/// 12 semitones, because they are values of that parameter. So they are shown
+/// and typed exactly as that parameter is shown and typed under the knobs — the
+/// same range, the same units, the same widget.
+struct Travel {
+    range: std::ops::RangeInclusive<f32>,
+    param: hx_catalog::Param,
+}
+
+/// The bypass popup's own id, distinct from any parameter's.
+fn bypass_popup_id(block: i64) -> egui::Id {
+    egui::Id::new(("bypass-assign", block))
+}
+
 fn popup_id(block: i64, param: usize) -> egui::Id {
     egui::Id::new(("assign", block, param))
 }
@@ -6234,6 +7878,7 @@ mod tests {
                 tempo: Some(120.0),
                 snapshots: vec!["SNAPSHOT 1".into()],
                 layout: hx_proto::preset::Layout::default(),
+                assignments: Vec::new(),
                 dirty: false,
                 chain: vec![session::Block {
                     position: 1,
@@ -6390,6 +8035,7 @@ mod tests {
                 firmware: String::new(),
                 tempo: None,
                 snapshots: vec![],
+                assignments: vec![],
                 chain: vec![
                     slot(0, Kind::Input),
                     slot(1, Kind::Block),
@@ -6543,6 +8189,7 @@ mod tests {
                 firmware: String::new(),
                 tempo: None,
                 snapshots: vec![],
+                assignments: vec![],
                 chain: vec![
                     slot(0, Kind::Input),
                     slot(1, Kind::Block),
@@ -6616,6 +8263,7 @@ mod tests {
             tempo: None,
             snapshots: vec![],
             layout: hx_proto::preset::Layout::default(),
+            assignments: Vec::new(),
             chain: vec![],
             dirty,
         };

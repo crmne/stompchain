@@ -85,6 +85,13 @@ impl fmt::Debug for Value {
 }
 
 impl Value {
+    pub fn as_bool(&self) -> Option<bool> {
+        match *self {
+            Value::Bool(b) => Some(b),
+            _ => None,
+        }
+    }
+
     pub fn as_i64(&self) -> Option<i64> {
         match *self {
             Value::Int(i) | Value::WideInt(i, _) => Some(i),

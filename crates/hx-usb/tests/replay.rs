@@ -66,7 +66,8 @@ fn exercise(s: &mut Session) -> Summary {
         let _ = s.assign_bypass_footswitch(p, 1);
         let _ = s.unassign_bypass_footswitch(p, 1);
         let _ = s.assign_parameter(p, 0, Some(Source::Expression(1)));
-        let _ = s.assign_bypass_cc(p, 1);
+        let _ = s.assign_bypass_midi(p, true);
+        let _ = s.assign_bypass_midi(p, false);
         let _ = s.set_model(p, 100); // change the block; rebuilt below
         let _ = s.clear_block(p);
     }
@@ -192,11 +193,27 @@ fn a_recorded_session_replays_offline() {
     // No hardware: the transcript stands in for the device, and every request
     // the session sends across the whole protocol is checked against what was
     // recorded.
-    let mut session = Session::replaying(Box::new(ReplayWire::new(transcript)), hx_proto::HX_STOMP)
-        .expect("the handshake replays");
+    let wire = ReplayWire::new(transcript);
+    let drifted = wire.drifted();
+    let mut session =
+        Session::replaying(Box::new(wire), hx_proto::HX_STOMP).expect("the handshake replays");
     let summary = exercise(&mut session);
 
     assert!(!summary.name.is_empty(), "a preset name came back");
     assert!(summary.presets > 0, "the preset list came back");
     assert!(recorded > 0, "the transcript held transfers");
+
+    // The point of the whole fixture. Every write command above is called as
+    // `let _ = …`, because what a write returns says nothing about whether it
+    // still *encodes* the same - so the mismatch has to be collected by the
+    // wire and checked here, or a changed message sails through and the
+    // regression test guards nothing. Regenerate with `capture_a_session`
+    // whenever a change to the bytes is deliberate.
+    let drifted = drifted.lock().unwrap();
+    assert!(
+        drifted.is_empty(),
+        "{} command(s) no longer encode what was recorded:\n  - {}",
+        drifted.len(),
+        drifted.join("\n  - ")
+    );
 }

@@ -73,8 +73,22 @@ pub mod key {
     /// Two further fields on an assignment whose meaning is not known; they
     /// were constant across every assignment captured.
     pub const ASSIGN_SCOPE: i64 = 96;
-    /// Which controller drives a parameter — see `Source`.
+    /// Which controller drives a parameter, on the way *in* — see `Source`.
     pub const ASSIGN_FLAGS: i64 = 74;
+    /// And which drives it on the way *out*. Opcode 36 does not answer with the
+    /// key it was asked with: the reply puts the source ordinal at key 0.
+    /// Confirmed by assigning through opcode 37 and watching this move while 74
+    /// stayed absent. An unassigned parameter answers `nil` rather than a map.
+    pub const ASSIGN_SOURCE: i64 = 0;
+    /// Whether a footswitch is momentary rather than latching (opcodes 33, 58).
+    pub const MOMENTARY: i64 = 65;
+    /// A footswitch's LED colour as `0xRRGGBB`, and the colour of a block on a
+    /// switch's assignment list (opcodes 33, 61).
+    pub const LED_COLOUR: i64 = 66;
+    /// What a footswitch controls: an array, one entry per assignment.
+    pub const SWITCH_ASSIGNED: i64 = 67;
+    /// Inside one of those entries, what it points at.
+    pub const SWITCH_TARGET: i64 = 69;
     /// Footswitch index on opcodes 56, 57 and 33.
     pub const SWITCH: i64 = 102;
     /// Low and high ends of a controller's travel, normalised 0..1.
@@ -163,6 +177,18 @@ pub mod op {
     pub const UNASSIGN_FOOTSWITCH: i64 = 57;
     /// Read a footswitch's configuration: `{102: switch}`.
     pub const FOOTSWITCH_CONFIG: i64 = 33;
+    /// `{102: switch, 65: momentary}` — latching or momentary.
+    pub const SWITCH_TYPE: i64 = 58;
+    /// `{102: switch, 109: label}` — the name written under your foot.
+    pub const SWITCH_LABEL: i64 = 59;
+    /// `{102: switch}` — clear the name again, back to what it carries.
+    pub const SWITCH_LABEL_CLEAR: i64 = 60;
+    /// `{102: switch, 66: colour}` — the LED colour, as an index into HX Edit's
+    /// own `footswitchLED` list rather than an RGB value.
+    pub const SWITCH_COLOUR: i64 = 61;
+    /// `{102: switch}` — back to Auto Color, which is index 0 of that list and
+    /// has an opcode of its own rather than a value.
+    pub const SWITCH_COLOUR_AUTO: i64 = 62;
     /// `{98: block}` — empty a slot.
     pub const CLEAR_BLOCK: i64 = 28;
     /// Upload an impulse response. Control channel.
@@ -458,6 +484,27 @@ impl Source {
             Source::MidiCc => "MIDI CC".into(),
             Source::Snapshots => "Snapshots".into(),
         }
+    }
+
+    /// The same name with the space taken out, for a tag on a block where
+    /// there is room for four characters and no more.
+    pub fn short(self) -> String {
+        match self {
+            Source::Expression(n) => format!("EXP{n}"),
+            Source::Footswitch(n) => format!("FS{n}"),
+            Source::MidiCc => "MIDI".into(),
+            Source::Snapshots => "SNAP".into(),
+        }
+    }
+
+    /// Whether this source can drive a block's on/off.
+    ///
+    /// Bypass is a switch, so a pedal that sweeps cannot drive it, and
+    /// snapshots carry a block's state themselves rather than through an
+    /// assignment. HX Edit lists pedals here and then steps over them, which is
+    /// worse than not offering them.
+    pub fn switches(self) -> bool {
+        matches!(self, Source::Footswitch(_) | Source::MidiCc)
     }
 
     /// Every source, for offering a choice.

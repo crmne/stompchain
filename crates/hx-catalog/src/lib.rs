@@ -27,8 +27,12 @@ pub use hxb::{
     Container, Favourite,
 };
 pub use inspect::{inspect, ChainContent, OutputTarget, Tone, ToneBlock};
-pub use build::{documents_from_backup, empty_the_chain, slots_from_hlx, Built};
+pub use build::{documents_from_backup, empty_the_chain, resolve, slots_from_hlx, Built};
 pub use write::{to_hlx, Written};
+
+/// The key of HX Edit's footswitch LED colour list, for [`Catalog::menu`].
+/// Index 0 is Auto Color, which the protocol reaches by its own opcode.
+pub const FOOTSWITCH_LED: &str = "footswitchLED";
 
 /// Everything HX Edit knows about models and their parameters.
 pub struct Catalog {
@@ -514,6 +518,13 @@ impl Catalog {
             .as_deref()
             .and_then(|key| self.displays.get(key))
             .and_then(|d| d.choices(self))
+    }
+
+    /// A named list that belongs to no parameter — the footswitch LED colours,
+    /// for one. HX Edit keeps them in the same table it keeps every other menu
+    /// in, so they are read the same way rather than typed out here.
+    pub fn menu(&self, key: &str) -> Option<&[String]> {
+        self.displays.get(key)?.choices(self)
     }
 
     pub(crate) fn display(&self, key: &str) -> Option<&Display> {

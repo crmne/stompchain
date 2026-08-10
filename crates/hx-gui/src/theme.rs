@@ -41,7 +41,7 @@ pub fn fonts(ctx: &egui::Context) {
     ] {
         fonts
             .font_data
-            .insert(name.to_owned(), FontData::from_static(bytes));
+            .insert(name.to_owned(), std::sync::Arc::new(FontData::from_static(bytes)));
     }
 
     // First in the list is the primary; what follows is the fallback chain, so
@@ -178,6 +178,9 @@ const UI_ICONS: &[(Icon, &str, &[u8])] = ui_icons! {
     Keep => "import",
     Star => "star",
     StarOn => "star-on",
+    Pedal => "pedal",
+    Computer => "computer",
+    Cloud => "cloud",
 };
 
 /// Hand the icons to egui's loaders, once, so they can be drawn by URI like any
@@ -311,6 +314,24 @@ pub fn status_dot(ui: &mut Ui, colour: Color32) -> Response {
     response
 }
 
+/// Whether the same tone is in the other place, and whether it is the same.
+///
+/// One vocabulary, used beside a preset on the pedal (about the library) and
+/// beside a tone in the library (about the pedal), so a person learns it once.
+/// The same three words will do for the web later, which is the reason to
+/// settle it now rather than invent it twice.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Sync {
+    /// Not over there at all.
+    Absent,
+    /// Over there, and the same bytes.
+    Same,
+    /// Over there under this name, and different.
+    Differs,
+    /// Not knowable yet, because the pedal has not been read.
+    Unknown,
+}
+
 /// The actions that live in the header, drawn rather than typed.
 ///
 /// Typing them was the obvious route and the wrong one: no single font carries
@@ -322,6 +343,12 @@ pub fn status_dot(ui: &mut Ui, colour: Color32) -> Response {
 /// seen ten thousand times and so does not have to read.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
+    /// The three places a tone can live. Drawn rather than coloured, because
+    /// "which place" is a different question from "is it the same there", and
+    /// one dot was being asked to answer both.
+    Pedal,
+    Computer,
+    Cloud,
     Save,
     Undo,
     Redo,
@@ -456,6 +483,30 @@ pub fn category_swatch(ui: &mut Ui, colour: Color32) -> Response {
             .rect_filled(rect, Rounding::same(3.0_f32), colour);
     }
     response
+}
+
+/// What a footswitch LED colour name looks like, for the swatch beside it.
+///
+/// Matched by name rather than by index so the list can be whatever order HX
+/// Edit ships it in. The values are ours and only have to be recognisable: the
+/// LED under your foot is the one that matters, and the pedal chooses that.
+pub fn led_swatch(name: &str) -> Color32 {
+    match name {
+        "White" => Color32::from_rgb(0xff, 0xff, 0xff),
+        "Red" => Color32::from_rgb(0xff, 0x20, 0x18),
+        "Dark Orange" => Color32::from_rgb(0xd0, 0x50, 0x00),
+        "Light Orange" => Color32::from_rgb(0xff, 0x8c, 0x10),
+        "Yellow" => Color32::from_rgb(0xff, 0xdd, 0x20),
+        "Green" => Color32::from_rgb(0x30, 0xd0, 0x40),
+        "Turquoise" => Color32::from_rgb(0x20, 0xd0, 0xc0),
+        "Blue" => Color32::from_rgb(0x30, 0x70, 0xff),
+        "Violet" => Color32::from_rgb(0x90, 0x40, 0xff),
+        "Pink" => Color32::from_rgb(0xff, 0x50, 0xc0),
+        "Off" => Color32::from_rgb(0x2a, 0x2e, 0x36),
+        // Auto Color, and anything a later HX Edit adds: the switch takes the
+        // colour of whatever it controls, which no one swatch can stand for.
+        _ => DIM,
+    }
 }
 
 /// A category, as a chip in that category's own colour, with HX Edit's own
@@ -801,6 +852,125 @@ pub fn knob(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>) 
 ///
 /// Sized to sit in the same grid cell as a knob so a row of controls lines up
 /// whatever mix of the two a model happens to have.
+/// Where a tone is, and whether it is the same there.
+///
+/// One icon per place, always in the same order, so a row says at a glance
+/// which of the three have it. The state is in the ink, not the shape: an
+/// outline means it is not there, solid means it is there and identical, amber
+/// means it is there and different.
+///
+/// This replaced a single dot that meant "the other place", which could not
+/// work: beside a preset the other place was the library, in the library it was
+/// the pedal, and the same amber dot therefore meant two opposite things
+/// depending on where you were standing.
+pub fn place(ui: &mut Ui, icon: Icon, state: Sync) -> Response {
+    let sense = if state == Sync::Unknown { Sense::hover() } else { Sense::click() };
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(18.0, 16.0), sense);
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let hot = response.hovered() && state != Sync::Unknown;
+    let tint = match state {
+        Sync::Differs => ACCENT,
+        Sync::Same => TEXT,
+        Sync::Absent => {
+            if hot {
+                TEXT
+            } else {
+                Color32::from_rgb(0x4a, 0x50, 0x5c)
+            }
+        }
+        Sync::Unknown => Color32::from_rgb(0x33, 0x38, 0x41),
+    };
+    if let Some((_, uri, _)) = UI_ICONS.iter().find(|(i, _, _)| *i == icon) {
+        let art = Art::whole((*uri).to_owned());
+        let inside = egui::Rect::from_center_size(rect.center(), Vec2::splat(14.0));
+        art.paint(ui, inside, tint);
+    }
+    // A tone that is there but different gets a mark rather than only a change
+    // of colour, so it survives being looked at quickly and being looked at by
+    // somebody who does not see amber.
+    if state == Sync::Differs {
+        ui.painter()
+            .circle_filled(rect.right_top() + Vec2::new(-2.0, 3.0), 2.5, ACCENT);
+    }
+    response
+}
+
+/// A small tag in a block's corner, saying what reaches it.
+///
+/// In the corner rather than in the block's face, because the face is the
+/// model's artwork and its name, and those are what a person is reading when
+/// they scan a chain. This is for the second look.
+pub fn block_tag(ui: &Ui, block: egui::Rect, text: &str, colour: Color32) {
+    let painter = ui.painter();
+    let font = egui::FontId::proportional(9.0);
+    let galley = painter.layout_no_wrap(text.to_owned(), font, BACKGROUND);
+    let pad = Vec2::new(4.0, 1.0);
+    let size = galley.size() + pad * 2.0;
+    let rect = egui::Rect::from_min_size(
+        egui::Pos2::new(block.right() - size.x - 3.0, block.top() + 3.0),
+        size,
+    );
+    painter.rect_filled(rect, Rounding::same(3.0), colour);
+    painter.galley(rect.min + pad, galley, BACKGROUND);
+}
+
+/// A footswitch, drawn as one.
+///
+/// A block's bypass is the thing you press with your foot, so it is drawn as
+/// the thing you press with your foot and it sits with the block's other
+/// controls, not as a tick box in a header three inches away. The ring above it
+/// is the pedal's own LED: lit in the colour the *device* gives it when the
+/// block is engaged, dark when it is bypassed, and hollow when no footswitch
+/// carries it at all.
+pub fn footswitch(ui: &mut Ui, engaged: bool, lit: Option<Color32>, carried: bool) -> Response {
+    // The same 44px cell a knob takes, so a row of controls lines up whatever
+    // is in it.
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let painter = ui.painter();
+    let colour = lit.unwrap_or(ACCENT);
+    let centre = rect.center() + Vec2::new(0.0, 4.0);
+
+    // The LED, above the switch, where it is on the pedal.
+    let led = egui::Pos2::new(rect.center().x, rect.top() + 5.0);
+    if engaged {
+        painter.circle_filled(led, 3.5, colour);
+        // A soft halo, so a lit LED reads as lit rather than as a dot.
+        painter.circle_filled(led, 6.0, colour.gamma_multiply(0.22));
+    } else {
+        painter.circle_stroke(led, 3.5, Stroke::new(1.2_f32, colour.gamma_multiply(0.55)));
+    }
+
+    // The switch itself: a hex nut and a stomp button, which is what one looks
+    // like from above.
+    let body = 13.0;
+    let ring = if response.hovered() {
+        Color32::from_rgb(0x6a, 0x72, 0x80)
+    } else {
+        Color32::from_rgb(0x50, 0x56, 0x62)
+    };
+    painter.circle_filled(centre, body, Color32::from_rgb(0x23, 0x27, 0x2e));
+    painter.circle_stroke(centre, body, Stroke::new(1.4_f32, ring));
+    painter.circle_filled(
+        centre,
+        body - 4.0,
+        if engaged {
+            Color32::from_rgb(0x3a, 0x40, 0x4b)
+        } else {
+            Color32::from_rgb(0x2b, 0x2f, 0x38)
+        },
+    );
+    // Nothing carries it: say so with a dashed feel rather than a full ring.
+    if !carried {
+        painter.circle_stroke(centre, body + 3.0, Stroke::new(1.0_f32, DIM.gamma_multiply(0.35)));
+    }
+    response
+}
+
 pub fn switch(on: &mut bool) -> impl egui::Widget + '_ {
     move |ui: &mut Ui| {
         let (rect, mut response) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::click());

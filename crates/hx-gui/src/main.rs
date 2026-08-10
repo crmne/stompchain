@@ -1,6 +1,26 @@
 //! Desktop entry point.
 
 fn main() -> eframe::Result<()> {
+    // A library written before tones were stored by content moves across now,
+    // once, silently: a few file renames and a rewritten index. It happens here
+    // rather than in `App::new` because this is the one place that only ever
+    // runs for a real person on their real library. Doing it in the app's
+    // constructor put it in reach of every test that builds an App, and a test
+    // that reaches out of its scratch directory and rearranges the machine's
+    // actual library is not a test.
+    let moved = hx_gui::library::migrate();
+    if moved > 0 {
+        eprintln!("moved {moved} tones into the library's object store");
+    }
+    // And whatever is in the store is called what its tone is called. Separate
+    // from the migration above because it is not a one-off: a library written
+    // by an earlier stompchain has objects named after their hashes, and a
+    // rename that failed half way should simply finish next time.
+    let renamed = hx_gui::library::tidy_names();
+    if renamed > 0 {
+        eprintln!("gave {renamed} tones their own names on disk");
+    }
+
     let (tx, rx) = hx_gui::spawn();
     // Closing the window must let the device go cleanly. A process that just
     // disappears leaves the device mid-conversation, and it then refuses new

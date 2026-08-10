@@ -15,7 +15,7 @@ use nusb::transfer::{Buffer, Bulk, In, Out};
 use nusb::MaybeFuture;
 
 mod commands;
-pub use commands::Assignment;
+pub use commands::{Assignment, Carried, Switch};
 pub mod backup;
 pub mod replay;
 

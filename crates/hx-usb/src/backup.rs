@@ -275,6 +275,58 @@ pub fn capture_one(session: &mut Session, dir: &Path, index: i64) -> Result<()> 
     .map_err(io("writing the manifest"))
 }
 
+/// Every preset a bundle holds, by slot number.
+///
+/// Read by listing rather than by building the names from the manifest: the
+/// file name carries the preset's name, which changes under a rename, and the
+/// slot number in front of it does not. A bundle is also the cheapest place to
+/// learn what a pedal is holding without asking the pedal, which is what the
+/// editor needs to say whether a preset is in the library.
+pub fn slot_files(dir: &Path) -> BTreeMap<usize, PathBuf> {
+    let Ok(read) = std::fs::read_dir(dir.join("presets")) else {
+        return BTreeMap::new();
+    };
+    read.flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "hxpreset"))
+        .filter_map(|p| {
+            let name = p.file_name()?.to_str()?;
+            let (slot, _) = name.split_once(' ')?;
+            Some((slot.parse().ok()?, p))
+        })
+        .collect()
+}
+
+/// A bundle's contents, ready to be written out in some other format: what it
+/// says about itself, every slot's name and the document behind it, and the
+/// settings.
+pub type Exportable = (Manifest, Vec<(String, Option<Vec<u8>>)>, serde_json::Value);
+
+/// A bundle's contents, ready to be written out in some other format.
+///
+/// The manifest, every slot's name paired with the document bytes behind it,
+/// and the settings. What it deliberately does not do is interpret any of it:
+/// turning a document into HX Edit's symbolic JSON needs the model catalog, and
+/// this crate talks to devices. The caller that has a catalog does that half.
+pub fn for_export(dir: &Path) -> Result<Exportable> {
+    let manifest = open(dir)?;
+    let files = slot_files(dir);
+    let presets = manifest
+        .presets
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let bytes = files.get(&index).and_then(|p| std::fs::read(p).ok());
+            (name.clone(), bytes)
+        })
+        .collect();
+    let globals = std::fs::read(dir.join("globals.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    Ok((manifest, presets, globals))
+}
+
 /// How many object ids to sweep when capturing settings. 147 of the first 160
 /// answer on an HX Stomp; the Global EQ reaches past 200, so this covers the
 /// range with room for a device that knows more.

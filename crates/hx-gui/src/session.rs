@@ -41,9 +41,11 @@ pub enum Cmd {
         name: String,
     },
     ListSetlists,
-    AssignCc {
+    /// Put a block's bypass under MIDI, or take it back off. No CC number:
+    /// the pedal picks one, and no captured message sets it.
+    AssignMidi {
         block: i64,
-        cc: i64,
+        on: bool,
     },
     /// Put a block's bypass under a footswitch, or take it off one.
     AssignBypassFootswitch {
@@ -56,9 +58,6 @@ pub enum Cmd {
         block: i64,
         param: i64,
         source: Option<hx_proto::rpc::Source>,
-        /// How many parameters the block has, so the reply can be re-read
-        /// without the UI asking twice.
-        params: i64,
     },
     /// Move one end of a controller's travel, normalised to 0.0-1.0.
     SetAssignRange {
@@ -67,10 +66,15 @@ pub enum Cmd {
         value: f32,
         high_end: bool,
     },
-    /// Read what controls each of a block's parameters. The count comes from
-    /// the caller: the device has no opcode that asks about a whole block, and
-    /// the UI already knows how many the model has.
-    ReadAssignments { block: i64, params: i64 },
+    /// What every footswitch is set to. Cheap: one round trip per switch, and
+    /// a pedal has a handful.
+    ReadSwitches,
+    /// Change the footswitch itself rather than what it carries.
+    EditSwitch {
+        /// One-based, the way it is printed on the pedal.
+        switch: u8,
+        edit: SwitchEdit,
+    },
     LoadIr {
         slot: i64,
         file: std::path::PathBuf,
@@ -192,6 +196,21 @@ pub enum Cmd {
     PushSetlist(Vec<SlotWrite>),
 }
 
+/// One change to a footswitch's own settings.
+///
+/// The three things a footswitch is, apart from what it drives: what it is
+/// called, what colour it lights, and whether it holds or toggles.
+#[derive(Clone)]
+pub enum SwitchEdit {
+    /// A name to write under it, or nothing to go back to naming what it
+    /// carries.
+    Label(Option<String>),
+    /// A colour by its place in HX Edit's list, or nothing for Auto Color.
+    Colour(Option<i64>),
+    /// Momentary holds while your foot is down; latching toggles.
+    Momentary(bool),
+}
+
 /// What the worker reports.
 pub enum Evt {
     Connected {
@@ -208,6 +227,11 @@ pub enum Evt {
         snapshots: Vec<String>,
         chain: Vec<Block>,
         layout: hx_proto::preset::Layout,
+        /// Everything a controller drives in this preset, every block at once.
+        /// It comes out of the document the reload already read, so it costs
+        /// nothing on the wire and is right about the travel, which opcode 36
+        /// is not.
+        assignments: Vec<hx_proto::preset::Assignment>,
         /// Whether the edit buffer differs from the stored preset. The worker
         /// owns this: a reload follows most edits, and a reload that reset the
         /// flag made Save go grey with changes still unsaved.
@@ -215,6 +239,8 @@ pub enum Evt {
     },
     /// The edit buffer has been committed to the preset.
     Saved,
+    /// What every footswitch is set to, in order.
+    Switches(Vec<hx_usb::Switch>),
     /// A backup or restore is running, and how far along it is (0.0 to 1.0).
     Working {
         what: String,
@@ -252,12 +278,6 @@ pub enum Evt {
     /// The device's favourite blocks, as (index, name).
     Favourites(Vec<(i64, String)>),
     Setlists(Vec<String>),
-    /// What controls each of a block's parameters, for the ones that have
-    /// something. Parameters not listed have nothing on them.
-    Assignments {
-        block: i64,
-        found: Vec<(i64, hx_usb::Assignment)>,
-    },
     /// Every preset in the setlist, as (name, document bytes). An empty slot
     /// comes back as `None` so the setlist can record that it is empty rather
     /// than silently shortening.
@@ -616,14 +636,19 @@ impl Worker {
                     self.dirty = true;
                     let verb = if on { "assigned to" } else { "taken off" };
                     self.send(Evt::Activity(format!("bypass {verb} footswitch {switch}")));
+                    // Say so by showing it. The editor draws the switches from
+                    // what the pedal reports rather than from what it just
+                    // asked for, so a write that did not take does not leave a
+                    // button looking as though it did.
+                    if let Some(switches) = self.try_on_device(|d| d.switches()) {
+                        self.send(Evt::Switches(switches));
+                    }
+                    // And by re-reading the document, which is where the rest
+                    // of the editor gets its assignments from now.
+                    self.reload();
                 }
             }
-            Cmd::AssignParameter {
-                block,
-                param,
-                source,
-                params,
-            } => {
+            Cmd::AssignParameter { block, param, source } => {
                 self.snapshot();
                 if self.run_on_device(|d| d.assign_parameter(block, param, source)) {
                     self.dirty = true;
@@ -631,7 +656,12 @@ impl Worker {
                         Some(source) => format!("assigned to {}", source.label()),
                         None => "assignment removed".to_owned(),
                     }));
-                    self.report_assignments(block, params);
+                    // A footswitch assignment changes what the switch carries,
+                    // and the document says the rest.
+                    if let Some(switches) = self.try_on_device(|d| d.switches()) {
+                        self.send(Evt::Switches(switches));
+                    }
+                    self.reload();
                 }
             }
             Cmd::SetAssignRange {
@@ -646,7 +676,33 @@ impl Worker {
                     self.dirty = true;
                 }
             }
-            Cmd::ReadAssignments { block, params } => self.report_assignments(block, params),
+            Cmd::ReadSwitches => {
+                if let Some(switches) = self.try_on_device(|d| d.switches()) {
+                    self.send(Evt::Switches(switches));
+                }
+            }
+            Cmd::EditSwitch { switch, edit } => {
+                self.snapshot();
+                let ok = match &edit {
+                    SwitchEdit::Label(label) => {
+                        self.run_on_device(|d| d.set_switch_label(switch, label.as_deref()))
+                    }
+                    SwitchEdit::Colour(colour) => {
+                        self.run_on_device(|d| d.set_switch_colour(switch, *colour))
+                    }
+                    SwitchEdit::Momentary(momentary) => {
+                        self.run_on_device(|d| d.set_switch_momentary(switch, *momentary))
+                    }
+                };
+                if ok {
+                    self.dirty = true;
+                    // Read it back rather than assume: what the pedal says the
+                    // switch is now is the only thing worth drawing.
+                    if let Some(switches) = self.try_on_device(|d| d.switches()) {
+                        self.send(Evt::Switches(switches));
+                    }
+                }
+            }
             Cmd::SetSetting { id, on } => {
                 if self.run_on_device(|d| d.set_object(id, hx_proto::msgpack::Value::Bool(on))) {
                     self.send(Evt::Activity(format!("setting {id} is now {on}")));
@@ -697,13 +753,17 @@ impl Worker {
                 if self.run_on_device(|d| d.save_preset(setlist, index, &name)) {
                     self.dirty = false;
                     self.send(Evt::Activity(format!("saved {name}")));
-                    self.send(Evt::Saved);
                     // The saved state is the new baseline to undo back to.
                     self.snapshot_taken = false;
-                    // And the automatic backup follows the save, so the copy on
+                    // The automatic backup follows the save, so the copy on
                     // disk is never older than the last thing you did. One
                     // preset is milliseconds, which is why this can be silent.
+                    // It goes before the news of the save rather than after,
+                    // because the editor reads that bundle to know what the
+                    // pedal is holding, and a stale answer would show up as a
+                    // dot saying the opposite of the truth.
                     self.back_up_one(index);
+                    self.send(Evt::Saved);
                 }
             }
             Cmd::CopyPreset => {
@@ -824,10 +884,11 @@ impl Worker {
                     self.reload();
                 }
             }
-            Cmd::AssignCc { block, cc } => {
+            Cmd::AssignMidi { block, on } => {
                 self.snapshot();
-                if self.run_on_device(|d| d.assign_bypass_cc(block, cc)) {
+                if self.run_on_device(|d| d.assign_bypass_midi(block, on)) {
                     self.dirty = true;
+                    self.reload();
                 }
             }
             Cmd::ListSetlists => {
@@ -1291,26 +1352,19 @@ impl Worker {
         }
         self.reload();
         self.send(Evt::Activity(format!("wrote {written} presets to the pedal")));
+        // The bundle now describes a pedal that no longer exists. Re-reading it
+        // whole costs a couple of seconds against the minutes of flash writes
+        // that just happened, and the snapshot it rotates aside is the pedal as
+        // it was before the setlist landed, which is worth having.
+        self.refresh_automatic();
     }
 
-    /// Read every parameter's assignment for one block and report the lot.
-    ///
-    /// One read per parameter — there is no opcode that asks about a whole
-    /// block — so this runs when a block is selected rather than every frame.
-    /// A block has at most a couple of dozen parameters and each read is a
-    /// single round trip.
-    fn report_assignments(&mut self, block: i64, params: i64) {
-        let mut found = Vec::new();
-        for param in 0..params {
-            match self.try_on_device(|d| d.read_assignment(block, param)) {
-                Some(Some(assignment)) => found.push((param, assignment)),
-                // Nothing assigned, or the device declined to say: either way
-                // there is nothing to draw.
-                Some(None) => {}
-                None => return,
-            }
+    /// Bring the automatic backup back in step with the pedal, if there is one.
+    fn refresh_automatic(&mut self) {
+        let Some(dir) = automatic_dir() else { return };
+        if dir.join("manifest.json").exists() {
+            self.back_up(&dir);
         }
-        self.send(Evt::Assignments { block, found });
     }
 
     fn paste(&mut self, blob: &[u8]) {
@@ -1375,6 +1429,7 @@ impl Worker {
         });
         if done {
             self.send(Evt::Activity("restored from backup".into()));
+            self.refresh_automatic();
             let setlist = self.setlist;
             if let Some(names) = self.try_on_device(|d| d.presets(setlist)) {
                 self.send(Evt::Presets(names));
@@ -1454,6 +1509,7 @@ impl Worker {
             snapshots: preset.snapshots(),
             chain,
             layout: preset.layout(),
+            assignments: preset.assignments(),
             dirty: self.dirty,
         });
     }

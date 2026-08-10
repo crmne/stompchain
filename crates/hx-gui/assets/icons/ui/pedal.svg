@@ -1,0 +1,10 @@
+<!-- Drawn for stompchain: a stompbox seen from above, the way it sits on a
+     board. Two knobs, a footswitch, and the jacks either side. Lucide has no
+     word for this, so it is ours. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="5" y="2" width="14" height="20" rx="2"/>
+  <circle cx="9" cy="7" r="1.2"/>
+  <circle cx="15" cy="7" r="1.2"/>
+  <circle cx="12" cy="16.5" r="2.2"/>
+  <path d="M3 9v3M21 9v3"/>
+</svg>

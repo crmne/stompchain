@@ -270,6 +270,28 @@ Four opcodes cover it:
 | 61 | `{102: switch, 66: colour}` | set the switch's LED colour |
 | 62 | `{102: switch}` | put the LED back to Auto Color |
 
+**58 to 62 count from zero, like 56 and 57. [confirmed]** Every one of them was
+caught in `mac-assign-capture.log` against Footswitch 1 as `102: 0`. Only 33
+takes a one-based number.
+
+**Opcode 61 takes a colour *index*, not an RGB value. [confirmed]** The capture
+sets White with `66: 1`, and HX Edit's own `HelixControls.json` gives the list
+under `footswitchLED`: Auto Color, White, Red, Dark Orange, Light Orange,
+Yellow, Green, Turquoise, Blue, Violet, Pink, Off. Index 0 is Auto Color, which
+is why 62 exists at all — the one entry of that list you cannot send as a value.
+
+**Opcode 33 answers with that same index. [confirmed]** Setting 1, 2, 5, 6, 8
+and 11 through 61 and reading the switch back through 33 gave the same number
+every time, and opcode 62 leaves key 66 nil rather than reporting 0. So the
+outer key 66 is an index and the key 66 *inside* an assignment entry is a real
+`0xRRGGBB`: one field, two dialects, told apart by size, an index being under a
+dozen.
+
+The inherited one is the LED as it is actually lit, dimming included. A switch
+carrying a bypassed Trinity Chorus reports `1037` = `0x00040D`, a dim blue,
+where the same block switched on would report the Modulation colour at full
+brightness.
+
 Key **74 is the source**, as an ordinal in the order HX Edit lists them: **0
 None**, 1–2 the expression pedals, 3–7 the footswitches, 8 MIDI CC, 9 Snapshots
 — `74: 1` for EXP 1 and `74: 9` for Snapshots are ours, from the assign capture.
@@ -277,21 +299,146 @@ Key **71 is not the constant it looks like**: it is the assignment's on switch,
 `4` when one is made and `0` when it is removed, and removing sends `{74: 0,
 71: 0}` rather than a separate opcode.
 
-**Min and Max are opcodes 65 and 66, not keys 72 and 73. [confirmed]** Dragging
-either end streams one write per intermediate value, the same way the global EQ
-does. Keys 72 and 73 remain what a *read* returns.
+**Min and Max are opcodes 65 and 66. [confirmed]** Dragging either end streams
+one write per intermediate value, the same way the global EQ does. They work,
+and there is a trap in checking whether they did: see below.
+
+### Read assignments from the document, not from opcode 36 [confirmed]
+
+Opcode 36 is wrong twice over, and the preset document is right about both.
+
+**It answers with the source at key 0, not at key 74.** Opcode 37 *takes* the
+source at 74; the reply puts it at 0. A parameter nothing controls answers `nil`
+rather than a map. Reading 74 made every parameter look unassigned, which hid
+every assignment the editor had.
+
+**It reports the travel as the defaults, always.** Keys 2 and 3 of the reply
+read 0 and 1 however far the ends have been moved. Writing 0.25 and 0.75 through
+opcodes 65 and 66 changes the document and does not change what 36 says.
+
+The document carries the lot, so one read answers for every block at once
+instead of one round trip per parameter. **Top-level key 4 is an array indexed
+by the source's ordinal**: entry 1 is everything Expression Pedal 1 drives,
+entry 3 Footswitch 1's. Each item is `{0: place-in-table, 1: assignment}`:
+
+```text
+4: [ nil,
+     [ {0: 1, 1: {0: 1, 1: 0, 2: nil, 3: nil, 4: 2, 5: 1, 9: 5, 10: 300, ...}},
+       {0: 0, 1: {0: 1, 1: 4, 2: 0.25, 3: 0.75, 4: 0, 5: 1,
+                  6: {28: 0, 29: 0, 41: false}, 7: 0, 13: false}} ],
+     [ {0: 2, 1: {0: 2, 1: 4, 2: 0, 3: 1, 4: 0, 5: 2, 6: {28: 0}, ...}} ],
+     nil, nil, nil, nil, nil, nil, nil ]
+```
+
+Inside an assignment: **0** the source again, **1** the kind (4 a parameter,
+0 a bypass), **2** and **3** the ends of the travel, **5 the block**, **6** the
+parameter when it is a parameter, **9** and **10** the bypass target and scope
+when it is a bypass.
+
+**Inside key 6, the parameter's index is key 29 and key 28 is the path.
+[confirmed]** That is the opposite way round from the *request* that makes the
+assignment, where 26 is the path, 28 the index and 29 a commit flag. Reading the
+request's shape out of the document made every assignment in every preset report
+parameter 0. `CT-Master Lead` has one assignment, on parameter 1:
+
+```text
+4: [ nil, nil, nil,
+     [ {0: 0, 1: {0: 3, 1: 4, 2: 1, 3: 4, 4: 0, 5: 3,
+                  6: {28: 0, 29: 1, 41: false}, 7: 0, 13: false}} ],
+     nil, nil, nil, nil, nil, nil ]
+```
+
+Its ends read 1 and 4, in that parameter's own units.
+
+**Key 5 is the block; the entry's own key 0 is not. [confirmed]** Key 0 is the
+assignment's place in that controller's table, and it equals the block often
+enough to look like one: in the sample above the wah's bypass sits at 1 and is
+on block 1. Reading key 0 put the wah's Position on the input block. Both were
+checked against opcode 36, which agrees with key 5.
+
+The example above is a factory wah preset, and it reads correctly: Expression
+Pedal 1 drives block 1's Position *and* block 1's bypass, which is auto-engage,
+and Expression Pedal 2 drives the volume block.
 
 **A bypass's Source list holds only footswitches and None. [confirmed]** No
 expression pedals — a bypass is a switch — and no MIDI CC either, because MIDI
 is not a source for a bypass: the assign page gives it its own **MIDI In** row,
-sent as `op37 {98: block, 95: cc, 96: 300, 74: 0, 71: 4}` with no parameter keys
+sent as `op37 {98: block, 95: 5, 96: 300, 74: 0, 71: 4}` with no parameter keys
 at all, and switched off again by the same message with `71: 0`. So opcode 68,
 which the inferred table calls "set MIDI CC", was never sent.
 
-Switch numbering is not consistent between these: opcodes 56 and 57 count from
-zero, `102: 0` being Footswitch 1, while the opcode 33 reads that follow them
-went 2, 3, 1 where 56 sent 1, 2, 0. Either 33 is one-based or it reads a
-neighbour, and that wants pinning before anything depends on it.
+**That message carries no CC number. [confirmed]** An earlier reading of this
+paragraph had the number at key 95, and the code that followed it put the number
+at key 71 — which is the assignment's on switch, so it was writing a CC number
+where the pedal reads "is this on". The capture settles both: 95 is `5`, the
+bypass target, exactly as it is inside the document, and 71 is `4`. The reply
+names the number the pedal chose:
+
+```text
+{0: 8, 1: 4, 2: nil, 3: nil, 4: 2, 5: 12, 9: 5, 10: 300, 11: true, 12: 0}
+```
+
+Key 0 is 8, MIDI CC, so the source is inferred from the shape rather than sent
+at 74; **key 12 is the CC number**, defaulting to 0. Which message *sets* that
+number has not been caught — the same gap as a parameter's CC — so nothing here
+offers to choose one.
+
+**A bypass on a footswitch is not in the document. [confirmed]** The controller
+table at top-level key 4 holds every parameter assignment and the bypasses an
+*expression pedal* drives — a wah's auto-engage — and no footswitch bypass at
+all. Checked across all 126 presets on the pedal: not one. It lives in the
+footswitch's own configuration, where opcode 33 reads it, so anything showing
+what drives a block has to read both and put them together.
+
+**And opcode 33's list is not all bypasses.** Key 67 names everything the switch
+drives on a block, a parameter assignment included, and the entry looks the same
+either way: key 69 names the *block* in both. Since the document holds every
+parameter assignment and no footswitch bypass, an entry the document already
+accounts for is that parameter and only an unaccounted one is the bypass. That
+fails only where one switch drives both a knob and the bypass of the same block.
+Key 109 inside the target is the target's name and reads as the block's name for
+a bypass; whether it reads as the *parameter's* name for a parameter would
+settle it outright, and no capture shows a switch carrying one. **Unverified.**
+
+**Opcode 37's own reply reports the travel correctly**, where opcode 36 does
+not: after moving the ends to 0.1 and 0.9 through 65 and 66, a reassignment
+through 37 answers `2: 0.1, 3: 0.9` while 36 keeps saying 0 and 1.
+
+**The ends are in the parameter's own units, not normalised. [confirmed]** The
+document holds a pitch block's ends as `7` and `12` — semitones — and a wah's as
+0 and 1 because that is a wah's range. Reading them as percentages showed a
+pitch assignment sweeping "700% to 1200%".
+
+**Switch numbering differs between these, and now we know how. [confirmed]**
+Opcodes 56 and 57 count from **zero**, `102: 0` being Footswitch 1. Opcode 33
+takes a **one-based** number and answers with the zero-based one: asking for 1
+comes back `{102: 0}`, 2 comes back `{102: 1}`, and asking for 0 is refused with
+error -3. So 33 is one-based in and zero-based out, which was the open question
+here; it does not read a neighbour.
+
+**Opcode 33 is also how you find out what a switch is set to. [confirmed]** An
+unassigned switch answers:
+
+```text
+{102: 0, 65: false, 109: nil, 66: nil, 67: nil}
+```
+
+and one carrying a block's bypass fills in key 67:
+
+```text
+{102: 0, 65: false, 109: nil, 66: nil,
+ 67: [{59: true, 68: 1, 66: 16711683,
+       69: {109: "Jazz Rivet 120", 98: 2, 29: false, 26: 0, 28: 0,
+            120: {56: 0, 51: 1}}}]}
+```
+
+Key **67 is the assignment list**, one entry per thing the switch controls.
+Inside an entry, **69 is the target** (`109` its name, `98` its block) and **66
+is the colour**, `0xRRGGBB`: `16711683` is `0xFF0003`, the red HX Edit gives the
+Amp category. That is the block's own colour travelling with the assignment,
+which is what an Auto Color switch lights up as. Key 65 on the outer map is
+momentary, 109 the custom label, 66 the chosen LED colour, and both are nil when
+the switch is on its defaults.
 
 Keys 72 and 73 carry the ends of the controller's travel, normalised. Bypass is a switch, so
 only a footswitch or a CC can drive it — HX Edit lists expression pedals for a
@@ -812,6 +959,43 @@ derived structure:
  A   0 Input [Multi (Guitar, Aux, Variax)]  ->   1 Cali Q Graphic  ->  …  ->   9 Output [Multi (1/4", XLR, …)]
  B  10 Split Y  ->  13 Line 6 2204 Mod  ->  19 Mixer
 ```
+
+### A `.hlx` numbers cells along a row, not slots [confirmed]
+
+HX Edit records where a block sits as two fields: `@path`, the branch, and
+`@position`, its place along that branch's drawn row. Neither is the device's
+slot index, and the two only agree on a chain with no split.
+
+Settled by exporting one preset twice — the factory `DIR:Relief`, once by us
+from the device's own bytes and once by HX Edit:
+
+| Block | Device slot | `@path` | `@position` |
+|---|---|---|---|
+| US Deluxe Nrm | 1 | 0 | 0 |
+| Plate | 6 | 0 | 5 |
+| Mod/Chorus Echo | 12 | 1 | 1 |
+| Octo | 13 | 1 | 2 |
+| Particle Verb | 14 | 1 | 3 |
+| Parametric | 15 | 1 | 4 |
+| split (attaches before slot 2) | — | — | 1 |
+| join (attaches before slot 7) | — | — | 6 |
+
+So **branch 0's row is the whole main line**, from just after the input to just
+before the output: `slot = position + input + 1`. The split and the join sit
+*inside* that run rather than dividing it, which is why the blocks after a join
+keep counting on from the ones before it, and why a junction's own number —
+meaning "before this cell" — is the same arithmetic. **Branch 1's row is the
+lower lane**, which begins in the slot after the split: `slot = position + split
++ 1`. `Layout::slot_of` and `Layout::position_of` are those two sums.
+
+A `dspN` is a whole signal *path*, which only hardware with two DSPs has; a
+branch of one path is `@path` inside the same dsp. Reading a branch as a second
+dsp is what used to drop every block on it.
+
+Two more of HX Edit's own conventions, from the same file. An amp names its cab
+rather than the cab naming its amp: `"@cab": "cab0"`. And `@model` is the
+*shared* model id — `HD2_ReverbPlate` — where the firmware has a mono symbol and
+a stereo one, so an exact match on the symbol finds neither.
 
 ## Reference data shipped with HX Edit
 

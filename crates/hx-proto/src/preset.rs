@@ -25,6 +25,32 @@ pub struct Preset {
     pub tone: Value,
 }
 
+/// One thing a controller drives.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Assignment {
+    /// The block, as the device numbers them.
+    pub block: i64,
+    /// What drives it. The document indexes controllers by the same ordinals
+    /// the wire uses, so this is the wire's own type rather than a second
+    /// vocabulary for the same nine things.
+    pub source: crate::rpc::Source,
+    pub target: Target,
+    /// The ends of the controller's travel, **in the parameter's own units**.
+    /// A pitch block's read 7 and 12 because those are semitones; a wah's read
+    /// 0 and 1 because that is a wah's range. They are not percentages.
+    pub min: f32,
+    pub max: f32,
+}
+
+/// What an assignment moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// The block's on/off.
+    Bypass,
+    /// One of its parameters, by index.
+    Param(i64),
+}
+
 /// Where each part of the signal path lives in the slot array.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Layout {
@@ -44,6 +70,33 @@ impl Lane {
     }
 }
 
+impl Path {
+    /// Where one branch's row starts in the slot array.
+    ///
+    /// The upper row is the whole main line, from just after the input to just
+    /// before the output: a split and a join sit *inside* that run rather than
+    /// dividing it, which is why the blocks after a join keep counting on from
+    /// the ones before it. The lower row is the lower lane's own span, which
+    /// begins right after the split.
+    fn row_base(&self, branch: usize) -> Option<usize> {
+        if branch > 0 {
+            return self
+                .lanes
+                .iter()
+                .find(|lane| lane.branch == branch)
+                .map(|lane| lane.span.start)
+                // A branch with nothing on it is drawn as no lane at all, and
+                // that is exactly the chain a file gets loaded onto: cleared.
+                // The branch still begins in the slot after the split.
+                .or_else(|| self.split.map(|split| split + 1));
+        }
+        self.input
+            .map(|input| input + 1)
+            .or_else(|| self.head.first().copied())
+            .or_else(|| self.lanes.first().map(|lane| lane.span.start))
+    }
+}
+
 impl Layout {
     /// Every lane across every path, which is what a renderer draws row by row.
     pub fn lanes(&self) -> impl Iterator<Item = &Lane> {
@@ -52,6 +105,37 @@ impl Layout {
 
     pub fn is_empty(&self) -> bool {
         self.paths.is_empty()
+    }
+
+    /// The slot a `.hlx` block sits in, from the branch and row index HX Edit
+    /// records as `@path` and `@position`.
+    ///
+    /// HX Edit numbers cells along the drawn row rather than device slots, and
+    /// the two are only the same on a chain with no split. Checked against a
+    /// factory preset exported both ways: HX Edit puts the amp at 0 and the
+    /// plate reverb at 5 where the device holds them in slots 1 and 6, and the
+    /// four blocks on the lower branch at 1 to 4 where the device holds them in
+    /// 12 to 15.
+    ///
+    /// A junction's own number means "before this cell", which is the same
+    /// arithmetic: the split of that preset reads 1 and attaches before slot 2.
+    pub fn slot_of(&self, path: usize, branch: usize, position: usize) -> Option<usize> {
+        Some(self.paths.get(path)?.row_base(branch)? + position)
+    }
+
+    /// The other direction: which branch a slot is on, and its place in that
+    /// row, for writing a `.hlx` HX Edit can read.
+    pub fn position_of(&self, path: usize, slot: usize) -> Option<(usize, usize)> {
+        let path = self.paths.get(path)?;
+        // The lower branch first: its span is a stretch of the same slot array,
+        // and a slot inside it is not on the main line.
+        for lane in path.lanes.iter().filter(|lane| lane.branch > 0) {
+            if lane.span.contains(&slot) {
+                return Some((lane.branch, slot - lane.span.start));
+            }
+        }
+        let base = path.row_base(0)?;
+        (slot >= base).then(|| (0, slot - base))
     }
 }
 
@@ -222,6 +306,34 @@ mod key {
     /// On a split or a join: whether a snapshot can switch it. HX Edit lists
     /// the junction among a snapshot's blocks only when this is set.
     pub const JUNCTION_SNAPSHOTS: i64 = 18;
+
+    /// Everything the controllers drive, as an array indexed by the source's
+    /// ordinal: entry 1 is Expression Pedal 1's list, entry 3 Footswitch 1's.
+    /// Confirmed by assigning one parameter and diffing the document.
+    pub const ASSIGNMENTS: i64 = 4;
+    /// Inside one of those entries: the assignment itself, at key 1. Key 0 is
+    /// its place in the controller's table, not the block.
+    pub const ASSIGNED_WHAT: i64 = 1;
+    /// And inside the assignment, the block it acts on.
+    pub const ASSIGNED_ON: i64 = 5;
+    /// Inside the assignment: 4 for a parameter, 0 for a block's bypass.
+    pub const ASSIGNED_KIND: i64 = 1;
+    /// The ends of the controller's travel, in the parameter's own units. The
+    /// document is the only place these are right; opcode 36 reports the
+    /// defaults forever.
+    pub const ASSIGNED_MIN: i64 = 2;
+    pub const ASSIGNED_MAX: i64 = 3;
+    /// What a parameter assignment points at; the index lives inside it.
+    pub const ASSIGNED_TARGET: i64 = 6;
+    /// The parameter's index, inside that.
+    ///
+    /// **Key 29, not 28.** The request that *makes* an assignment carries the
+    /// index at 28 and a commit flag at 29; the document swaps them, holding
+    /// the path at 28 and the index at 29. Reading 28 made every assignment in
+    /// every preset report parameter 0, so a footswitch put on a Bright switch
+    /// was drawn as owning the Drive knob. Confirmed by dumping key 4 of a
+    /// preset whose only assignment is on parameter 1: `6: {28: 0, 29: 1}`.
+    pub const ASSIGNED_PARAM: i64 = 29;
 
     /// Snapshots and footswitch assignments.
     pub const SNAPSHOT_SECTION: i64 = 10;
@@ -519,6 +631,69 @@ impl Preset {
     /// Tempo in BPM.
     pub fn tempo(&self) -> Option<f32> {
         self.tone.get(key::SETTINGS)?.get(key::TEMPO)?.as_f32()
+    }
+
+    /// Everything a controller drives in this preset.
+    ///
+    /// Read out of the document rather than asked for one parameter at a time,
+    /// which is the difference between one read and eighty. Opcode 36 answers
+    /// for a single parameter and answers *wrongly* about its travel: it
+    /// reports the defaults however the ends have been moved, where the
+    /// document is always right. The document also covers every block at once,
+    /// which is what the chain needs to say which blocks a pedal reaches.
+    ///
+    /// The shape: top-level key 4 is an array indexed by source ordinal, so
+    /// entry 1 is everything Expression Pedal 1 drives. Each item pairs a block
+    /// with the assignment itself.
+    pub fn assignments(&self) -> Vec<Assignment> {
+        let Some(Value::Array(by_source)) = self.tone.get(key::ASSIGNMENTS) else {
+            return Vec::new();
+        };
+        let mut found = Vec::new();
+        for (ordinal, entries) in by_source.iter().enumerate() {
+            let Value::Array(entries) = entries else { continue };
+            // Slot 0 is the "nothing" ordinal and holds nothing to draw.
+            let Some(source) = crate::rpc::Source::from_ordinal(ordinal as i64) else {
+                continue;
+            };
+            for entry in entries {
+                let Some(what) = entry.get(key::ASSIGNED_WHAT) else {
+                    continue;
+                };
+                // The block is *inside* the assignment, at key 5. The entry's
+                // own key 0 looks like a block number and is not: it is this
+                // assignment's place in the controller's table, which happens
+                // to match the block whenever a controller drives one thing.
+                // Reading that one instead put the wah's Position on the input.
+                let Some(block) = what.get(key::ASSIGNED_ON).and_then(Value::as_i64) else {
+                    continue;
+                };
+                // Key 1 says which kind this is: 4 for a parameter, 0 for a
+                // block's bypass, which carries the bypass target at key 9
+                // instead of a parameter index at 6.
+                let target = match what.get(key::ASSIGNED_KIND).and_then(Value::as_i64) {
+                    Some(0) => Target::Bypass,
+                    _ => match what
+                        .get(key::ASSIGNED_TARGET)
+                        .and_then(|t| t.get(key::ASSIGNED_PARAM))
+                        .and_then(Value::as_i64)
+                    {
+                        Some(param) => Target::Param(param),
+                        // A kind we have not met, pointing at nothing we can
+                        // name. Better left out than shown as parameter zero.
+                        None => continue,
+                    },
+                };
+                found.push(Assignment {
+                    block,
+                    source,
+                    target,
+                    min: what.get(key::ASSIGNED_MIN).and_then(Value::as_f32).unwrap_or(0.0),
+                    max: what.get(key::ASSIGNED_MAX).and_then(Value::as_f32).unwrap_or(1.0),
+                });
+            }
+        }
+        found
     }
 
     /// Snapshot names, in order.
@@ -1083,6 +1258,104 @@ fn read_values(array: &Value) -> Vec<f32> {
 mod tests {
     use super::*;
     use crate::msgpack::Encoder;
+
+    /// The HX Stomp's factory `DIR:Relief`, whose numbers came out of the same
+    /// preset exported twice: once by us from the device's own bytes, once by
+    /// HX Edit. The device holds its blocks in slots 1, 6 and 12 to 15; HX Edit
+    /// numbers them 0 and 5 on branch 0 and 1 to 4 on branch 1, and puts the
+    /// split at 1 and the join at 6.
+    fn relief() -> Layout {
+        Layout {
+            paths: vec![Path {
+                input: Some(0),
+                output: Some(9),
+                split: Some(10),
+                join: Some(19),
+                head: vec![1],
+                lanes: vec![
+                    Lane { branch: 0, blocks: vec![6], span: 2..7 },
+                    Lane { branch: 1, blocks: vec![12, 13, 14, 15], span: 11..19 },
+                ],
+                tail: vec![],
+            }],
+        }
+    }
+
+    #[test]
+    fn a_row_index_becomes_the_slot_it_names() {
+        let layout = relief();
+        assert_eq!(layout.slot_of(0, 0, 0), Some(1), "the amp, before the split");
+        assert_eq!(layout.slot_of(0, 0, 5), Some(6), "the plate, on the upper branch");
+        assert_eq!(layout.slot_of(0, 1, 1), Some(12), "first of the lower branch");
+        assert_eq!(layout.slot_of(0, 1, 4), Some(15), "last of the lower branch");
+        // A junction's number means "before this cell", which is the same sum.
+        assert_eq!(layout.slot_of(0, 0, 1), Some(2), "where the split attaches");
+        assert_eq!(layout.slot_of(0, 0, 6), Some(7), "where the join attaches");
+        assert_eq!(layout.slot_of(1, 0, 0), None, "there is no second path");
+    }
+
+    #[test]
+    fn and_back_again() {
+        let layout = relief();
+        for (slot, expected) in [(1, (0, 0)), (6, (0, 5)), (12, (1, 1)), (15, (1, 4))] {
+            assert_eq!(layout.position_of(0, slot), Some(expected), "slot {slot}");
+        }
+    }
+
+    /// The parameter index is key 29 of the target map and key 28 is the path,
+    /// which is the opposite way round from the request that makes the
+    /// assignment. Reading 28 made every assignment on the pedal report
+    /// parameter 0, so a footswitch put on a Bright switch was drawn owning the
+    /// Drive knob. The shape here is a real one, from `CT-Master Lead`.
+    #[test]
+    fn the_parameter_index_comes_from_key_29() {
+        let assignment = crate::msgmap! {
+            key::ASSIGNED_KIND => Value::Int(4),
+            key::ASSIGNED_MIN => Value::Int(1),
+            key::ASSIGNED_MAX => Value::Int(4),
+            key::ASSIGNED_ON => Value::Int(3),
+            key::ASSIGNED_TARGET => crate::msgmap! {
+                28 => Value::Int(0),
+                key::ASSIGNED_PARAM => Value::Int(1),
+                41 => Value::Bool(false),
+            },
+        };
+        let preset = Preset {
+            sections: Vec::new(),
+            sections_width: 0,
+            slots: Vec::new(),
+            tone: crate::msgmap! {
+                key::ASSIGNMENTS => Value::Array(vec![
+                    Value::Nil,
+                    Value::Nil,
+                    Value::Nil,
+                    // Ordinal 3 is Footswitch 1.
+                    Value::Array(vec![crate::msgmap! {
+                        0 => Value::Int(0),
+                        key::ASSIGNED_WHAT => assignment,
+                    }]),
+                ]),
+            },
+        };
+
+        let found = preset.assignments();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].target, Target::Param(1), "key 29, not key 28");
+        assert_eq!(found[0].block, 3);
+        assert_eq!(found[0].source, crate::rpc::Source::Footswitch(1));
+        // In the parameter's own units, not a percentage.
+        assert_eq!((found[0].min, found[0].max), (1.0, 4.0));
+    }
+
+    /// A branch with nothing on it is drawn as no lane at all, which is exactly
+    /// the chain a file is loaded onto. The branch still begins after the split.
+    #[test]
+    fn an_empty_branch_still_knows_where_it_starts() {
+        let mut layout = relief();
+        layout.paths[0].lanes.clear();
+        assert_eq!(layout.slot_of(0, 1, 1), Some(12));
+        assert_eq!(layout.slot_of(0, 0, 5), Some(6));
+    }
 
     /// Rebuild the shape of a real captured preset: a Scream 808 in slot 1
     /// with its three parameters, and an empty slot after it.

@@ -107,9 +107,18 @@ pub fn to_hlx(preset: &Preset, catalog: &Catalog, name: &str) -> Written {
                 // a block number - so the amp after it keeps the number it
                 // would have had.
                 if slot.paired.is_some() {
+                    // The amp names its cab, which is how HX Edit says whose it
+                    // is. `emit` has just written the amp as the block before
+                    // this counter moved on.
+                    let cab_key = format!("cab{}", next_cab[path]);
+                    if let Some(Value::Object(amp)) =
+                        dsps[path].get_mut(&format!("block{}", next_block[path] - 1))
+                    {
+                        amp.insert("@cab".into(), Value::String(cab_key.clone()));
+                    }
                     emit_named(
                         &mut dsps[path],
-                        format!("cab{}", next_cab[path]),
+                        cab_key,
                         index,
                         slot.paired,
                         &slot.paired_values,
@@ -149,17 +158,54 @@ pub fn to_hlx(preset: &Preset, catalog: &Catalog, name: &str) -> Written {
                     .map(|s| s.symbol.clone())
                     .unwrap_or_else(|| fallback.to_owned())
             };
+            // A junction's number means "before this cell", so it is the same
+            // arithmetic a block's uses on the slot it attaches to.
+            let at = |slot: Option<usize>| {
+                slot.and_then(|slot| layout.position_of(index, slot))
+                    .map(|(_, position)| position)
+            };
             dsp.insert(
                 "split".into(),
-                junction(&named(split, "HD2_AppDSPFlowSplitY"), preset.attach_of(split)),
+                junction(
+                    &named(split, "HD2_AppDSPFlowSplitY"),
+                    preset.attach_of(split),
+                    at(preset.attach_of(split)),
+                ),
             );
             dsp.insert(
                 "join".into(),
-                junction(&named(join, "HD2_AppDSPFlowJoin"), preset.attach_of(join)),
+                junction(
+                    &named(join, "HD2_AppDSPFlowJoin"),
+                    preset.attach_of(join),
+                    at(preset.attach_of(join)),
+                ),
             );
             // The lower branch has its own input and output endpoints.
             dsp.insert("inputB".into(), endpoint(device, true, false));
             dsp.insert("outputB".into(), endpoint(device, false, true));
+        }
+    }
+
+    // The same fact in HX Edit's own vocabulary: which branch a block is on and
+    // its place along that branch's row. We write `@slot` as well because it is
+    // exact without a layout to read it against, and a file carrying both can
+    // be read either way. A cab has neither, because it rides in its amp's slot
+    // and HX Edit gives it none.
+    for (index, dsp) in dsps.iter_mut().enumerate() {
+        for (key, node) in dsp.iter_mut() {
+            if !key.starts_with("block") {
+                continue;
+            }
+            let Some((branch, position)) = node
+                .get("@slot")
+                .and_then(Value::as_u64)
+                .and_then(|slot| layout.position_of(index, slot as usize))
+            else {
+                continue;
+            };
+            let Some(node) = node.as_object_mut() else { continue };
+            node.insert("@path".into(), json!(branch));
+            node.insert("@position".into(), json!(position));
         }
     }
 
@@ -244,9 +290,14 @@ fn endpoint(device: &str, input: bool, send: bool) -> Value {
     json!({ "@model": model })
 }
 
-/// A split or a join, with the position it attaches to on the main line.
-fn junction(model: &str, attach: Option<usize>) -> Value {
-    json!({ "@model": model, "@attach": attach.unwrap_or(0) })
+/// A split or a join, with the place it attaches to on the main line said
+/// twice: as the device's own slot, and as the row index HX Edit writes.
+fn junction(model: &str, attach: Option<usize>, position: Option<usize>) -> Value {
+    json!({
+        "@model": model,
+        "@attach": attach.unwrap_or(0),
+        "@position": position.unwrap_or(0),
+    })
 }
 
 /// Write one model into a DSP's block map at its next position, or record why it
