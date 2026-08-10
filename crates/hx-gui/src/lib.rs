@@ -4296,11 +4296,13 @@ impl App {
                 (source, carries)
             })
             .collect();
-        let under = self.assignment(block, target).map(|a| a.source);
+        let found = self.assignment(block, target);
+        let under = found.as_ref().map(|a| a.source);
         AssignMenu {
             name,
             under,
             sources,
+            cc: found.and_then(|a| a.cc),
             // The switch under this block, when there is one. A footswitch is
             // three things besides what it drives - a name, a colour, a hold or
             // a toggle - and this popup is where you are standing when you
@@ -4355,6 +4357,21 @@ impl App {
                 self.edit(Cmd::EditSwitch { switch, edit });
                 return;
             }
+            // Choosing the number, not choosing MIDI. The two travel by
+            // different messages, and which one depends on what is assigned:
+            // a bypass carries its CC on the assignment itself, a parameter
+            // has an opcode of its own for it.
+            AssignAction::Cc(cc) => {
+                match target {
+                    Target::Bypass => self.edit(Cmd::AssignMidi {
+                        block,
+                        on: true,
+                        cc,
+                    }),
+                    Target::Param(param) => self.edit(Cmd::SetAssignCc { block, param, cc }),
+                }
+                return;
+            }
         };
         match target {
             Target::Param(param) => self.edit(Cmd::AssignParameter {
@@ -4368,7 +4385,15 @@ impl App {
                     switch,
                     on: true,
                 }),
-                Some(Source::MidiCc) => self.edit(Cmd::AssignMidi { block, on: true }),
+                Some(Source::MidiCc) => self.edit(Cmd::AssignMidi {
+                    block,
+                    on: true,
+                    // Whatever it already had, or the pedal's own default.
+                    cc: self
+                        .assignment(block, Target::Bypass)
+                        .and_then(|a| a.cc)
+                        .unwrap_or(DEFAULT_CC),
+                }),
                 // The menu offers a bypass nothing else, so this is unreachable
                 // rather than unhandled.
                 Some(_) => {}
@@ -4380,7 +4405,12 @@ impl App {
                         switch,
                         on: false,
                     }),
-                    Some(Source::MidiCc) => self.edit(Cmd::AssignMidi { block, on: false }),
+                    Some(Source::MidiCc) => self.edit(Cmd::AssignMidi {
+                        block,
+                        on: false,
+                        // Taking it off sends 0, which is what "no CC" is.
+                        cc: 0,
+                    }),
                     _ => {}
                 },
             },
@@ -7658,6 +7688,10 @@ struct AssignMenu {
     /// The footswitch under this control, when one is: it has settings of its
     /// own, and this is where you are standing when you want them.
     switch: Option<SwitchView>,
+    /// Which CC drives it, when MIDI does and the document says which. The
+    /// number is only offered while MIDI is the source; every other source has
+    /// no number to give.
+    cc: Option<i64>,
     /// The LED colours HX Edit offers, index 0 being Auto Color. Empty without
     /// the catalog, in which case the colour is not offered at all.
     colours: Vec<String>,
@@ -7687,6 +7721,38 @@ enum AssignAction {
     /// The name field is being typed into. Kept in the app so the draft
     /// survives the frame, the same as every other field here.
     Typing(u8, String),
+    /// Which CC drives it, once MIDI does.
+    Cc(i64),
+}
+
+/// What the pedal picks for itself when a MIDI assignment is made, and so what
+/// the field shows before anybody chooses.
+const DEFAULT_CC: i64 = 4;
+
+/// The CC number, as a field you can drag or type into.
+///
+/// Answers with a number only when it changed, so holding the menu open costs
+/// nothing. Dragging streams a value per frame, which is what HX Edit does too
+/// - the pedal takes them one at a time and the last one is what sticks.
+fn cc_row(ui: &mut egui::Ui, cc: i64) -> Option<i64> {
+    let mut value = cc;
+    let mut chosen = None;
+    ui.horizontal(|ui| {
+        ui.add_space(18.0);
+        ui.label(RichText::new("CC").small().color(theme::DIM));
+        // 0 to 127 is the whole of MIDI, and the pedal refuses anything else.
+        let field = ui.add(
+            egui::DragValue::new(&mut value)
+                .speed(0.15)
+                .range(0..=127)
+                .clamp_existing_to_range(true),
+        );
+        if field.changed() {
+            chosen = Some(value);
+        }
+        field.on_hover_text("which MIDI CC drives this - drag, or click to type");
+    });
+    chosen
 }
 
 /// The one assignment menu, for a knob and for a block's on/off alike.
@@ -7716,15 +7782,17 @@ fn assign_menu(ui: &mut egui::Ui, menu: &AssignMenu) -> Option<AssignAction> {
         let row = ui.selectable_label(on, label);
         // The pedal chooses the number and no captured message sets it, so the
         // menu says which one it is rather than offering to change it.
-        let row = match source {
-            hx_proto::rpc::Source::MidiCc => {
-                row.on_hover_text("the pedal picks the CC number; nothing we have caught sets it")
-            }
-            _ => row,
-        };
         if row.clicked() {
             action = Some(AssignAction::To((!on).then_some(*source)));
             ui.close_menu();
+        }
+        // The number, under the row that chose MIDI, because that is where a
+        // person is looking when they want it. Only while MIDI is the source:
+        // nothing else has a number to give.
+        if on && *source == hx_proto::rpc::Source::MidiCc {
+            if let Some(chosen) = cc_row(ui, menu.cc.unwrap_or(DEFAULT_CC)) {
+                action = Some(AssignAction::Cc(chosen));
+            }
         }
     }
     if let Some(switch) = &menu.switch {

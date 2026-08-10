@@ -46,6 +46,17 @@ pub enum Cmd {
     AssignMidi {
         block: i64,
         on: bool,
+        /// Which CC drives it. Sent on every change, because the number rides
+        /// the assignment itself for a bypass - there is no separate message
+        /// to change it with.
+        cc: i64,
+    },
+    /// Which CC drives an assigned *parameter*, which is its own opcode rather
+    /// than part of the assignment.
+    SetAssignCc {
+        block: i64,
+        param: i64,
+        cc: i64,
     },
     /// Put a block's bypass under a footswitch, or take it off one.
     AssignBypassFootswitch {
@@ -889,12 +900,16 @@ impl Worker {
                     self.reload();
                 }
             }
-            Cmd::AssignMidi { block, on } => {
+            Cmd::AssignMidi { block, on, cc } => {
                 self.snapshot();
-                // 4 is the CC the pedal picks for itself, which is what this
-                // sent before the number was known to be selectable at all.
-                // The menu has nowhere to choose one yet.
-                if self.run_on_device(|d| d.assign_bypass_midi(block, on.then_some(4))) {
+                if self.run_on_device(|d| d.assign_bypass_midi(block, on.then_some(cc))) {
+                    self.dirty = true;
+                    self.reload();
+                }
+            }
+            Cmd::SetAssignCc { block, param, cc } => {
+                self.snapshot();
+                if self.run_on_device(|d| d.set_assign_cc(block, param, cc)) {
                     self.dirty = true;
                     self.reload();
                 }
