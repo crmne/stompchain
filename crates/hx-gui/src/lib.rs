@@ -245,6 +245,10 @@ pub struct App {
     /// A preset the list wants to load while the edit buffer has changes that
     /// are not saved. Loading discards them, so it asks.
     confirm_switch: Option<i64>,
+    /// Renaming from the header, kept apart from the list's own rename state.
+    /// Sharing one made both draw a field for the same preset, and two fields
+    /// fighting over the keyboard is neither of them working.
+    renaming_header: Option<String>,
     /// A preset the Remove button is waiting on an answer about. Emptying a
     /// slot writes flash and there is no undo for it, so it asks first.
     confirm_clear: Option<i64>,
@@ -451,6 +455,7 @@ impl App {
             current_snapshot: 0,
             confirm_clear: None,
             confirm_switch: None,
+            renaming_header: None,
             update_check: Some(update::check()),
             update_available: None,
         };
@@ -511,7 +516,20 @@ impl App {
                     // Likewise: "No device" and a Connect button say this.
                     self.status.clear();
                 }
-                Ok(Evt::Presets(names)) => self.presets = names,
+                Ok(Evt::Presets(names)) => {
+                    self.presets = names;
+                    // A rename does not reload the preset - it only changes a
+                    // slot's label - so the title bar kept showing the old name
+                    // until something else happened to reload. The list is the
+                    // authority on names; the title follows it.
+                    if let Some(name) = self
+                        .presets
+                        .get(self.preset_index.max(0) as usize)
+                        .filter(|n| !n.is_empty())
+                    {
+                        self.preset_name = name.clone();
+                    }
+                }
                 Ok(Evt::Working { what, progress }) => {
                     self.working = if what.is_empty() {
                         None
@@ -1318,41 +1336,21 @@ impl App {
             ui.painter().circle_filled(dot.center(), 4.0, theme::ACCENT);
         }
 
-        // The slot label and the name go in one galley at one size, so they
-        // share a baseline. As two separate labels of different sizes, egui
-        // centred each in its own box and the slot sat a few pixels high.
-        let mut title = egui::text::LayoutJob::default();
-        title.append(
-            &format!("{}  ", hx_proto::rpc::slot_label(self.preset_index)),
-            0.0,
-            egui::TextFormat {
-                font_id: egui::FontId::proportional(16.0),
-                color: theme::DIM,
-                ..Default::default()
-            },
+        // Only the name is clickable. The slot number is the pedal's, not
+        // yours - offering to edit it would be offering something that cannot
+        // happen.
+        ui.label(
+            RichText::new(format!("{}  ", hx_proto::rpc::slot_label(self.preset_index)))
+                .size(16.0)
+                .color(theme::DIM),
         );
-        title.append(
-            &self.preset_name,
-            0.0,
-            egui::TextFormat {
-                // Real weight, not egui's `strong()`, which only brightens the
-                // colour. The preset name is the one thing on this bar that
-                // should carry.
-                font_id: theme::semibold(16.0),
-                color: ui.visuals().strong_text_color(),
-                ..Default::default()
-            },
-        );
-        // Clicking the name renames it, here as well as in the list. It is the
-        // name, in the place you are looking when you decide it is wrong.
-        let renaming_here =
-            matches!(&self.renaming, Some((i, _)) if *i == self.preset_index);
-        if renaming_here {
+
+        if self.renaming_header.is_some() {
             let mut done: Option<Option<String>> = None;
-            if let Some((_, draft)) = self.renaming.as_mut() {
+            if let Some(draft) = self.renaming_header.as_mut() {
                 let field = ui.add(
                     egui::TextEdit::singleline(draft)
-                        .desired_width(200.0)
+                        .desired_width(220.0)
                         .font(theme::semibold(16.0)),
                 );
                 if !field.has_focus() && !field.lost_focus() {
@@ -1365,7 +1363,7 @@ impl App {
             }
             if let Some(result) = done {
                 let index = self.preset_index;
-                self.renaming = None;
+                self.renaming_header = None;
                 if let Some(name) = result {
                     self.send(Cmd::Rename { index, name });
                 }
@@ -1373,7 +1371,15 @@ impl App {
             return;
         }
 
-        let shown = ui.add(egui::Label::new(title).sense(egui::Sense::click()));
+        let shown = ui.add(
+            egui::Label::new(
+                RichText::new(&self.preset_name)
+                    .font(theme::semibold(16.0))
+                    .color(ui.visuals().strong_text_color()),
+            )
+            .selectable(false)
+            .sense(egui::Sense::click()),
+        );
         if shown
             .on_hover_text(if self.dirty {
                 "unsaved changes — click the name to rename it"
@@ -1382,7 +1388,7 @@ impl App {
             })
             .clicked()
         {
-            self.renaming = Some((self.preset_index, self.preset_name.clone()));
+            self.renaming_header = Some(self.preset_name.clone());
         }
     }
 

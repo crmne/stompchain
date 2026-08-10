@@ -11,3 +11,6 @@ docs/vendor
 # Python bytecode from the capture-decoding tools.
 __pycache__/
 *.pyc
+
+# Session handover notes: useful locally, not part of the project.
+NEXT-SESSION.md
