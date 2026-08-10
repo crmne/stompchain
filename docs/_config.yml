@@ -1,9 +1,9 @@
-title: tonepush
+title: TonePush Editor
 tonepush_version: "0.2.1"
 description: The open-source editor for Line 6 HX pedals.
 lang: en-US
 timezone: Europe/Berlin
-url: https://tonepush.rocks
+url: https://docs.tonepush.rocks
 baseurl: ""
 logo: /assets/images/logo.svg
 image: /screenshot.png
@@ -46,10 +46,10 @@ defaults:
 
 jekyll_vitepress:
   branding:
-    site_title: tonepush
+    site_title: TonePush Editor
     logo:
       default: /assets/images/logo.svg
-      alt: tonepush
+      alt: TonePush
   syntax:
     light_theme: github
     dark_theme: github.dark
@@ -93,9 +93,9 @@ ai_visible_content:
   entity:
     type: Organization
     id_slug: tonepush
-    name: tonepush
+    name: TonePush
     alternate_names:
-      - tonepush editor
+      - TonePush Editor
       - HX Stomp editor
     description: >-
       an open-source editor for Line 6 HX-family devices, with a
@@ -155,13 +155,13 @@ ai_visible_content:
     related_posts_limit: 3
     entity_definitions:
       tonepush:
-        name: tonepush
-        url: https://tonepush.rocks/
+        name: TonePush
+        url: https://docs.tonepush.rocks/
         description: The open-source editor for Line 6 HX pedals.
       carmine-paolino:
         name: Carmine Paolino
         url: https://paolino.me/
-        description: Creator of tonepush.
+        description: Creator of TonePush.
   validation:
     warn_name_inconsistency: true
     warn_missing_same_as: true

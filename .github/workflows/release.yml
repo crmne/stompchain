@@ -129,7 +129,7 @@ jobs:
       - name: App bundle
         run: |
           version="${GITHUB_REF_NAME#v}"
-          bash packaging/macos/bundle.sh universal/tonepush-gui tonepush.app "$version"
+          bash packaging/macos/bundle.sh universal/tonepush-gui TonePush.app "$version"
 
       - name: Import signing certificate
         if: env.APPLE_CERTIFICATE_P12 != ''
@@ -150,19 +150,19 @@ jobs:
           codesign --force --options runtime --timestamp \
             --sign "$APPLE_SIGNING_IDENTITY" universal/tonepush
           codesign --force --deep --options runtime --timestamp \
-            --sign "$APPLE_SIGNING_IDENTITY" tonepush.app
+            --sign "$APPLE_SIGNING_IDENTITY" TonePush.app
 
       - name: DMG
         run: |
           name="tonepush-${GITHUB_REF_NAME}-macos-universal"
           stage="$RUNNER_TEMP/dmg"
           mkdir -p "$stage"
-          cp -R tonepush.app "$stage/"
+          cp -R TonePush.app "$stage/"
           cp universal/tonepush "$stage/tonepush"
           cp README.md LICENSE "$stage/"
           ln -s /Applications "$stage/Applications"
           mkdir -p dist
-          hdiutil create -volname tonepush -srcfolder "$stage" -ov \
+          hdiutil create -volname TonePush -srcfolder "$stage" -ov \
             -format UDZO "dist/$name.dmg"
 
       - name: Notarize

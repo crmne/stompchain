@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build and install tonepush.
+# Build and install TonePush.
 #
 #   ./install.sh              build and install everything
 #   ./install.sh --cli-only   skip the GUI
@@ -11,7 +11,8 @@
 # and on PATH.
 set -euo pipefail
 
-APP_NAME="tonepush"
+APP_NAME="TonePush"
+APP_SLUG="tonepush"
 BIN_DIRS=("$HOME/.local/bin" "/usr/local/bin" "$HOME/bin")
 MAC_APPS="$HOME/Applications"
 LINUX_APPS="$HOME/.local/share/applications"
@@ -43,11 +44,11 @@ uninstall() {
         rm -rf "$MAC_APPS/$APP_NAME.app"
         say "removed $MAC_APPS/$APP_NAME.app"
     }
-    [ -f "$LINUX_APPS/$APP_NAME.desktop" ] && {
-        rm -f "$LINUX_APPS/$APP_NAME.desktop"
-        say "removed $LINUX_APPS/$APP_NAME.desktop"
+    [ -f "$LINUX_APPS/$APP_SLUG.desktop" ] && {
+        rm -f "$LINUX_APPS/$APP_SLUG.desktop"
+        say "removed $LINUX_APPS/$APP_SLUG.desktop"
     }
-    local icon="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps/$APP_NAME.svg"
+    local icon="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps/$APP_SLUG.svg"
     [ -f "$icon" ] && {
         rm -f "$icon"
         say "removed $icon"
@@ -62,16 +63,16 @@ uninstall() {
 make_app_bundle() {
     local gui="$1" app="$MAC_APPS/$APP_NAME.app"
     mkdir -p "$app/Contents/MacOS"
-    cp "$gui" "$app/Contents/MacOS/$APP_NAME"
+    cp "$gui" "$app/Contents/MacOS/$APP_SLUG"
     cat >"$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key><string>$APP_NAME</string>
-    <key>CFBundleDisplayName</key><string>tonepush</string>
-    <key>CFBundleIdentifier</key><string>me.paolino.tonepush</string>
-    <key>CFBundleExecutable</key><string>$APP_NAME</string>
+    <key>CFBundleDisplayName</key><string>$APP_NAME</string>
+    <key>CFBundleIdentifier</key><string>rocks.tonepush.editor</string>
+    <key>CFBundleExecutable</key><string>$APP_SLUG</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.2.1</string>
     <key>NSHighResolutionCapable</key><true/>
@@ -126,25 +127,25 @@ make_desktop_entry() {
     mkdir -p "$LINUX_APPS" "$icons"
     # The Exec path is written absolute: desktop launchers do not share the
     # shell's PATH, and a bare command name quietly fails there.
-    cat >"$LINUX_APPS/$APP_NAME.desktop" <<DESKTOP
+    cat >"$LINUX_APPS/$APP_SLUG.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=tonepush
+Name=$APP_NAME
 GenericName=HX Signal Chain Editor
 Comment=Editor for Line 6 HX hardware
 Exec=$gui
 Terminal=false
 Categories=AudioVideo;Audio;
 Keywords=Line 6;HX;Helix;stomp;pedal;guitar;preset;tone;
-Icon=$APP_NAME
+Icon=$APP_SLUG
 StartupNotify=false
 DESKTOP
-    [ -f "packaging/icons/$APP_NAME.svg" ] &&
-        install -m 644 "packaging/icons/$APP_NAME.svg" "$icons/$APP_NAME.svg"
+    [ -f "packaging/icons/$APP_SLUG.svg" ] &&
+        install -m 644 "packaging/icons/$APP_SLUG.svg" "$icons/$APP_SLUG.svg"
     update-desktop-database "$LINUX_APPS" >/dev/null 2>&1 || true
     gtk-update-icon-cache "${icons%/hicolor*}/hicolor" >/dev/null 2>&1 || true
-    echo "$LINUX_APPS/$APP_NAME.desktop"
+    echo "$LINUX_APPS/$APP_SLUG.desktop"
 }
 
 main() {

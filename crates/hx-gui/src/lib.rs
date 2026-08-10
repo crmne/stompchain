@@ -1227,7 +1227,7 @@ impl App {
             });
     }
 
-    /// Which tonepush this is, in the corner where a version belongs.
+    /// Which TonePush this is, in the corner where a version belongs.
     ///
     /// It says nothing at all until there is something to say. When a newer
     /// release exists the label picks up the accent and gains a clause, which
@@ -1249,17 +1249,17 @@ impl App {
 
         let (text, hover, url) = match &self.update_available {
             Some(tag) => (
-                RichText::new(format!("tonepush {} · {tag} available", update::VERSION))
+                RichText::new(format!("TonePush {} · {tag} available", update::VERSION))
                     .small()
                     .color(theme::ACCENT),
-                "a newer tonepush is out — click for the release".to_owned(),
+                "A newer TonePush release is available. Click to open it.".to_owned(),
                 update::RELEASES,
             ),
             None => (
-                RichText::new(format!("tonepush {}", update::VERSION))
+                RichText::new(format!("TonePush {}", update::VERSION))
                     .small()
                     .color(theme::DIM),
-                format!("tonepush {} · click for the releases page", update::VERSION),
+                format!("TonePush {} · click for the releases page", update::VERSION),
                 update::RELEASES,
             ),
         };
@@ -3655,7 +3655,7 @@ impl App {
                     RichText::new(
                         "A backup is every preset, every setting and every impulse \
                          response, as the device's own bytes. One is taken automatically \
-                         whenever tonepush connects, and kept current as you save.",
+                         whenever TonePush connects, and kept current as you save.",
                     )
                     .small()
                     .color(theme::DIM),
@@ -5817,7 +5817,7 @@ impl App {
                         ui.vertical_centered(|ui| {
                             ui.label(RichText::new("🎸").size(30.0));
                             ui.add_space(2.0);
-                            ui.heading("Welcome to tonepush");
+                            ui.heading("Welcome to TonePush");
                             ui.add_space(4.0);
                             ui.label(
                                 RichText::new(
@@ -5828,7 +5828,7 @@ impl App {
                             );
                             ui.add_space(14.0);
                             ui.label(
-                                "tonepush needs HX Edit's data files: every model's name, \
+                                "TonePush needs HX Edit's data files: every model's name, \
                                  knob ranges, and artwork.",
                             );
                         });

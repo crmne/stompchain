@@ -1,4 +1,4 @@
-# Packaging tonepush
+# Packaging TonePush
 
 This repository is the upstream source of truth for release artifacts and shared
 packaging assets. Distro-specific package recipes should usually live in the

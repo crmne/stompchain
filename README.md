@@ -1,4 +1,4 @@
-# tonepush
+# TonePush
 
 [![CI](https://github.com/crmne/tonepush/actions/workflows/ci.yml/badge.svg)](https://github.com/crmne/tonepush/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -7,7 +7,7 @@ An open-source editor for Line 6 HX-family devices: a cross-platform GUI, a
 scriptable CLI, and the reverse-engineered protocol documentation behind both.
 Built and tested against an HX Stomp on firmware 3.80.
 
-![tonepush editing a preset on an HX Stomp](docs/screenshot.png)
+![TonePush editing a preset on an HX Stomp](docs/screenshot.png)
 
 Nothing here is derived from Line 6 source code. The protocol was reconstructed
 by observing USB traffic; see [PROTOCOL.md](PROTOCOL.md) for the write-up,

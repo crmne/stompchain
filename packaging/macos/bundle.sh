@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build tonepush.app from a GUI binary, on a macOS machine.
+# Build TonePush.app from a GUI binary, on a macOS machine.
 #
 #   packaging/macos/bundle.sh <gui-binary> <output.app> <version>
 #

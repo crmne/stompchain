@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=tonepush
+Name=TonePush
 GenericName=HX Signal Chain Editor
 Comment=Editor for Line 6 HX hardware
 Exec=tonepush-gui

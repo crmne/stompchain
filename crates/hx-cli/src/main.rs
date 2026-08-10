@@ -1,4 +1,4 @@
-//! `hx` — command line editor for Line 6 HX-family devices.
+//! `tonepush`, the command-line editor for Line 6 HX-family devices.
 
 mod hlx;
 mod wav;

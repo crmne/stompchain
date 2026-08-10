@@ -1,4 +1,4 @@
-//! Is there a newer tonepush than the one running?
+//! Is there a newer TonePush than the one running?
 //!
 //! The check is a courtesy, not a feature: it asks GitHub once at startup, off
 //! the UI thread, and if the answer does not arrive — no network, rate limited,
@@ -38,7 +38,7 @@ fn latest_tag() -> Option<String> {
     let body = ureq::get(LATEST)
         // GitHub rejects requests without one, and the honest answer is more
         // useful to them than a browser's.
-        .header("User-Agent", format!("tonepush/{VERSION}"))
+        .header("User-Agent", format!("TonePush/{VERSION}"))
         .header("Accept", "application/vnd.github+json")
         .call()
         .ok()?

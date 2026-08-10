@@ -8,7 +8,7 @@ Gem::Specification.new do |spec|
   spec.authors = ["Carmine Paolino"]
   spec.email = ["carmine@paolino.me"]
 
-  spec.summary = "Parse Line 6 .hlx presets into tone facts with the tonepush Rust catalog"
+  spec.summary = "Parse Line 6 .hlx presets into tone facts with the TonePush Rust catalog"
   spec.description = <<~DESC.tr("\n", " ").strip
     Ruby bindings over hx-catalog's preset inspector, so the tone browser reads
     .hlx files with the same Rust code the desktop uses instead of

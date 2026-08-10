@@ -1,6 +1,6 @@
 ---
 title: Download
-description: Get tonepush for macOS, Windows, or Linux, with install instructions for each.
+description: Get TonePush for macOS, Windows, or Linux, with install instructions for each.
 nav_order: 1
 ---
 
@@ -17,7 +17,7 @@ One download for both Apple Silicon and Intel:
 
 - [tonepush-v{{ v }}-macos-universal.dmg]({{ base }}/tonepush-v{{ v }}-macos-universal.dmg)
 
-Open it and drag **tonepush** to Applications. The DMG also carries the
+Open it and drag **TonePush** to Applications. The DMG also carries the
 `tonepush` command-line tool; copy it somewhere on your PATH if you want it.
 
 ### First open on macOS
@@ -26,12 +26,12 @@ This build is not yet notarized with Apple, so macOS blocks it the first time.
 Recent macOS versions (Sequoia and later) no longer let you bypass this with a
 right-click, so you open it once through Privacy & Security instead:
 
-1. Double-click **tonepush** in Applications. macOS says it cannot be opened
+1. Double-click **TonePush** in Applications. macOS says it cannot be opened
    because Apple cannot check it for malicious software. Click **Done** (do
    **not** click Move to Trash).
 2. Open **System Settings**, then **Privacy & Security**.
 3. Scroll down to the **Security** section. You will see a line like
-   *"tonepush was blocked to protect your Mac"* with an **Open Anyway**
+   *"TonePush was blocked to protect your Mac"* with an **Open Anyway**
    button next to it. Click it.
 4. Authenticate with Touch ID or your password, then click **Open Anyway**
    once more in the confirmation dialog.

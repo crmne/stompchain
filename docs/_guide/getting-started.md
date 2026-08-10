@@ -1,6 +1,6 @@
 ---
 title: Getting Started
-description: Install tonepush, set up USB access and model artwork, and connect your HX Stomp.
+description: Install TonePush, set up USB access and model artwork, and connect your HX Stomp.
 nav_order: 2
 ---
 
@@ -42,7 +42,7 @@ Reading an installer needs 7-Zip on Linux and Windows; on most distros that is t
 
 ## Connect
 
-**Quit HX Edit first.** It claims the vendor USB interface exclusively, and so does tonepush; only one editor can talk to the device at a time.
+**Quit HX Edit first.** It claims the vendor USB interface exclusively, and so does TonePush; only one editor can talk to the device at a time.
 
 Plug in the pedal and start the editor:
 

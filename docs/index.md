@@ -1,10 +1,10 @@
 ---
 layout: home
-title: tonepush
+title: TonePush Editor
 description: The open-source editor for Line 6 Helix and HX pedals. Fast, scriptable, and on every OS.
 permalink: /
 hero:
-  name: tonepush
+  name: TonePush
   text: Your Helix gear, on every OS
   tagline: The open-source editor for Line 6 Helix and HX pedals. A tiny download that opens fast, connects fast, and runs on Linux, macOS, and Windows.
   actions:
@@ -12,14 +12,14 @@ hero:
       text: Download
       link: /download/
     - theme: alt
-      text: What is tonepush?
+      text: What is TonePush?
       link: /what-is-tonepush/
     - theme: alt
       text: GitHub
       link: https://github.com/crmne/tonepush
   image:
     src: /screenshot.png
-    alt: "tonepush editing a preset on an HX Stomp: a drive, amp and cab on the main line with a delay and reverb on a parallel branch"
+    alt: "TonePush editing a preset on an HX Stomp: a drive, amp and cab on the main line with a delay and reverb on a parallel branch"
     width: 2000
     height: 1306
 
@@ -29,13 +29,13 @@ features:
     details: Blocks, branches, and knobs laid out like the pedalboard they are. Drag a pedal below the line to run it in parallel, and move the fork wherever you want it.
   - icon: 🐧
     title: Every OS, including Linux
-    details: HX Edit covers macOS and Windows. tonepush covers those and the Linux machine already sitting next to your pedalboard.
+    details: HX Edit covers macOS and Windows. TonePush covers those and the Linux machine already sitting next to your pedalboard.
   - icon: ⚡
     title: Small and quick
     details: A few megabytes, opens in a blink, connects in a moment. No launcher, no installer ceremony, no waiting.
   - icon: 🔓
     title: Improving in the open
-    details: HX Edit has not seen an update in a long while. tonepush is open source and moving, and the USB protocol behind it is documented for anyone to build on.
+    details: HX Edit has not seen an update in a long while. TonePush is open source and moving, and the USB protocol behind it is documented for anyone to build on.
     link: https://github.com/crmne/tonepush/blob/main/PROTOCOL.md
     link_text: Read the protocol
   - icon: ⌨️
@@ -75,12 +75,10 @@ features:
 </style>
 
 <div style="max-width: 960px; margin: 3rem auto 0; text-align: center;">
-  <h2 style="font-size: 1.5rem; font-weight: 600; margin-bottom: 0.75rem;">Next up: a home for tones</h2>
+  <h2 style="font-size: 1.5rem; font-weight: 600; margin-bottom: 0.75rem;">Find your sound on TonePush</h2>
   <p style="color: var(--vp-c-text-2); max-width: 640px; margin: 0 auto;">
-    A community tone library is coming to tonepush: browse tones other
-    players share, load one onto your pedal in a click, and publish your own
-    straight from the editor. Star the
-    <a href="https://github.com/crmne/tonepush">GitHub repository</a> to
-    follow along.
+    Discover complete guitar tones, compare implementations for your hardware,
+    and publish your own from the editor. Visit
+    <a href="https://tonepush.rocks">tonepush.rocks</a> to find your sound.
   </p>
 </div>

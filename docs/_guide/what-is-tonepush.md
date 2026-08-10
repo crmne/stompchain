@@ -1,16 +1,20 @@
 ---
-title: What is tonepush?
-description: Why tonepush exists, what it does, and what it honestly does not do yet.
+title: What is TonePush?
+description: Why TonePush exists, what it does, and what it honestly does not do yet.
 nav_order: 0
+# This page was /what-is-stompchain/ under the old name, and that URL is the one
+# in every link anybody has made to it so far.
+redirect_from:
+  - /what-is-stompchain/
 ---
 
 ## The problem
 
 The Line 6 HX Stomp is a small box holding a large amp-and-effects rig. Editing it from the hardware means three footswitches and a knob. Editing it from a computer means HX Edit, which is excellent, closed, and only runs on macOS and Windows. If your studio machine runs Linux, or you want to script your pedal, or you want to build something on top of the device, you were out of luck.
 
-tonepush is an open-source editor for HX-family devices. It talks the same USB protocol HX Edit talks, edits the same scratch buffer, and runs on Linux, macOS, and Windows. Behind it sits the protocol itself, reverse-engineered from USB captures and written up in [PROTOCOL.md](https://github.com/crmne/tonepush/blob/main/PROTOCOL.md), so this editor is not the only thing that can ever be built on it.
+TonePush is an open-source editor for HX-family devices. It talks the same USB protocol HX Edit talks, edits the same scratch buffer, and runs on Linux, macOS, and Windows. Behind it sits the protocol itself, reverse-engineered from USB captures and written up in [PROTOCOL.md](https://github.com/crmne/tonepush/blob/main/PROTOCOL.md), so this editor is not the only thing that can ever be built on it.
 
-![tonepush editing a preset on an HX Stomp](/screenshot.png)
+![TonePush editing a preset on an HX Stomp](/screenshot.png)
 
 ## What it does
 
@@ -34,8 +38,8 @@ If something misbehaves, [an issue](https://github.com/crmne/tonepush/issues) wi
 
 ## Where this is going
 
-The next big thing is a community tone library: browse tones other players share, load one onto your pedal in a click, and publish your own straight from the editor. The editor you are reading about is the foundation for it.
+The editor is part of [TonePush](https://tonepush.rocks), where players can find complete guitar tones, compare implementations for their hardware, and publish their own.
 
 ## Prior art
 
-tonepush stands on earlier efforts: [`kempline/helix_usb`](https://github.com/kempline/helix_usb) found the multi-channel structure, [`allansomensi/openhx`](https://github.com/allansomensi/openhx) listed and selected presets in Rust, and [`AntonyCorbett/HelixBackupFiles`](https://github.com/AntonyCorbett/HelixBackupFiles) and [`frankdeath/hx-tools`](https://github.com/frankdeath/hx-tools) decoded file formats.
+TonePush stands on earlier efforts: [`kempline/helix_usb`](https://github.com/kempline/helix_usb) found the multi-channel structure, [`allansomensi/openhx`](https://github.com/allansomensi/openhx) listed and selected presets in Rust, and [`AntonyCorbett/HelixBackupFiles`](https://github.com/AntonyCorbett/HelixBackupFiles) and [`frankdeath/hx-tools`](https://github.com/frankdeath/hx-tools) decoded file formats.

@@ -592,7 +592,7 @@ pub struct NewBackup<'a> {
 /// 980 model descriptors that is HX Edit's own catalog cache rather than
 /// anything about this pedal's presets, and inventing one would be inventing
 /// data. **Whether HX Edit accepts a bundle without it is untested** - it needs
-/// a machine with HX Edit on it to find out. tonepush's own restore does not
+/// a machine with HX Edit on it to find out. TonePush's own restore does not
 /// go through this format: it uses the pedal's own bytes, which cannot lose
 /// anything a conversion might.
 pub fn write_backup(new: &NewBackup) -> Vec<u8> {

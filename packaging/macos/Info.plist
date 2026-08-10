@@ -2,9 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>tonepush</string>
-    <key>CFBundleDisplayName</key><string>tonepush</string>
-    <key>CFBundleIdentifier</key><string>me.paolino.tonepush</string>
+    <key>CFBundleName</key><string>TonePush</string>
+    <key>CFBundleDisplayName</key><string>TonePush</string>
+    <key>CFBundleIdentifier</key><string>rocks.tonepush.editor</string>
     <key>CFBundleExecutable</key><string>tonepush</string>
     <key>CFBundleIconFile</key><string>tonepush</string>
     <key>CFBundlePackageType</key><string>APPL</string>
