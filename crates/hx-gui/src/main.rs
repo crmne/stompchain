@@ -1,6 +1,14 @@
 //! Desktop entry point.
 
 fn main() -> eframe::Result<()> {
+    // First of all, because everything below reads one of the directories it
+    // moves: a machine that knew this program under its old name has its
+    // library, its setlists and its extracted resources filed under that name,
+    // and looking only under the new one would show an empty library and call
+    // it the truth.
+    for dir in hx_catalog::home::adopt_former_name() {
+        eprintln!("brought {} across from the old name", dir.display());
+    }
     // A library written before tones were stored by content moves across now,
     // once, silently: a few file renames and a rewritten index. It happens here
     // rather than in `App::new` because this is the one place that only ever
@@ -14,7 +22,7 @@ fn main() -> eframe::Result<()> {
     }
     // And whatever is in the store is called what its tone is called. Separate
     // from the migration above because it is not a one-off: a library written
-    // by an earlier tonepush has objects named after their hashes, and a
+    // by an earlier TonePush has objects named after their hashes, and a
     // rename that failed half way should simply finish next time.
     let renamed = hx_gui::library::tidy_names();
     if renamed > 0 {
@@ -27,7 +35,7 @@ fn main() -> eframe::Result<()> {
     // sessions until its power is pulled.
     let on_exit = tx.clone();
     eframe::run_native(
-        "tonepush",
+        "TonePush",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default().with_inner_size([980.0, 640.0]),
             // With vsync on, glow blocks in eglSwapBuffers waiting for a frame

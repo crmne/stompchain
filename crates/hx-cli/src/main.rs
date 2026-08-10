@@ -180,12 +180,12 @@ enum Cmd {
         input: std::path::PathBuf,
         output: std::path::PathBuf,
     },
-    /// Turn a tonepush backup into an HX Edit bundle (.hxb), touching no
+    /// Turn a TonePush backup into an HX Edit bundle (.hxb), touching no
     /// hardware.
     ///
     /// The presets go out as HX Edit's own symbolic JSON, which is portable
     /// across firmware in a way the pedal's own bytes are not. Whether HX Edit
-    /// itself accepts the result is untested - tonepush restores from its own
+    /// itself accepts the result is untested - TonePush restores from its own
     /// bundle, which cannot lose anything a conversion might.
     ExportHxb {
         /// A bundle directory written by `tonepush back-up`.
@@ -280,6 +280,12 @@ enum Cmd {
 }
 
 fn main() -> Result<()> {
+    // Before anything looks for the extracted resources, which a machine that
+    // knew this program under its old name has filed under that name. Either
+    // binary may be the first to run after an upgrade, so both do this.
+    for dir in hx_catalog::home::adopt_former_name() {
+        eprintln!("brought {} across from the old name", dir.display());
+    }
     match Cli::parse().cmd {
         // Everything that needs no device, handled before we touch USB.
         Cmd::Decode { log } => decode_capture(&log),
@@ -1258,7 +1264,7 @@ fn export_hlx(input: &std::path::Path, output: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-/// Turn a tonepush bundle into an HX Edit `.hxb`.
+/// Turn a TonePush bundle into an HX Edit `.hxb`.
 fn export_hxb(bundle: &std::path::Path, output: &std::path::Path) -> Result<()> {
     let catalog = hx_catalog::Catalog::load()
         .context("writing an .hxb needs HX Edit's catalog to name models")?;
@@ -1266,7 +1272,7 @@ fn export_hxb(bundle: &std::path::Path, output: &std::path::Path) -> Result<()> 
         &std::fs::read(bundle.join("manifest.json"))
             .with_context(|| format!("reading {bundle:?}"))?,
     )
-    .context("that directory is not a tonepush backup")?;
+    .context("that directory is not a TonePush backup")?;
 
     // Each slot: its name, and its tone as the symbolic JSON HX Edit stores.
     let mut presets = Vec::with_capacity(manifest.presets.len());
@@ -1303,7 +1309,7 @@ fn export_hxb(bundle: &std::path::Path, output: &std::path::Path) -> Result<()> 
         output.display(),
         bytes.len()
     );
-    println!("note: whether HX Edit accepts this is untested; tonepush restores from the bundle itself");
+    println!("note: whether HX Edit accepts this is untested; TonePush restores from the bundle itself");
     Ok(())
 }
 
