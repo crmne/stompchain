@@ -1417,20 +1417,6 @@ impl App {
                     {
                         self.show_favorites_only = !self.show_favorites_only;
                     }
-                    // Keeping the loaded preset belongs with the presets, next
-                    // to the star that marks one - not in the library's own
-                    // corner under a label ("Keep loaded preset") that said
-                    // nothing about where the thing went.
-                    let live = matches!(self.connection, Connection::Online)
-                        && self.preset_index >= 0;
-                    if theme::icon_button(ui, theme::Icon::Keep, live)
-                        .on_hover_text("Keep this preset in the library")
-                        .on_disabled_hover_text("Keep in library — no preset loaded")
-                        .clicked()
-                    {
-                        self.pending_copy = CopyTarget::Library;
-                        self.send(Cmd::CopyPreset);
-                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         self.backup_actions(ui);
                     });
@@ -1447,6 +1433,7 @@ impl App {
                             self.presets.len() as i64
                         };
                         let setlist = self.setlist;
+                        let online = matches!(self.connection, Connection::Online);
                         let mut load = None;
                         let mut toggle = None;
                         let mut rename_start = None;
@@ -1478,6 +1465,16 @@ impl App {
                                     .clicked()
                                 {
                                     toggle = Some(index);
+                                }
+                                // Keeping is a thing you do to *a* preset, so it
+                                // sits on the preset - beside its own star, not
+                                // in the list's title where it could only ever
+                                // mean the loaded one.
+                                if theme::icon_button(ui, theme::Icon::Keep, online)
+                                    .on_hover_text("Keep this preset in the library")
+                                    .clicked()
+                                {
+                                    menu_action = Some((index, RowAction::Keep));
                                 }
                                 let renaming_this =
                                     matches!(&self.renaming, Some((i, _)) if *i == index);
