@@ -13,6 +13,7 @@
 #     bash tools/hxsniff/capture.sh partition  # restore one kind of thing at a time
 #     bash tools/hxsniff/capture.sh library    # favorites, setlists, preset files
 #     bash tools/hxsniff/capture.sh assign     # the Bypass/Controller Assign page
+#     bash tools/hxsniff/capture.sh cc         # which message carries a MIDI CC number
 #
 # It builds the libusb interposer, launches an instrumented copy of HX Edit
 # (logging every USB transfer), walks you through the scenario one step at a
@@ -65,6 +66,11 @@ rule() { dim "----------------------------------------------------------------";
 # hxsniff.c polls $HXSNIFF_MARK on every transfer and copies its lines into the
 # log, so a mark lands at the next piece of traffic - which is why we write it
 # before you act rather than after.
+#
+# The directory has to exist before the first mark. run.sh makes it, but a dry
+# run never calls run.sh, so every DRY=1 walk died on the first step trying to
+# write into a directory that was not there.
+mkdir -p "$WORK"
 mark() { printf '%s\n' "$*" >>"$MARK"; }
 
 # step <label> <instruction...> - mark the log, show the instruction, wait.
@@ -104,10 +110,10 @@ freeform() {
 }
 
 case "$SCENARIO" in
-backup | restore | ir | globals | enums | partition | library | assign) ;;
+backup | restore | ir | globals | enums | partition | library | assign | cc) ;;
 *)
     echo "!! unknown scenario '$SCENARIO'" >&2
-    echo "   try: backup restore ir globals enums partition library assign" >&2
+    echo "   try: backup restore ir globals enums partition library assign cc" >&2
     exit 2
     ;;
 esac
@@ -483,6 +489,54 @@ assign)
 
     step "assign/discard" "Reselect the preset from the list WITHOUT saving, so every" \
         "edit here is thrown away and the pedal is left as it was found."
+    ;;
+
+# -----------------------------------------------------------------------------
+# The one question left about assignments: which message sets the CC *number*.
+#
+# We can put a block's bypass under MIDI and take it off again - op37 with key
+# 95 as the target and key 71 as the on switch - and the pedal replies with the
+# number it chose at key 12. Nothing we have ever captured *sets* that number,
+# so an assignment made here always lands on whatever CC the pedal felt like.
+# The same gap exists for a parameter under MIDI.
+#
+# So: make the assignments, then change only the number, several times, to
+# values that appear nowhere else in a capture. 42 through 46 are deliberately
+# odd - grep the decode for them and whatever field moves is the answer.
+#
+# Nothing is saved. Everything here edits the buffer, and the last step throws
+# it away by reselecting the preset.
+cc)
+    step "cc/connect" "Wait for HX Edit to finish connecting to the pedal."
+    step "cc/pick-preset" "Load a preset you do not mind editing - 08B DIR:Essex A30 is" \
+        "the one this project usually uses. Write down which, so the last" \
+        "step can put it back."
+
+    # A parameter first: right-click assign is how a knob gets a controller.
+    step "cc/param-assign-midi" "Right-click a knob with an obvious name - an amp's Drive -" \
+        "and assign it to MIDI CC." \
+        "(This creates the assignment. The pedal picks a CC; we want the" \
+        " message that follows, where HX Edit sets which one.)"
+    step "cc/open-assign-tab" "Click BYPASS/CONTROLLER ASSIGN, and find that row."
+    step "cc/param-cc-42" "Set that row's MIDI CC number to 42." \
+        "*** this is the message we are here for ***"
+    step "cc/param-cc-43" "Change the same number to 43." \
+        "(A change, not a create: the two may not look alike.)"
+    step "cc/param-cc-44" "Change it once more, to 44."
+
+    # Then a bypass, which travels a different opcode and may carry the number
+    # somewhere else entirely.
+    step "cc/bypass-assign-midi" "On a different block, set its bypass Source to MIDI CC." \
+        "(op37 with key 95 - the half we already know.)"
+    step "cc/bypass-cc-45" "Set that bypass row's CC number to 45."
+    step "cc/bypass-cc-46" "Change it to 46."
+
+    # Off again, in case removal is what names the field most plainly.
+    step "cc/param-remove" "Remove the parameter assignment you made."
+    step "cc/bypass-remove" "Set that bypass Source back to None."
+
+    step "cc/discard" "Reselect the preset from the list WITHOUT saving, so every edit" \
+        "here is thrown away and the pedal is left as it was found."
     ;;
 esac
 
