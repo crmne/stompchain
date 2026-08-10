@@ -244,6 +244,35 @@ fn pickup_electronics_key(value: &str) -> Option<&'static str> {
     }
 }
 
+/// Where a tone goes when it leaves the library but a setlist still plays it.
+///
+/// A dotted folder inside the library, so [`entries`] does not list it: the
+/// tone is out of the library as far as anyone browsing is concerned, and still
+/// on disk for the setlist that needs it.
+const RETIRED: &str = ".setlists";
+
+/// Move a tone out of the library without taking it away from the setlists that
+/// play it, and answer with the reference they should use.
+///
+/// Removing a tone should not quietly break a setlist. The alternative - having
+/// deletion empty those slots - makes the library the owner of something a
+/// setlist depends on, and one careless multi-select then costs a gig.
+pub fn retire(path: &Path) -> Result<String, String> {
+    let dir = dir().ok_or("no library to retire from")?;
+    let store = dir.join(RETIRED);
+    std::fs::create_dir_all(&store).map_err(|e| format!("could not make room: {e}"))?;
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("tone");
+    let target = store.join(name);
+    if !target.exists() {
+        std::fs::rename(path, &target).map_err(|e| format!("could not retire the tone: {e}"))?;
+    } else {
+        // Already retired under this name by an earlier delete; the copy that
+        // is there is the one the setlists point at.
+        let _ = std::fs::remove_file(path);
+    }
+    Ok(format!("{RETIRED}/{name}"))
+}
+
 /// One slot of a setlist.
 ///
 /// The name rides along with the file so a setlist can be read, listed and

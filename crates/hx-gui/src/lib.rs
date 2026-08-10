@@ -2346,14 +2346,6 @@ impl App {
     fn library_table(&mut self, ui: &mut egui::Ui) {
         use egui_extras::{Column, TableBuilder};
 
-        if self.lib_entries.is_empty() {
-            ui.add_space(8.0);
-            ui.label(
-                RichText::new("Nothing kept yet. Keep a tone from a preview, or Keep loaded preset.")
-                    .color(theme::DIM),
-            );
-            return;
-        }
 
         let filter = self.lib_tag_filter.clone();
         let rows: Vec<usize> = self
@@ -2578,10 +2570,14 @@ impl App {
                     ui.add_space(6.0);
                     ui.label(
                         RichText::new(format!(
-                            "{} plays {}, and would lose {}.",
-                            if affected.len() == 1 { "One setlist" } else { "Setlists" },
-                            affected.join(", "),
-                            if chosen.len() == 1 { "it" } else { "them" }
+                            "{} in the {} {}, and will be kept for them.",
+                            if chosen.len() == 1 { "This tone is" } else { "Some of them are" },
+                            if affected.len() == 1 { "setlist" } else { "setlists" },
+                            affected
+                                .iter()
+                                .map(|n| format!("“{n}”"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
                         ))
                         .color(theme::ACCENT),
                     );
@@ -2606,12 +2602,43 @@ impl App {
             Some(true) => {
                 self.confirm_delete = None;
                 let Some(dir) = library::dir() else { return };
+                // A tone a setlist plays is moved aside rather than trashed,
+                // and the setlists are repointed at where it went. Deleting
+                // from the library should never cost a setlist its tone.
+                let mut setlists = library::setlists();
                 let mut gone = 0;
+                let mut kept_for = 0;
                 for file in &chosen {
-                    match library::remove(&dir.join(file)) {
-                        Ok(()) => gone += 1,
+                    let played = setlists
+                        .iter()
+                        .any(|(_, s)| s.slots.iter().any(|slot| &slot.file == file));
+                    let outcome = if played {
+                        library::retire(&dir.join(file)).map(Some)
+                    } else {
+                        library::remove(&dir.join(file)).map(|()| None)
+                    };
+                    match outcome {
+                        Ok(moved) => {
+                            gone += 1;
+                            if let Some(now) = moved {
+                                kept_for += 1;
+                                for (_, setlist) in setlists.iter_mut() {
+                                    for slot in setlist.slots.iter_mut() {
+                                        if &slot.file == file {
+                                            slot.file = now.clone();
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         Err(why) => self.note(why),
                     }
+                }
+                for (_, setlist) in &setlists {
+                    let _ = library::save_setlist(setlist);
+                }
+                if kept_for > 0 {
+                    self.note(format!("{kept_for} are still held for their setlists"));
                 }
                 self.note(format!("removed {gone} tones"));
                 self.lib_chosen.clear();

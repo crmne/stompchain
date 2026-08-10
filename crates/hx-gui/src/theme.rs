@@ -370,7 +370,7 @@ pub fn tinted_icon_button(
 /// A smaller one, for a list row - where a 24-pixel target next to 13-pixel
 /// text is the loudest thing on the line.
 pub fn small_icon_button(ui: &mut Ui, icon: Icon, tint: Option<Color32>) -> Response {
-    sized_icon_button(ui, icon, true, tint, 18.0)
+    sized_icon_button(ui, icon, true, tint, 16.0)
 }
 
 fn sized_icon_button(
@@ -408,7 +408,7 @@ fn sized_icon_button(
         // The glyph sits inside the hit box, so neighbours do not crowd it.
         // Drawn through the image loader like every other icon, which is what
         // keeps this row and the category chips the same weight.
-        let inset = egui::Rect::from_center_size(rect.center(), Vec2::splat(side - 5.0));
+        let inset = egui::Rect::from_center_size(rect.center(), Vec2::splat(side - 6.0));
         Art::whole(icon.uri().to_owned()).paint(ui, inset, colour);
     }
     response
