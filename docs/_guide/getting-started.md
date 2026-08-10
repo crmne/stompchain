@@ -1,22 +1,22 @@
 ---
 title: Getting Started
-description: Install stompchain, set up USB access and model artwork, and connect your HX Stomp.
+description: Install tonepush, set up USB access and model artwork, and connect your HX Stomp.
 nav_order: 2
 ---
 
 ## Install
 
-The [Download page](/download/) has the right file for every OS, with instructions: a drag-to-Applications app for macOS, zips for Windows, archives and AUR packages for Linux. `stompchain` is the CLI, `stompchain-gui` is the editor.
+The [Download page](/download/) has the right file for every OS, with instructions: a drag-to-Applications app for macOS, zips for Windows, archives and AUR packages for Linux. `tonepush` is the CLI, `tonepush-gui` is the editor.
 
 Or build from source, which also installs desktop integration:
 
 ```sh
-git clone https://github.com/crmne/stompchain
-cd stompchain
+git clone https://github.com/crmne/tonepush
+cd tonepush
 ./install.sh
 ```
 
-That builds everything, puts `stompchain` on your PATH, and installs the editor: a double-clickable app on macOS, a desktop entry with an icon on Linux. `./install.sh --cli-only` skips the GUI, and `--uninstall` removes it all again.
+That builds everything, puts `tonepush` on your PATH, and installs the editor: a double-clickable app on macOS, a desktop entry with an icon on Linux. `./install.sh --cli-only` skips the GUI, and `--uninstall` removes it all again.
 
 Building needs [Rust](https://rustup.rs). On Linux the GUI additionally needs the X11/Wayland development packages any egui application does. On Debian or Ubuntu:
 
@@ -42,12 +42,12 @@ Reading an installer needs 7-Zip on Linux and Windows; on most distros that is t
 
 ## Connect
 
-**Quit HX Edit first.** It claims the vendor USB interface exclusively, and so does stompchain; only one editor can talk to the device at a time.
+**Quit HX Edit first.** It claims the vendor USB interface exclusively, and so does tonepush; only one editor can talk to the device at a time.
 
 Plug in the pedal and start the editor:
 
 ```sh
-stompchain-gui
+tonepush-gui
 ```
 
 It connects on launch. The signal chain runs across the top, presets down the left, and the selected block's knobs fill the middle, with the model browser on the right.
@@ -62,4 +62,4 @@ A few things worth knowing on day one:
 
 ## Handle with care
 
-These devices can lock up hard enough to need their 9V adapter pulled; a USB replug is not enough, because the unit is externally powered and keeps its session across re-enumeration. Every lock-up during development traced back to the client, not the hardware, and each cause is now understood, avoided, and pinned by a regression test. The full post-mortem is in [PROTOCOL.md](https://github.com/crmne/stompchain/blob/main/PROTOCOL.md).
+These devices can lock up hard enough to need their 9V adapter pulled; a USB replug is not enough, because the unit is externally powered and keeps its session across re-enumeration. Every lock-up during development traced back to the client, not the hardware, and each cause is now understood, avoided, and pinned by a regression test. The full post-mortem is in [PROTOCOL.md](https://github.com/crmne/tonepush/blob/main/PROTOCOL.md).

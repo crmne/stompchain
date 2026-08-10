@@ -400,13 +400,13 @@ fn json_err(e: serde_json::Error) -> Error {
 
 /// Where automatic backups live, one directory per pedal.
 pub fn default_dir() -> Option<PathBuf> {
-    std::env::var_os("STOMPCHAIN_BACKUPS")
+    std::env::var_os("TONEPUSH_BACKUPS")
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os("XDG_DATA_HOME")
                 .map(PathBuf::from)
                 .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-                .map(|d| d.join("stompchain/backups"))
+                .map(|d| d.join("tonepush/backups"))
         })
 }
 
@@ -498,7 +498,7 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("stompchain-snap-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tonepush-snap-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bundle.hxbundle/presets")).unwrap();
         std::fs::write(dir.join("bundle.hxbundle/manifest.json"), b"{}").unwrap();
@@ -553,7 +553,7 @@ mod tests {
     /// error — it is the first run.
     #[test]
     fn there_is_nothing_to_snapshot_before_the_first_backup() {
-        let dir = std::env::temp_dir().join(format!("stompchain-snap-{}-empty", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tonepush-snap-{}-empty", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bundle.hxbundle")).unwrap();
         assert!(snapshot(&dir.join("bundle.hxbundle"), "2026-08-10 000000", 3)

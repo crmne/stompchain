@@ -1,23 +1,23 @@
 #!/bin/bash
-# Build and install stompchain.
+# Build and install tonepush.
 #
 #   ./install.sh              build and install everything
 #   ./install.sh --cli-only   skip the GUI
 #   ./install.sh --uninstall  remove what this installed
 #
-# Installs the `stompchain` command into the first writable directory already on your
+# Installs the `tonepush` command into the first writable directory already on your
 # PATH, and on macOS builds the GUI into a double-clickable app. Nothing is
 # written outside your home directory unless a system path is already writable
 # and on PATH.
 set -euo pipefail
 
-APP_NAME="stompchain"
+APP_NAME="tonepush"
 BIN_DIRS=("$HOME/.local/bin" "/usr/local/bin" "$HOME/bin")
 MAC_APPS="$HOME/Applications"
 LINUX_APPS="$HOME/.local/share/applications"
 UDEV_RULE="/etc/udev/rules.d/70-line6-hx.rules"
 LINE6_VENDOR="0e41"
-HX_RESOURCES="${XDG_DATA_HOME:-$HOME/.local/share}/stompchain/hx-resources"
+HX_RESOURCES="${XDG_DATA_HOME:-$HOME/.local/share}/tonepush/hx-resources"
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m warning:\033[0m %s\n' "$*" >&2; }
@@ -35,7 +35,7 @@ bin_dir() {
 uninstall() {
     local dir
     for dir in "${BIN_DIRS[@]}"; do
-        for bin in stompchain stompchain-gui; do
+        for bin in tonepush tonepush-gui; do
             [ -f "$dir/$bin" ] && { rm -f "$dir/$bin"; say "removed $dir/$bin"; }
         done
     done
@@ -69,8 +69,8 @@ make_app_bundle() {
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key><string>$APP_NAME</string>
-    <key>CFBundleDisplayName</key><string>stompchain</string>
-    <key>CFBundleIdentifier</key><string>me.paolino.stompchain</string>
+    <key>CFBundleDisplayName</key><string>tonepush</string>
+    <key>CFBundleIdentifier</key><string>me.paolino.tonepush</string>
     <key>CFBundleExecutable</key><string>$APP_NAME</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.2.1</string>
@@ -130,7 +130,7 @@ make_desktop_entry() {
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=stompchain
+Name=tonepush
 GenericName=HX Signal Chain Editor
 Comment=Editor for Line 6 HX hardware
 Exec=$gui
@@ -169,16 +169,16 @@ main() {
 
     local dir
     dir="$(bin_dir)"
-    install -m 755 target/release/stompchain "$dir/stompchain"
-    say "installed $dir/stompchain"
+    install -m 755 target/release/tonepush "$dir/tonepush"
+    say "installed $dir/tonepush"
 
     if [ "$cli_only" = 0 ] && [ "$(uname)" = "Darwin" ]; then
         mkdir -p "$MAC_APPS"
-        say "installed $(make_app_bundle target/release/stompchain-gui)"
+        say "installed $(make_app_bundle target/release/tonepush-gui)"
     elif [ "$cli_only" = 0 ]; then
-        install -m 755 target/release/stompchain-gui "$dir/stompchain-gui"
-        say "installed $dir/stompchain-gui"
-        say "installed $(make_desktop_entry "$dir/stompchain-gui")"
+        install -m 755 target/release/tonepush-gui "$dir/tonepush-gui"
+        say "installed $dir/tonepush-gui"
+        say "installed $(make_desktop_entry "$dir/tonepush-gui")"
     fi
 
     if [ "$(uname)" = "Linux" ]; then
@@ -206,13 +206,13 @@ main() {
 
     echo
     say "ready. Quit HX Edit first — it holds the device exclusively — then:"
-    echo "      stompchain list      find your device"
-    echo "      stompchain chain     show the loaded preset"
+    echo "      tonepush list      find your device"
+    echo "      tonepush chain     show the loaded preset"
     if [ "$cli_only" = 0 ]; then
         if [ "$(uname)" = "Darwin" ]; then
             echo "      open -a $APP_NAME    the editor"
         else
-            echo "      stompchain-gui       the editor"
+            echo "      tonepush-gui       the editor"
         fi
     fi
     echo

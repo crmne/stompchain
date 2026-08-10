@@ -1227,7 +1227,7 @@ impl App {
             });
     }
 
-    /// Which stompchain this is, in the corner where a version belongs.
+    /// Which tonepush this is, in the corner where a version belongs.
     ///
     /// It says nothing at all until there is something to say. When a newer
     /// release exists the label picks up the accent and gains a clause, which
@@ -1249,17 +1249,17 @@ impl App {
 
         let (text, hover, url) = match &self.update_available {
             Some(tag) => (
-                RichText::new(format!("stompchain {} · {tag} available", update::VERSION))
+                RichText::new(format!("tonepush {} · {tag} available", update::VERSION))
                     .small()
                     .color(theme::ACCENT),
-                "a newer stompchain is out — click for the release".to_owned(),
+                "a newer tonepush is out — click for the release".to_owned(),
                 update::RELEASES,
             ),
             None => (
-                RichText::new(format!("stompchain {}", update::VERSION))
+                RichText::new(format!("tonepush {}", update::VERSION))
                     .small()
                     .color(theme::DIM),
-                format!("stompchain {} · click for the releases page", update::VERSION),
+                format!("tonepush {} · click for the releases page", update::VERSION),
                 update::RELEASES,
             ),
         };
@@ -3655,7 +3655,7 @@ impl App {
                     RichText::new(
                         "A backup is every preset, every setting and every impulse \
                          response, as the device's own bytes. One is taken automatically \
-                         whenever stompchain connects, and kept current as you save.",
+                         whenever tonepush connects, and kept current as you save.",
                     )
                     .small()
                     .color(theme::DIM),
@@ -5817,7 +5817,7 @@ impl App {
                         ui.vertical_centered(|ui| {
                             ui.label(RichText::new("🎸").size(30.0));
                             ui.add_space(2.0);
-                            ui.heading("Welcome to stompchain");
+                            ui.heading("Welcome to tonepush");
                             ui.add_space(4.0);
                             ui.label(
                                 RichText::new(
@@ -5828,7 +5828,7 @@ impl App {
                             );
                             ui.add_space(14.0);
                             ui.label(
-                                "stompchain needs HX Edit's data files: every model's name, \
+                                "tonepush needs HX Edit's data files: every model's name, \
                                  knob ranges, and artwork.",
                             );
                         });
@@ -8310,7 +8310,7 @@ mod tests {
     #[test]
     fn exporting_writes_the_preset_to_the_chosen_file() {
         let (mut app, events, _cmds) = app();
-        let file = std::env::temp_dir().join("stompchain-export-test.hxpreset");
+        let file = std::env::temp_dir().join("tonepush-export-test.hxpreset");
         let _ = std::fs::remove_file(&file);
 
         app.pending_copy = CopyTarget::File(file.clone());
@@ -8344,7 +8344,7 @@ mod tests {
                 "block0": { "@model": "HD2_DistScream808Mono", "@enabled": true }
             }}}
         });
-        let file = std::env::temp_dir().join("stompchain-preview-test.hlx");
+        let file = std::env::temp_dir().join("tonepush-preview-test.hlx");
         std::fs::write(&file, json.to_string()).unwrap();
 
         app.open_tone_file(&file);

@@ -1,4 +1,4 @@
-# Packaging stompchain
+# Packaging tonepush
 
 This repository is the upstream source of truth for release artifacts and shared
 packaging assets. Distro-specific package recipes should usually live in the
@@ -8,24 +8,24 @@ package repository for that distro, not in this repository.
 
 Each tagged release publishes:
 
-- `stompchain-v<version>-x86_64-unknown-linux-gnu.tar.gz`
-- `stompchain-v<version>-aarch64-unknown-linux-gnu.tar.gz`
-- `stompchain-v<version>-macos-universal.dmg` (the app, drag to Applications, plus the CLI binary)
-- `stompchain-v<version>-macos-universal.tar.gz` (bare universal binaries, for Homebrew and scripts)
-- `stompchain-v<version>-x86_64-pc-windows-msvc.zip`
-- `stompchain-v<version>-aarch64-pc-windows-msvc.zip`
-- `stompchain-v<version>-vendor.tar.xz`
+- `tonepush-v<version>-x86_64-unknown-linux-gnu.tar.gz`
+- `tonepush-v<version>-aarch64-unknown-linux-gnu.tar.gz`
+- `tonepush-v<version>-macos-universal.dmg` (the app, drag to Applications, plus the CLI binary)
+- `tonepush-v<version>-macos-universal.tar.gz` (bare universal binaries, for Homebrew and scripts)
+- `tonepush-v<version>-x86_64-pc-windows-msvc.zip`
+- `tonepush-v<version>-aarch64-pc-windows-msvc.zip`
+- `tonepush-v<version>-vendor.tar.xz`
 - `checksums.txt`
 - GitHub's automatic source archive for the tag
 
 The Linux binary archives contain:
 
-- `stompchain`
-- `stompchain-gui`
+- `tonepush`
+- `tonepush-gui`
 - `README.md`
 - `LICENSE`
-- `packaging/applications/stompchain.desktop`
-- `packaging/icons/stompchain.svg`
+- `packaging/applications/tonepush.desktop`
+- `packaging/icons/tonepush.svg`
 - `packaging/udev/70-line6-hx.rules`
 
 ## macOS Signing and Notarization
@@ -70,17 +70,17 @@ Build time:
 cargo build --release --locked
 ```
 
-The two binaries land in `target/release/stompchain` and
-`target/release/stompchain-gui`. `cargo test --workspace --locked` needs no
+The two binaries land in `target/release/tonepush` and
+`target/release/tonepush-gui`. `cargo test --workspace --locked` needs no
 hardware; tests that do talk to a device are `#[ignore]`d by default.
 
 For offline builds, unpack the vendor archive and build against it:
 
 ```sh
-tar -xf stompchain-v<version>-vendor.tar.xz
-cp -r stompchain-v<version>-vendor/.cargo .
-cp stompchain-v<version>-vendor/Cargo.lock .
-ln -s stompchain-v<version>-vendor/vendor vendor
+tar -xf tonepush-v<version>-vendor.tar.xz
+cp -r tonepush-v<version>-vendor/.cargo .
+cp tonepush-v<version>-vendor/Cargo.lock .
+ln -s tonepush-v<version>-vendor/vendor vendor
 cargo build --release --offline
 ```
 
@@ -92,13 +92,13 @@ sources; it is the file `cargo vendor` printed at archive time.
 Recommended installed files:
 
 ```text
-/usr/bin/stompchain
-/usr/bin/stompchain-gui
-/usr/share/applications/stompchain.desktop
-/usr/share/icons/hicolor/scalable/apps/stompchain.svg
+/usr/bin/tonepush
+/usr/bin/tonepush-gui
+/usr/share/applications/tonepush.desktop
+/usr/share/icons/hicolor/scalable/apps/tonepush.svg
 /usr/lib/udev/rules.d/70-line6-hx.rules
-/usr/share/licenses/stompchain/LICENSE
-/usr/share/doc/stompchain/README.md
+/usr/share/licenses/tonepush/LICENSE
+/usr/share/doc/tonepush/README.md
 ```
 
 The udev rule is what lets a normal user open the USB device; without it every
@@ -112,7 +112,7 @@ Current status as of 2026-08-06:
 
 | Channel | Status | Notes |
 |---|---|---|
-| Arch AUR | Prepared | Stable `stompchain` (release binaries) and VCS `stompchain-git` (source build) recipes are ready in the external packaging workspace. |
+| Arch AUR | Prepared | Stable `tonepush` (release binaries) and VCS `tonepush-git` (source build) recipes are ready in the external packaging workspace. |
 | Fedora COPR | Not started | |
 | Nixpkgs | Not started | |
 | Gentoo GURU | Not started | |
@@ -129,17 +129,17 @@ repository limited to release assets and shared packaging files.
 After packaging, run:
 
 ```sh
-stompchain --version
-stompchain --help
-stompchain models >/dev/null && echo "catalog ok"   # only with HX Edit resources extracted
-test -f /usr/share/applications/stompchain.desktop
-test -f /usr/share/icons/hicolor/scalable/apps/stompchain.svg
+tonepush --version
+tonepush --help
+tonepush models >/dev/null && echo "catalog ok"   # only with HX Edit resources extracted
+test -f /usr/share/applications/tonepush.desktop
+test -f /usr/share/icons/hicolor/scalable/apps/tonepush.svg
 test -f /usr/lib/udev/rules.d/70-line6-hx.rules
 ```
 
 With an HX device on USB and HX Edit closed, also verify:
 
 ```sh
-stompchain list
-stompchain chain
+tonepush list
+tonepush chain
 ```

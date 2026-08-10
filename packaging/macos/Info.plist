@@ -2,11 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>stompchain</string>
-    <key>CFBundleDisplayName</key><string>stompchain</string>
-    <key>CFBundleIdentifier</key><string>me.paolino.stompchain</string>
-    <key>CFBundleExecutable</key><string>stompchain</string>
-    <key>CFBundleIconFile</key><string>stompchain</string>
+    <key>CFBundleName</key><string>tonepush</string>
+    <key>CFBundleDisplayName</key><string>tonepush</string>
+    <key>CFBundleIdentifier</key><string>me.paolino.tonepush</string>
+    <key>CFBundleExecutable</key><string>tonepush</string>
+    <key>CFBundleIconFile</key><string>tonepush</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>__VERSION__</string>
     <key>CFBundleVersion</key><string>__VERSION__</string>

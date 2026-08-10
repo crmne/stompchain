@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
-    name = "stompchain",
+    name = "tonepush",
     version,
     about = "Talk to Line 6 HX hardware over USB"
 )]
@@ -42,7 +42,7 @@ enum Cmd {
     },
     /// Show the signal chain of the loaded preset, with parameter values.
     Chain,
-    /// Set a parameter. Block is its position in `stompchain chain`; the parameter may
+    /// Set a parameter. Block is its position in `tonepush chain`; the parameter may
     /// be named or given by index.
     Set {
         block: i64,
@@ -57,13 +57,13 @@ enum Cmd {
     },
     /// Change a block's model, by name ("Room") or catalog number.
     Model { block: i64, model: String },
-    /// Remove a block, by position as shown in `stompchain chain`.
+    /// Remove a block, by position as shown in `tonepush chain`.
     Clear { block: i64 },
     /// Send an impulse response to a slot (1-based), from a mono WAV.
     ///
     IrLoad { slot: i64, file: std::path::PathBuf },
     /// Put a block's bypass under MIDI, or take it off, by position as in
-    /// `stompchain chain`. The pedal picks the CC number; no captured message
+    /// `tonepush chain`. The pedal picks the CC number; no captured message
     /// sets it.
     Assign {
         block: i64,
@@ -76,7 +76,7 @@ enum Cmd {
     SnapshotName { number: usize, name: String },
     /// Route an input or output, by slot position and destination name.
     ///
-    /// `stompchain route 0 "Return L/R"` — see `stompchain chain` for slots,
+    /// `tonepush route 0 "Return L/R"` — see `tonepush chain` for slots,
     /// and pass a partial name; it is matched against the device's own menu.
     Route { block: i64, to: String },
     /// Print the signal path as the device is wired: one row per lane.
@@ -147,9 +147,9 @@ enum Cmd {
     Irs,
     /// Empty an impulse response slot (1-based).
     IrClear { slot: i64 },
-    /// Switch snapshot, by number as shown in `stompchain chain` (1-based).
+    /// Switch snapshot, by number as shown in `tonepush chain` (1-based).
     Snapshot { number: i64 },
-    /// Move a block along the chain, by position as shown in `stompchain chain`.
+    /// Move a block along the chain, by position as shown in `tonepush chain`.
     ///
     /// Writes the whole preset back, which is untested against hardware.
     Move { from: i64, to: i64 },
@@ -180,15 +180,15 @@ enum Cmd {
         input: std::path::PathBuf,
         output: std::path::PathBuf,
     },
-    /// Turn a stompchain backup into an HX Edit bundle (.hxb), touching no
+    /// Turn a tonepush backup into an HX Edit bundle (.hxb), touching no
     /// hardware.
     ///
     /// The presets go out as HX Edit's own symbolic JSON, which is portable
     /// across firmware in a way the pedal's own bytes are not. Whether HX Edit
-    /// itself accepts the result is untested - stompchain restores from its own
+    /// itself accepts the result is untested - tonepush restores from its own
     /// bundle, which cannot lose anything a conversion might.
     ExportHxb {
-        /// A bundle directory written by `stompchain back-up`.
+        /// A bundle directory written by `tonepush back-up`.
         bundle: std::path::PathBuf,
         /// Where to write the .hxb.
         output: std::path::PathBuf,
@@ -746,7 +746,7 @@ fn load_ir(session: &mut hx_usb::Session, slot: i64, file: &std::path::Path) -> 
 fn move_block(session: &mut hx_usb::Session, from: i64, to: i64) -> Result<()> {
     let mut preset = session.read_preset()?;
     if !preset.swap_slots((from - 1) as usize, (to - 1) as usize) {
-        bail!("no block at position {from} or {to}; try `stompchain chain`");
+        bail!("no block at position {from} or {to}; try `tonepush chain`");
     }
     session.write_preset(&preset)?;
     println!("moved block {from} to {to}");
@@ -778,7 +778,7 @@ fn backup(session: &mut hx_usb::Session, file: &std::path::Path) -> Result<()> {
 fn restore(session: &mut hx_usb::Session, file: &std::path::Path) -> Result<()> {
     let bytes = std::fs::read(file).with_context(|| format!("reading {file:?}"))?;
     let preset = hx_proto::Preset::parse(&bytes)
-        .with_context(|| format!("{file:?} is not a preset saved by `stompchain backup`"))?;
+        .with_context(|| format!("{file:?} is not a preset saved by `tonepush backup`"))?;
     session.write_preset(&preset)?;
     println!("restored {} onto the loaded preset", file.display());
     Ok(())
@@ -986,7 +986,7 @@ fn copy_block(session: &mut hx_usb::Session, from: usize, to: usize) -> Result<(
         bail!("slot {to} cannot hold a block — inputs, outputs, splits and joins are fixed");
     }
     session.write_preset(&preset)?;
-    println!("copied block {from} to {to} (unsaved — run `stompchain save`)");
+    println!("copied block {from} to {to} (unsaved — run `tonepush save`)");
     Ok(())
 }
 
@@ -1003,7 +1003,7 @@ fn copy_snapshot(session: &mut hx_usb::Session, from: usize, to: usize) -> Resul
         bail!("could not write snapshot {to}");
     }
     session.write_preset(&preset)?;
-    println!("copied snapshot {from} to {to} (unsaved — run `stompchain save`)");
+    println!("copied snapshot {from} to {to} (unsaved — run `tonepush save`)");
     Ok(())
 }
 
@@ -1073,7 +1073,7 @@ fn route(session: &mut hx_usb::Session, block: i64, to: &str) -> Result<()> {
 /// Resolve a parameter by name or index, then send the new value.
 ///
 /// Naming the parameter is the whole point of carrying the catalog around: you
-/// write `stompchain set 4 Drive 5.0` rather than counting positions. Values are typed
+/// write `tonepush set 4 Drive 5.0` rather than counting positions. Values are typed
 /// in the units HX Edit displays, and the catalog converts them.
 fn set_param(session: &mut hx_usb::Session, block: i64, param: &str, value: &str) -> Result<()> {
     use hx_proto::msgpack::Value;
@@ -1083,7 +1083,7 @@ fn set_param(session: &mut hx_usb::Session, block: i64, param: &str, value: &str
         .slots
         .get((block - 1) as usize)
         .filter(|s| s.model.is_some())
-        .with_context(|| format!("no block at position {block}; try `stompchain chain`"))?;
+        .with_context(|| format!("no block at position {block}; try `tonepush chain`"))?;
     let model = slot.model.unwrap();
     let catalog = hx_catalog::Catalog::load().ok();
 
@@ -1258,7 +1258,7 @@ fn export_hlx(input: &std::path::Path, output: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-/// Turn a stompchain bundle into an HX Edit `.hxb`.
+/// Turn a tonepush bundle into an HX Edit `.hxb`.
 fn export_hxb(bundle: &std::path::Path, output: &std::path::Path) -> Result<()> {
     let catalog = hx_catalog::Catalog::load()
         .context("writing an .hxb needs HX Edit's catalog to name models")?;
@@ -1266,7 +1266,7 @@ fn export_hxb(bundle: &std::path::Path, output: &std::path::Path) -> Result<()> 
         &std::fs::read(bundle.join("manifest.json"))
             .with_context(|| format!("reading {bundle:?}"))?,
     )
-    .context("that directory is not a stompchain backup")?;
+    .context("that directory is not a tonepush backup")?;
 
     // Each slot: its name, and its tone as the symbolic JSON HX Edit stores.
     let mut presets = Vec::with_capacity(manifest.presets.len());
@@ -1303,7 +1303,7 @@ fn export_hxb(bundle: &std::path::Path, output: &std::path::Path) -> Result<()> 
         output.display(),
         bytes.len()
     );
-    println!("note: whether HX Edit accepts this is untested; stompchain restores from the bundle itself");
+    println!("note: whether HX Edit accepts this is untested; tonepush restores from the bundle itself");
     Ok(())
 }
 

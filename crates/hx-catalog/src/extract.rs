@@ -30,7 +30,7 @@ pub fn destination() -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
         .or_else(|| std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join(".local/share")))
-        .map(|d| d.join("stompchain/hx-resources"))
+        .map(|d| d.join("tonepush/hx-resources"))
 }
 
 /// An `HX Edit` installer sitting in the user's Downloads folder, newest
@@ -105,7 +105,7 @@ pub fn from_installed() -> Result<usize, String> {
 /// macOS: mount the dmg natively. Newer installers hold a .pkg rather than
 /// the app itself, so both shapes are handled.
 fn from_dmg(dmg: &Path) -> Result<usize, String> {
-    let mount = tempdir("stompchain-dmg")?;
+    let mount = tempdir("tonepush-dmg")?;
     let status = Command::new("hdiutil")
         .args(["attach", "-nobrowse", "-readonly", "-mountpoint"])
         .arg(&mount)
@@ -126,7 +126,7 @@ fn from_dmg(dmg: &Path) -> Result<usize, String> {
         let pkg = find_named(&mount, "HX Edit.pkg", 2)
             .or_else(|| find_named(&mount, "HXEdit.pkg", 2))
             .ok_or_else(|| "no HX Edit app or installer package inside the dmg".to_string())?;
-        let expanded = tempdir("stompchain-pkg")?.join("expanded");
+        let expanded = tempdir("tonepush-pkg")?.join("expanded");
         let status = Command::new("pkgutil")
             .arg("--expand-full")
             .arg(&pkg)
@@ -173,7 +173,7 @@ fn from_archive(installer: &Path) -> Result<usize, String> {
                 .to_string()
         })?;
 
-    let work = tempdir("stompchain-extract")?;
+    let work = tempdir("tonepush-extract")?;
     let result = (|| {
         unpack(sevenzip, installer, &work)?;
         for _ in 0..6 {

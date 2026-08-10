@@ -8,7 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "stompchain"
+name = "tonepush"
 path = "src/main.rs"
 
 [dependencies]

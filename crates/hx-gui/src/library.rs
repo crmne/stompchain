@@ -37,17 +37,17 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-/// Where kept tones live: `~/.local/share/stompchain/library`, beside the
+/// Where kept tones live: `~/.local/share/tonepush/library`, beside the
 /// extracted resources. `None` only when there is no home to write into.
 pub fn dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("STOMPCHAIN_LIBRARY") {
+    if let Some(dir) = std::env::var_os("TONEPUSH_LIBRARY") {
         return Some(PathBuf::from(dir));
     }
     std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
         .or_else(|| std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join(".local/share")))
-        .map(|d| d.join("stompchain/library"))
+        .map(|d| d.join("tonepush/library"))
 }
 
 /// The object store: one file per distinct tone, named after its hash.
@@ -1112,12 +1112,12 @@ mod tests {
             // already failed; there is no reason for this one to as well.
             let guard = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
             let dir = std::env::temp_dir().join(format!(
-                "stompchain-library-test-{}-{name}",
+                "tonepush-library-test-{}-{name}",
                 std::process::id()
             ));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
-            std::env::set_var("STOMPCHAIN_LIBRARY", &dir);
+            std::env::set_var("TONEPUSH_LIBRARY", &dir);
             Scratch { dir, _guard: guard }
         }
     }
@@ -1125,7 +1125,7 @@ mod tests {
     impl Drop for Scratch {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.dir);
-            std::env::remove_var("STOMPCHAIN_LIBRARY");
+            std::env::remove_var("TONEPUSH_LIBRARY");
         }
     }
 

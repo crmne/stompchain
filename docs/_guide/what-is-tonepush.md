@@ -1,6 +1,6 @@
 ---
-title: What is stompchain?
-description: Why stompchain exists, what it does, and what it honestly does not do yet.
+title: What is tonepush?
+description: Why tonepush exists, what it does, and what it honestly does not do yet.
 nav_order: 0
 ---
 
@@ -8,9 +8,9 @@ nav_order: 0
 
 The Line 6 HX Stomp is a small box holding a large amp-and-effects rig. Editing it from the hardware means three footswitches and a knob. Editing it from a computer means HX Edit, which is excellent, closed, and only runs on macOS and Windows. If your studio machine runs Linux, or you want to script your pedal, or you want to build something on top of the device, you were out of luck.
 
-stompchain is an open-source editor for HX-family devices. It talks the same USB protocol HX Edit talks, edits the same scratch buffer, and runs on Linux, macOS, and Windows. Behind it sits the protocol itself, reverse-engineered from USB captures and written up in [PROTOCOL.md](https://github.com/crmne/stompchain/blob/main/PROTOCOL.md), so this editor is not the only thing that can ever be built on it.
+tonepush is an open-source editor for HX-family devices. It talks the same USB protocol HX Edit talks, edits the same scratch buffer, and runs on Linux, macOS, and Windows. Behind it sits the protocol itself, reverse-engineered from USB captures and written up in [PROTOCOL.md](https://github.com/crmne/tonepush/blob/main/PROTOCOL.md), so this editor is not the only thing that can ever be built on it.
 
-![stompchain editing a preset on an HX Stomp](/screenshot.png)
+![tonepush editing a preset on an HX Stomp](/screenshot.png)
 
 ## What it does
 
@@ -30,7 +30,7 @@ This is a young project, and it says so:
 - The tuner is not here because it is not an HX Edit feature either: it lives on the hardware.
 - Model names, ranges, and artwork come from HX Edit's own data files, which are Line 6's and are not redistributed. A small extractor pulls them from the installer you download from Line 6. Without them everything still works, just with numbers where names would be.
 
-If something misbehaves, [an issue](https://github.com/crmne/stompchain/issues) with the `stompchain chain` output and what you expected instead is gold.
+If something misbehaves, [an issue](https://github.com/crmne/tonepush/issues) with the `tonepush chain` output and what you expected instead is gold.
 
 ## Where this is going
 
@@ -38,4 +38,4 @@ The next big thing is a community tone library: browse tones other players share
 
 ## Prior art
 
-stompchain stands on earlier efforts: [`kempline/helix_usb`](https://github.com/kempline/helix_usb) found the multi-channel structure, [`allansomensi/openhx`](https://github.com/allansomensi/openhx) listed and selected presets in Rust, and [`AntonyCorbett/HelixBackupFiles`](https://github.com/AntonyCorbett/HelixBackupFiles) and [`frankdeath/hx-tools`](https://github.com/frankdeath/hx-tools) decoded file formats.
+tonepush stands on earlier efforts: [`kempline/helix_usb`](https://github.com/kempline/helix_usb) found the multi-channel structure, [`allansomensi/openhx`](https://github.com/allansomensi/openhx) listed and selected presets in Rust, and [`AntonyCorbett/HelixBackupFiles`](https://github.com/AntonyCorbett/HelixBackupFiles) and [`frankdeath/hx-tools`](https://github.com/frankdeath/hx-tools) decoded file formats.

@@ -14,7 +14,7 @@ fn main() -> eframe::Result<()> {
     }
     // And whatever is in the store is called what its tone is called. Separate
     // from the migration above because it is not a one-off: a library written
-    // by an earlier stompchain has objects named after their hashes, and a
+    // by an earlier tonepush has objects named after their hashes, and a
     // rename that failed half way should simply finish next time.
     let renamed = hx_gui::library::tidy_names();
     if renamed > 0 {
@@ -27,7 +27,7 @@ fn main() -> eframe::Result<()> {
     // sessions until its power is pulled.
     let on_exit = tx.clone();
     eframe::run_native(
-        "stompchain",
+        "tonepush",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default().with_inner_size([980.0, 640.0]),
             // With vsync on, glow blocks in eglSwapBuffers waiting for a frame

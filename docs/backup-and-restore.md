@@ -30,13 +30,13 @@ added once the faithful converter exists. We already **read** `.hxb`
 - **IRs** — read-back decoded: `op12` for the descriptor, `op11` for the samples
   (see below). Carmine's pedal normally carries **none** (cab models, not IRs),
   so today's backups are complete without them either way.
-- **Favorites** — stompchain-local.
+- **Favorites** — tonepush-local.
 
 ## Cadence [built]
 
 The fast read changed this. A full capture is **~4 s** and never moves the
 loaded preset, so it runs **on every connect** - one automatic bundle, kept at
-`~/.local/share/stompchain/backups/automatic.hxbundle`. Every **save** then
+`~/.local/share/tonepush/backups/automatic.hxbundle`. Every **save** then
 refreshes just the preset it changed, which is milliseconds and silent. On top
 of that, **Back up…** and **Restore…** on the preset list do it on demand.
 
@@ -104,7 +104,7 @@ yet reads them back, so writing them would be guesswork rather than fidelity.
 
 ## Writing an `.hxb` [built]
 
-`stompchain export-hxb <bundle> <out.hxb>` turns a stompchain backup into an
+`tonepush export-hxb <bundle> <out.hxb>` turns a tonepush backup into an
 HX Edit bundle. It needs only the direction above, because a `.hxb` stores
 presets as that same symbolic JSON. Checked by generating one from a real pedal
 backup, reading it back, and comparing every preset against HX Edit's own bundle:
@@ -114,7 +114,7 @@ One block is deliberately absent. A real backup carries `SDMU`, an archive of
 980 model descriptors that is HX Edit's catalog cache rather than anything about
 the pedal's presets; inventing one would be inventing data. **Whether HX Edit
 accepts a bundle without it is untested** and needs a machine with HX Edit on it
-to find out. Nothing depends on the answer: stompchain restores from its own
+to find out. Nothing depends on the answer: tonepush restores from its own
 bundle, which carries the pedal's own bytes and cannot lose what a conversion
 might.
 
@@ -366,7 +366,7 @@ going back, so it costs nothing to run.
 | Setlists | ✓ (name `PRESETS` + the 126 presets) | same as presets |
 | IRs | ✓ op12 descriptor + op11 samples, decoded | `upload_ir` (works) |
 | Favorites (device models) | ✓ in the op-109 object store | via op 109 inverse |
-| Favorites (stompchain-local) | ✓ local file | local |
+| Favorites (tonepush-local) | ✓ local file | local |
 
 ## Other open reverse-engineering
 

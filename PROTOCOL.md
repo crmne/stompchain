@@ -512,7 +512,7 @@ seconds of patient polling never gets a reply, and the 9V adapter has to come
 out. Nothing the editor does causes it and nothing it does avoids it, so a
 client that wants to be safe simply should not be the thing sending clock. The
 regression test for the flag is therefore opt-in
-(`STOMPCHAIN_DESTRUCTIVE=1`).
+(`TONEPUSH_DESTRUCTIVE=1`).
 
 ## Layer 4 — MessagePack RPC [confirmed]
 
@@ -952,7 +952,7 @@ Pedalboard both draw a split as the wiring dividing into a second lane, not as a
 box in the line.
 
 Devices with more than one signal path repeat the whole pattern, so a Helix or
-Helix LT preset with both paths split has four lanes. `stompchain topology` prints the
+Helix LT preset with both paths split has four lanes. `tonepush topology` prints the
 derived structure:
 
 ```

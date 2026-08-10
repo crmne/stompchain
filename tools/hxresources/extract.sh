@@ -12,7 +12,7 @@
 # something this can honestly do.
 set -euo pipefail
 
-DEST="${HX_RESOURCES_DEST:-$HOME/.local/share/stompchain/hx-resources}"
+DEST="${HX_RESOURCES_DEST:-$HOME/.local/share/tonepush/hx-resources}"
 
 # The files that matter: names, parameter ranges, display formatting, the
 # number-to-model table, and the artwork.
@@ -123,7 +123,7 @@ main() {
     local icons
     icons=$(find "$DEST/icons_models" -name '*.png' 2>/dev/null | wc -l | tr -d ' ')
     say "$models model files, $icons images"
-    say "stompchain will find these automatically; no configuration needed"
+    say "tonepush will find these automatically; no configuration needed"
 }
 
 main "$@"

@@ -1,7 +1,7 @@
 //! Every real preset must survive a full read/write cycle byte-for-byte.
 //!
 //! These fixtures are factory presets captured off a real HX Stomp (firmware
-//! 3.80) with `stompchain backup-all`, chosen to span the codec's paths: empty
+//! 3.80) with `tonepush backup-all`, chosen to span the codec's paths: empty
 //! slots, bass and keys presets, and guitar presets from the smallest to the
 //! largest, across many amp models. Only Line 6 factory presets are here -
 //! the kind every unit ships with - never a user's own tones.

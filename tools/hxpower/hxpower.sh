@@ -9,7 +9,7 @@
 #   hxpower.sh off | on | cycle | status
 #
 # Configuration comes from the environment, or from
-# ~/.config/stompchain/hxpower.env if that file exists:
+# ~/.config/tonepush/hxpower.env if that file exists:
 #
 #   HA_URL=https://your-home-assistant       required
 #   HA_ENTITY=switch.hx_stomp                the smart plug entity
@@ -17,18 +17,18 @@
 #   OP_ITEM=op://vault/item/password         1Password item read at login
 #
 # `login` reads the password from 1Password once and stores only the refresh
-# token, in ~/.config/stompchain/ha.json with owner-only permissions. The
+# token, in ~/.config/tonepush/ha.json with owner-only permissions. The
 # password itself is never written anywhere.
 set -euo pipefail
 
-CONF="$HOME/.config/stompchain/hxpower.env"
+CONF="$HOME/.config/tonepush/hxpower.env"
 # shellcheck disable=SC1090
 [ -f "$CONF" ] && . "$CONF"
 
 HA="${HA_URL:?set HA_URL (or put it in $CONF)}"
 ENTITY="${HA_ENTITY:-switch.hx_stomp}"
 CLIENT_ID="$HA/"
-STORE="$HOME/.config/stompchain/ha.json"
+STORE="$HOME/.config/tonepush/ha.json"
 OP_ITEM="${OP_ITEM:-}"
 USER_NAME="${HA_USER:?set HA_USER (or put it in $CONF)}"
 

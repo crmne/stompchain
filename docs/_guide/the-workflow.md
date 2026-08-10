@@ -4,7 +4,7 @@ description: How the pedal, your library and your setlists fit together, and the
 nav_order: 3
 ---
 
-The pedal, your library and your setlists are three different things, and knowing which is which is most of knowing how to use stompchain.
+The pedal, your library and your setlists are three different things, and knowing which is which is most of knowing how to use tonepush.
 
 **The pedal is where you make a tone**, because it is where you hear it. Everything you change goes to the pedal's scratch buffer, so it is audible the moment you change it, and none of it is permanent until you save.
 
@@ -46,16 +46,16 @@ This is also why deleting a tone from your library never breaks a setlist. If a 
 
 ## Sending a tone to the web
 
-A tone in your library can be written out for the stompchain tones site with **Export for the web**. You get two files: the tone as Line 6's own `.hlx`, which the site reads to work out what the tone is, and a `.json` of the details only you know, in the fields the site expects.
+A tone in your library can be written out for the tonepush tones site with **Export for the web**. You get two files: the tone as Line 6's own `.hlx`, which the site reads to work out what the tone is, and a `.json` of the details only you know, in the fields the site expects.
 
 ## Where everything is
 
 | | Where | What it is |
 |---|---|---|
-| Tones | `~/.local/share/stompchain/library` | One file per tone, the pedal's own document |
+| Tones | `~/.local/share/tonepush/library` | One file per tone, the pedal's own document |
 | Setlists | `library/setlists` | Small JSON files naming the tones they play |
-| Automatic backups | `~/.local/share/stompchain/backups` | The whole pedal, refreshed on connect, with dated snapshots behind it |
+| Automatic backups | `~/.local/share/tonepush/backups` | The whole pedal, refreshed on connect, with dated snapshots behind it |
 
 On macOS these sit under `~/Library/Application Support`; on Windows, under your profile.
 
-None of it is a lock-in. If you stop using stompchain tomorrow, your tones are still files you can open.
+None of it is a lock-in. If you stop using tonepush tomorrow, your tones are still files you can open.

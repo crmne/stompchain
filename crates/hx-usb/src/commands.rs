@@ -222,7 +222,7 @@ impl Session {
     ///
     /// A favourite is a block kept with its settings so it can be dropped into
     /// any preset - the editor's own shelf, living on the pedal rather than in
-    /// this program. Distinct from stompchain's favourite *presets*, which are
+    /// this program. Distinct from tonepush's favourite *presets*, which are
     /// a local file.
     pub fn favourites(&mut self) -> Result<Vec<(i64, String)>> {
         let result = self.request(ChannelId::DATA, rpc::op::LIST_FAVOURITES, Value::Nil)?;

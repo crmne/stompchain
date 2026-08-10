@@ -225,7 +225,7 @@ pub fn slots_from_hlx(preset: &mut Preset, document: &Json, catalog: &Catalog) -
 
 /// Turn a whole `.hxb` backup into documents ready for the pedal.
 ///
-/// This is what makes `.hxb` a format stompchain can *restore* rather than only
+/// This is what makes `.hxb` a format tonepush can *restore* rather than only
 /// write. A bundle stores its presets as symbolic JSON — HX Edit's own choice —
 /// so putting one back has always needed this direction, and until now the only
 /// route was rebuilding a tone through parameter edits, which loses whatever

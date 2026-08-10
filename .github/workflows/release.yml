@@ -56,14 +56,14 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          name="stompchain-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          name="tonepush-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir -p "dist/$name"
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp "target/${{ matrix.target }}/release/stompchain.exe" "dist/$name/"
-            cp "target/${{ matrix.target }}/release/stompchain-gui.exe" "dist/$name/"
+            cp "target/${{ matrix.target }}/release/tonepush.exe" "dist/$name/"
+            cp "target/${{ matrix.target }}/release/tonepush-gui.exe" "dist/$name/"
           else
-            cp "target/${{ matrix.target }}/release/stompchain" "dist/$name/"
-            cp "target/${{ matrix.target }}/release/stompchain-gui" "dist/$name/"
+            cp "target/${{ matrix.target }}/release/tonepush" "dist/$name/"
+            cp "target/${{ matrix.target }}/release/tonepush-gui" "dist/$name/"
           fi
           cp README.md LICENSE "dist/$name/"
           if [ "${{ runner.os }}" = "Linux" ]; then
@@ -118,18 +118,18 @@ jobs:
         run: |
           mkdir -p universal
           lipo -create \
-            target/aarch64-apple-darwin/release/stompchain \
-            target/x86_64-apple-darwin/release/stompchain \
-            -output universal/stompchain
+            target/aarch64-apple-darwin/release/tonepush \
+            target/x86_64-apple-darwin/release/tonepush \
+            -output universal/tonepush
           lipo -create \
-            target/aarch64-apple-darwin/release/stompchain-gui \
-            target/x86_64-apple-darwin/release/stompchain-gui \
-            -output universal/stompchain-gui
+            target/aarch64-apple-darwin/release/tonepush-gui \
+            target/x86_64-apple-darwin/release/tonepush-gui \
+            -output universal/tonepush-gui
 
       - name: App bundle
         run: |
           version="${GITHUB_REF_NAME#v}"
-          bash packaging/macos/bundle.sh universal/stompchain-gui stompchain.app "$version"
+          bash packaging/macos/bundle.sh universal/tonepush-gui tonepush.app "$version"
 
       - name: Import signing certificate
         if: env.APPLE_CERTIFICATE_P12 != ''
@@ -148,27 +148,27 @@ jobs:
         if: env.APPLE_CERTIFICATE_P12 != ''
         run: |
           codesign --force --options runtime --timestamp \
-            --sign "$APPLE_SIGNING_IDENTITY" universal/stompchain
+            --sign "$APPLE_SIGNING_IDENTITY" universal/tonepush
           codesign --force --deep --options runtime --timestamp \
-            --sign "$APPLE_SIGNING_IDENTITY" stompchain.app
+            --sign "$APPLE_SIGNING_IDENTITY" tonepush.app
 
       - name: DMG
         run: |
-          name="stompchain-${GITHUB_REF_NAME}-macos-universal"
+          name="tonepush-${GITHUB_REF_NAME}-macos-universal"
           stage="$RUNNER_TEMP/dmg"
           mkdir -p "$stage"
-          cp -R stompchain.app "$stage/"
-          cp universal/stompchain "$stage/stompchain"
+          cp -R tonepush.app "$stage/"
+          cp universal/tonepush "$stage/tonepush"
           cp README.md LICENSE "$stage/"
           ln -s /Applications "$stage/Applications"
           mkdir -p dist
-          hdiutil create -volname stompchain -srcfolder "$stage" -ov \
+          hdiutil create -volname tonepush -srcfolder "$stage" -ov \
             -format UDZO "dist/$name.dmg"
 
       - name: Notarize
         if: env.APPLE_CERTIFICATE_P12 != ''
         run: |
-          name="stompchain-${GITHUB_REF_NAME}-macos-universal"
+          name="tonepush-${GITHUB_REF_NAME}-macos-universal"
           xcrun notarytool submit "dist/$name.dmg" --wait \
             --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_PASSWORD"
@@ -176,9 +176,9 @@ jobs:
 
       - name: Universal tarball
         run: |
-          name="stompchain-${GITHUB_REF_NAME}-macos-universal"
+          name="tonepush-${GITHUB_REF_NAME}-macos-universal"
           mkdir -p "dist/$name"
-          cp universal/stompchain universal/stompchain-gui README.md LICENSE "dist/$name/"
+          cp universal/tonepush universal/tonepush-gui README.md LICENSE "dist/$name/"
           tar czf "dist/$name.tar.gz" -C dist "$name"
           rm -r "dist/$name"
 
@@ -201,7 +201,7 @@ jobs:
       # PACKAGING.md.
       - name: Vendor
         run: |
-          name="stompchain-${GITHUB_REF_NAME}-vendor"
+          name="tonepush-${GITHUB_REF_NAME}-vendor"
           cargo vendor "$name/vendor" > vendor-config.toml
           mkdir -p "$name/.cargo"
           cp vendor-config.toml "$name/.cargo/config.toml"

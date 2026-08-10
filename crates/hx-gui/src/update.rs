@@ -1,4 +1,4 @@
-//! Is there a newer stompchain than the one running?
+//! Is there a newer tonepush than the one running?
 //!
 //! The check is a courtesy, not a feature: it asks GitHub once at startup, off
 //! the UI thread, and if the answer does not arrive — no network, rate limited,
@@ -11,9 +11,9 @@ use std::sync::mpsc::{channel, Receiver};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Where a person goes to get a newer one.
-pub const RELEASES: &str = "https://github.com/crmne/stompchain/releases/latest";
+pub const RELEASES: &str = "https://github.com/crmne/tonepush/releases/latest";
 
-const LATEST: &str = "https://api.github.com/repos/crmne/stompchain/releases/latest";
+const LATEST: &str = "https://api.github.com/repos/crmne/tonepush/releases/latest";
 
 /// Ask GitHub for the newest release, in the background.
 ///
@@ -38,7 +38,7 @@ fn latest_tag() -> Option<String> {
     let body = ureq::get(LATEST)
         // GitHub rejects requests without one, and the honest answer is more
         // useful to them than a browser's.
-        .header("User-Agent", format!("stompchain/{VERSION}"))
+        .header("User-Agent", format!("tonepush/{VERSION}"))
         .header("Accept", "application/vnd.github+json")
         .call()
         .ok()?

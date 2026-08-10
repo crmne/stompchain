@@ -1,12 +1,12 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=stompchain
+Name=tonepush
 GenericName=HX Signal Chain Editor
 Comment=Editor for Line 6 HX hardware
-Exec=stompchain-gui
+Exec=tonepush-gui
 Terminal=false
 Categories=AudioVideo;Audio;
 Keywords=Line 6;HX;Helix;stomp;pedal;guitar;preset;tone;
-Icon=stompchain
+Icon=tonepush
 StartupNotify=false

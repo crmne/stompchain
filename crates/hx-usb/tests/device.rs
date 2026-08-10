@@ -176,14 +176,14 @@ fn an_impulse_response_survives_the_round_trip() {
 
     // s[i] = i / 4096, exact in f32, so a sample *is* its index.
     let sent: Vec<f32> = (0..1024).map(|i| i as f32 / 4096.0).collect();
-    s.upload_ir(slot, "STOMPCHAIN TEST", &sent)
+    s.upload_ir(slot, "TONEPUSH TEST", &sent)
         .expect("uploading the probe");
 
     let (name, back) = s
         .read_ir(slot)
         .expect("reading it back")
         .expect("the slot now holds an IR");
-    assert_eq!(name, "STOMPCHAIN TEST");
+    assert_eq!(name, "TONEPUSH TEST");
     // The stored length is the one the upload declared - 1024 here, the size
     // code for anything up to 1024 - and the samples inside it are untouched.
     assert_eq!(back.len(), sent.len(), "as many samples as were declared");
@@ -221,7 +221,7 @@ fn writing_a_slot_lands_and_clearing_it_empties_it() {
         .find_map(|i| s.read_preset_at(setlist, i).ok().flatten())
         .expect("some preset to copy");
 
-    s.write_preset_at(setlist, spare, "STOMPCHAIN TEST", &source)
+    s.write_preset_at(setlist, spare, "TONEPUSH TEST", &source)
         .expect("writing the spare slot");
 
     let back = s
@@ -239,7 +239,7 @@ fn writing_a_slot_lands_and_clearing_it_empties_it() {
     );
     assert_eq!(
         s.presets(setlist).expect("names")[spare as usize],
-        "STOMPCHAIN TEST",
+        "TONEPUSH TEST",
         "and under the name it was given"
     );
 
@@ -634,14 +634,14 @@ fn preset_writes_in_a_row_all_complete() {
 /// device stops answering over USB and does not come back, needing its 9V
 /// adapter pulled. That is the device's behaviour, not this client's, and it
 /// is worth knowing — but it must not run in an ordinary sweep, so it needs
-/// `STOMPCHAIN_DESTRUCTIVE=1` as well as `tools/midiclock`.
+/// `TONEPUSH_DESTRUCTIVE=1` as well as `tools/midiclock`.
 #[test]
 #[ignore = "needs an HX device"]
 fn the_external_clock_flag_follows_midi_clock() {
-    if std::env::var_os("STOMPCHAIN_DESTRUCTIVE").is_none() {
+    if std::env::var_os("TONEPUSH_DESTRUCTIVE").is_none() {
         eprintln!(
             "SKIPPED: this test kills the editor session — set \
-             STOMPCHAIN_DESTRUCTIVE=1 to run it, and expect to power-cycle after"
+             TONEPUSH_DESTRUCTIVE=1 to run it, and expect to power-cycle after"
         );
         return;
     }
@@ -918,11 +918,11 @@ fn favourites_can_be_listed_kept_and_forgotten() {
         return;
     };
 
-    s.save_favourite(block as i64, slot, "STOMPCHAIN TEST")
+    s.save_favourite(block as i64, slot, "TONEPUSH TEST")
         .expect("keeping a favourite");
     let after = s.favourites().expect("listing again");
     assert!(
-        after.iter().any(|(i, n)| *i == slot && n == "STOMPCHAIN TEST"),
+        after.iter().any(|(i, n)| *i == slot && n == "TONEPUSH TEST"),
         "the favourite should be listed: {after:?}"
     );
 

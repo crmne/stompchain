@@ -8,13 +8,13 @@ Gem::Specification.new do |spec|
   spec.authors = ["Carmine Paolino"]
   spec.email = ["carmine@paolino.me"]
 
-  spec.summary = "Parse Line 6 .hlx presets into tone facts with the stompchain Rust catalog"
+  spec.summary = "Parse Line 6 .hlx presets into tone facts with the tonepush Rust catalog"
   spec.description = <<~DESC.tr("\n", " ").strip
     Ruby bindings over hx-catalog's preset inspector, so the tone browser reads
     .hlx files with the same Rust code the desktop uses instead of
     reimplementing parsing in Ruby.
   DESC
-  spec.homepage = "https://github.com/crmne/stompchain"
+  spec.homepage = "https://github.com/crmne/tonepush"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.1.0"
 

@@ -1,13 +1,13 @@
-# stompchain
+# tonepush
 
-[![CI](https://github.com/crmne/stompchain/actions/workflows/ci.yml/badge.svg)](https://github.com/crmne/stompchain/actions/workflows/ci.yml)
+[![CI](https://github.com/crmne/tonepush/actions/workflows/ci.yml/badge.svg)](https://github.com/crmne/tonepush/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 An open-source editor for Line 6 HX-family devices: a cross-platform GUI, a
 scriptable CLI, and the reverse-engineered protocol documentation behind both.
 Built and tested against an HX Stomp on firmware 3.80.
 
-![stompchain editing a preset on an HX Stomp](docs/screenshot.png)
+![tonepush editing a preset on an HX Stomp](docs/screenshot.png)
 
 Nothing here is derived from Line 6 source code. The protocol was reconstructed
 by observing USB traffic; see [PROTOCOL.md](PROTOCOL.md) for the write-up,
@@ -37,7 +37,7 @@ the hardware:
   table was decoded and could be recomputed.
 - **Snapshots, setlists, tempo.** Switch, rename, and edit them.
 - **Device settings.** The global namespace HX Edit's preferences write to,
-  readable and writable by id (`stompchain setting`, `set-setting`).
+  readable and writable by id (`tonepush setting`, `set-setting`).
 - **Impulse responses.** Drop a WAV on the window; upload, list and clear
   verified end to end, including the checksum.
 - **`.hlx` files.** Applied as ordinary parameter edits with a `--dry-run`
@@ -57,14 +57,14 @@ those opcodes are inert on an HX Stomp.
 
 ## Installing
 
-Grab a binary from the [releases page](https://github.com/crmne/stompchain/releases)
+Grab a binary from the [releases page](https://github.com/crmne/tonepush/releases)
 for macOS, Windows and Linux, x86-64 and arm64, or build from source:
 
 ```sh
 ./install.sh
 ```
 
-That builds everything, puts `stompchain` on your PATH, and installs the editor:
+That builds everything, puts `tonepush` on your PATH, and installs the editor:
 a double-clickable app on macOS, a desktop entry on Linux.
 `./install.sh --cli-only` skips the GUI, `--uninstall` removes it all again.
 
@@ -101,30 +101,30 @@ see model numbers instead of names and no pictures.
 does this; only one editor can talk to the device at a time.
 
 ```sh
-stompchain list             # find attached devices
-stompchain info             # identity and firmware
-stompchain presets          # every preset by name
-stompchain select 7         # load index 7, which the device labels 03B
-stompchain chain            # the signal chain, named, with values
-stompchain topology         # the chain as it is wired, one row per branch
-stompchain set 4 Drive 5.0  # set a parameter by name, in displayed units
-stompchain enable 4 off     # bypass a block
-stompchain snapshot 2       # switch snapshot
-stompchain move 4 5         # reorder blocks
-stompchain save             # commit the edit buffer; without this, edits are lost
-stompchain backup tone.bin  # the loaded preset, byte for byte
-stompchain restore tone.bin # and back again
-stompchain backup-all dir/  # every preset in the setlist, one file each
-stompchain copy-block 1 3   # copy a block over another slot
-stompchain copy-snapshot 1 2
-stompchain route 0 "Return" # route an input or output
-stompchain setting 203      # read a device setting; set-setting writes
-stompchain export tone.json # human-readable export, for diffing
-stompchain import a.hlx --dry-run   # preview an .hlx; needs no hardware
-stompchain rename 7 "New Name"
-stompchain watch            # stream front-panel activity
-stompchain models           # browse the catalog; needs no hardware
-stompchain-gui              # the editor
+tonepush list             # find attached devices
+tonepush info             # identity and firmware
+tonepush presets          # every preset by name
+tonepush select 7         # load index 7, which the device labels 03B
+tonepush chain            # the signal chain, named, with values
+tonepush topology         # the chain as it is wired, one row per branch
+tonepush set 4 Drive 5.0  # set a parameter by name, in displayed units
+tonepush enable 4 off     # bypass a block
+tonepush snapshot 2       # switch snapshot
+tonepush move 4 5         # reorder blocks
+tonepush save             # commit the edit buffer; without this, edits are lost
+tonepush backup tone.bin  # the loaded preset, byte for byte
+tonepush restore tone.bin # and back again
+tonepush backup-all dir/  # every preset in the setlist, one file each
+tonepush copy-block 1 3   # copy a block over another slot
+tonepush copy-snapshot 1 2
+tonepush route 0 "Return" # route an input or output
+tonepush setting 203      # read a device setting; set-setting writes
+tonepush export tone.json # human-readable export, for diffing
+tonepush import a.hlx --dry-run   # preview an .hlx; needs no hardware
+tonepush rename 7 "New Name"
+tonepush watch            # stream front-panel activity
+tonepush models           # browse the catalog; needs no hardware
+tonepush-gui              # the editor
 ```
 
 Preset indices are zero-based within a setlist: index 7 is `03B`. Parameter
@@ -134,7 +134,7 @@ values are typed in the units HX Edit displays (`5.0` on a knob shown 0..10,
 The CLI also decodes captured USB logs with no hardware attached:
 
 ```sh
-stompchain decode captures/01-connect-and-sync.log
+tonepush decode captures/01-connect-and-sync.log
 ```
 
 ## The workflow
@@ -173,7 +173,7 @@ written out as `.hlx` with its details alongside for uploading to the web.
 | `crates/hx-proto` | Pure codec: framing, channels, MessagePack RPC, preset documents. No I/O, no dependencies. |
 | `crates/hx-catalog` | Reads HX Edit's model catalog for names, ranges and value formatting. |
 | `crates/hx-usb` | USB transport built on [`nusb`](https://crates.io/crates/nusb). Owns the session and its bookkeeping. |
-| `crates/hx-cli` | The `stompchain` command-line tool. |
+| `crates/hx-cli` | The `tonepush` command-line tool. |
 | `crates/hx-gui` | The editor, on egui/eframe. |
 
 The `hx-` prefix is descriptive, the protocol layer *for HX devices*, the way

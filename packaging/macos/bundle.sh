@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build stompchain.app from a GUI binary, on a macOS machine.
+# Build tonepush.app from a GUI binary, on a macOS machine.
 #
 #   packaging/macos/bundle.sh <gui-binary> <output.app> <version>
 #
@@ -15,17 +15,17 @@ here="$(cd "$(dirname "$0")" && pwd)"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 
-cp "$gui" "$app/Contents/MacOS/stompchain"
-chmod 755 "$app/Contents/MacOS/stompchain"
+cp "$gui" "$app/Contents/MacOS/tonepush"
+chmod 755 "$app/Contents/MacOS/tonepush"
 sed "s/__VERSION__/$version/g" "$here/Info.plist" > "$app/Contents/Info.plist"
 
-iconset="$(mktemp -d)/stompchain.iconset"
+iconset="$(mktemp -d)/tonepush.iconset"
 mkdir -p "$iconset"
 for size in 16 32 64 128 256 512; do
     sips -z $size $size "$here/icon-1024.png" --out "$iconset/icon_${size}x${size}.png" >/dev/null
     double=$((size * 2))
     sips -z $double $double "$here/icon-1024.png" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
 done
-iconutil -c icns "$iconset" -o "$app/Contents/Resources/stompchain.icns"
+iconutil -c icns "$iconset" -o "$app/Contents/Resources/tonepush.icns"
 
 echo "$app"

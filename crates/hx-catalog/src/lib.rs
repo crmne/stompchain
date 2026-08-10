@@ -553,7 +553,7 @@ pub fn resources_dir() -> Option<PathBuf> {
     let shared = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .map(|d| d.join("stompchain/hx-resources"));
+        .map(|d| d.join("tonepush/hx-resources"));
 
     [
         Some(default_resources()),

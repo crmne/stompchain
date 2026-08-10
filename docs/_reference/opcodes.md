@@ -7,7 +7,7 @@ nav_order: 0
 Derived from `captures/03-feature-sweep.log` (49 marked UI actions in HX Edit 3.82
 driving an HX Stomp on firmware 3.80), cross-checked against
 `captures/01-connect-and-sync.log` and `captures/02-ui-actions.log`. Layers 1–4 are
-described in [`PROTOCOL.md`](https://github.com/crmne/stompchain/blob/main/PROTOCOL.md); this document covers layer 4's
+described in [`PROTOCOL.md`](https://github.com/crmne/tonepush/blob/main/PROTOCOL.md); this document covers layer 4's
 vocabulary only.
 
 Nothing here is derived from Line 6 source code.
@@ -533,7 +533,7 @@ same shape with the user's own values, and its high cut of 10200 Hz sits inside 
 declared 500–20100 Hz range.
 
 `Helix.sym` is Line 6 proprietary data shipped inside HX Edit. Read it from the
-user's own installation at runtime; do not vendor it. See the [model catalog](https://github.com/crmne/stompchain/blob/main/docs/_reference/model-catalog.md).
+user's own installation at runtime; do not vendor it. See the [model catalog](https://github.com/crmne/tonepush/blob/main/docs/_reference/model-catalog.md).
 
 ### 5.2 Model descriptor
 

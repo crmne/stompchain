@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn what_is_written_reads_back_the_same() {
-        let path = std::env::temp_dir().join("stompchain-wav-roundtrip.wav");
+        let path = std::env::temp_dir().join("tonepush-wav-roundtrip.wav");
         let samples: Vec<f32> = (0..2048).map(|i| i as f32 / 4096.0).collect();
         write(&path, &samples, 48_000).expect("writes");
 
