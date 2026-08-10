@@ -239,6 +239,13 @@ enum Cmd {
     Assignments { block: i64, count: i64 },
     /// Put a parameter under a controller, by source ordinal. Edit buffer only.
     AssignParam { block: i64, param: i64, source: i64 },
+    /// Say which MIDI CC drives a parameter already under MIDI. Edit buffer
+    /// only.
+    ///
+    /// A bypass carries its CC on the assignment itself - that is `assign
+    /// --cc` - and a parameter does not: opcode 64 is the only message that
+    /// says which number reaches it.
+    AssignCc { block: i64, param: i64, cc: i64 },
     /// The raw reply behind one parameter's assignment. Reads only.
     AssignmentRaw { block: i64, param: i64 },
     /// Move one end of a controller's travel. Edit buffer only.
@@ -536,10 +543,14 @@ fn on_device(cmd: Cmd) -> Result<()> {
             let preset = s.read_preset()?;
             for a in preset.assignments() {
                 println!(
-                    "block {} {:?}  {}  {:.0}%..{:.0}%",
+                    "block {} {:?}  {}{}  {:.0}%..{:.0}%",
                     a.block,
                     a.target,
                     a.source.label(),
+                    // Only MIDI has one, and the source already says "MIDI CC",
+                    // so the number finishes that sentence rather than starting
+                    // a second one.
+                    a.cc.map(|cc| format!(" {cc}")).unwrap_or_default(),
                     a.min * 100.0,
                     a.max * 100.0
                 );
@@ -575,6 +586,14 @@ fn on_device(cmd: Cmd) -> Result<()> {
         } => {
             let source = hx_proto::rpc::Source::from_ordinal(source);
             s.assign_parameter(block, param, source)?;
+            Ok(())
+        }
+        Cmd::AssignCc { block, param, cc } => {
+            if !(0..=127).contains(&cc) {
+                bail!("a MIDI CC is 0 to 127; {cc} is not one");
+            }
+            s.set_assign_cc(block, param, cc)?;
+            println!("block {block} parameter {param} follows MIDI CC {cc}");
             Ok(())
         }
         Cmd::Switch { switch } => {
@@ -1223,11 +1242,7 @@ fn show_chain(session: &mut hx_usb::Session) -> Result<()> {
     Ok(())
 }
 
-fn load_plan(file: &std::path::Path) -> Result<hlx::Plan> {
-    load_plan_for(file, None)
-}
-
-/// The same, against the chain the file is going onto, so a block on a branch
+/// What a file would do to the chain it is going onto, so a block on a branch
 /// lands on that branch rather than on the main line.
 fn load_plan_for(
     file: &std::path::Path,
@@ -1469,8 +1484,23 @@ fn ir_info(file: &std::path::Path) -> Result<()> {
 }
 
 /// Show what a file would change, touching no hardware.
+/// What an import would do, read against the chain it would go onto whenever
+/// there is one to read.
+///
+/// A dry run that ignores the device is a dry run that can be wrong: a `.hlx`
+/// gives a block's place along its branch's row, and which slot that is depends
+/// on the chain. Reading the preset changes nothing, so this asks the device
+/// when one is there and says so plainly when it is not.
 fn show_import(file: &std::path::Path) -> Result<()> {
-    let plan = load_plan(file)?;
+    let layout = hx_usb::list()
+        .ok()
+        .and_then(|devices| devices.first()?.open().ok())
+        .and_then(|mut session| session.read_preset().ok())
+        .map(|preset| preset.layout());
+    if layout.is_none() {
+        eprintln!("no device to read: showing what the file says, not where it would land\n");
+    }
+    let plan = load_plan_for(file, layout.as_ref())?;
     println!("{}  ({} changes)\n", plan.name, plan.steps.len());
     for step in &plan.steps {
         match step {

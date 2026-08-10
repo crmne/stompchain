@@ -113,8 +113,46 @@ pub fn plan_for(
                 continue;
             };
             match slot_of(node, layout, dsp_index, numbered) {
-                Ok(position) => read_block(&mut plan, position, node, catalog),
+                Ok(position) => read_block(&mut plan, position, node, catalog, Bypass::Has),
                 Err(why) => plan.skipped.push(format!("{name}/{key}: {why}")),
+            }
+        }
+
+        // The wiring, which on the device is a slot holding a model like any
+        // other: changing a split from a Y to an A/B is the same set-model a
+        // block takes, which is exactly what the editor's Type chips send. So
+        // an import can carry it, and a Y read as an A/B - which divides the
+        // signal differently - no longer arrives as whatever the chain already
+        // had.
+        //
+        // The junction's own slot comes from the chain being imported onto,
+        // never from the file: a `.hlx` says where the split *attaches*, and
+        // writing an attach point is the one edit that can wipe an edit buffer
+        // (see `docs`, and `Preset::settle_branches`). The type and the
+        // parameters are safe; where the branch begins is the device's.
+        let path = layout.and_then(|l| l.paths.get(dsp_index));
+        for (node_key, slot) in [
+            ("split", path.and_then(|p| p.split)),
+            ("join", path.and_then(|p| p.join)),
+        ] {
+            let Some(node) = blocks.get(node_key) else {
+                continue;
+            };
+            if node.get("@model").is_none() {
+                continue;
+            }
+            match slot {
+                Some(slot) => {
+                    read_block(&mut plan, slot as i64, node, catalog, Bypass::None);
+                }
+                // Without a layout there is no way to know which slot holds it,
+                // and on a chain that does not divide there is nothing to hold.
+                None if layout.is_some() => plan
+                    .skipped
+                    .push(format!("{name}/{node_key}: this chain has no {node_key}")),
+                None => plan.skipped.push(format!(
+                    "{name}/{node_key}: placing it needs the chain it is going onto"
+                )),
             }
         }
     }
@@ -161,7 +199,21 @@ fn slot_of(
     Ok(position.map_or(numbered, |n| n as i64))
 }
 
-fn read_block(plan: &mut Plan, position: i64, block: &serde_json::Value, catalog: &Catalog) {
+/// Whether the slot being read is one that can be switched off. A block can; a
+/// split or a join is wiring and has no bypass to set.
+#[derive(PartialEq)]
+enum Bypass {
+    Has,
+    None,
+}
+
+fn read_block(
+    plan: &mut Plan,
+    position: i64,
+    block: &serde_json::Value,
+    catalog: &Catalog,
+    bypass: Bypass,
+) {
     let Some(symbol) = block.get("@model").and_then(|v| v.as_str()) else {
         return;
     };
@@ -190,7 +242,7 @@ fn read_block(plan: &mut Plan, position: i64, block: &serde_json::Value, catalog
         // `@`-prefixed keys are structural - model, position, stereo - and are
         // not parameters.
         if key.starts_with('@') {
-            if key == "@enabled" {
+            if key == "@enabled" && bypass == Bypass::Has {
                 if let Some(on) = value.as_bool() {
                     plan.steps.push(Step::Enabled {
                         block: position,
@@ -403,6 +455,101 @@ mod tests {
             .steps
             .iter()
             .any(|s| matches!(s, Step::Model { block: 12, .. })));
+    }
+
+    /// A file's split is applied to the slot the *chain* keeps its split in,
+    /// as an ordinary set-model, and its parameters follow. What is never taken
+    /// from the file is `@attach`: where a branch begins belongs to the device,
+    /// and writing one over an empty branch can take the edit buffer with it.
+    #[test]
+    fn a_split_type_is_applied_to_the_chain_that_has_one() {
+        use hx_proto::preset::{Lane, Layout, Path};
+        let Some(catalog) = catalog() else { return };
+        let layout = Layout {
+            paths: vec![Path {
+                input: Some(0),
+                output: Some(9),
+                split: Some(10),
+                join: Some(19),
+                head: vec![1],
+                lanes: vec![
+                    Lane {
+                        branch: 0,
+                        blocks: vec![],
+                        span: 2..7,
+                    },
+                    Lane {
+                        branch: 1,
+                        blocks: vec![],
+                        span: 11..19,
+                    },
+                ],
+                tail: vec![],
+            }],
+        };
+        let json = serde_json::json!({
+            "data": { "tone": { "dsp0": {
+                // The shape HX Edit writes, `@attach` and all.
+                "split": { "@model": "HD2_AppDSPFlowSplitY", "@attach": 2, "Balance A": 0.25 },
+                "join": { "@model": "HD2_AppDSPFlowJoin", "@attach": 6 }
+            }}}
+        });
+
+        let plan = plan_for(&json, &catalog, Some(&layout)).unwrap();
+        assert!(plan.skipped.is_empty(), "{:?}", plan.skipped);
+        let slots: Vec<i64> = plan
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::Model { block, .. } => Some(*block),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(slots, vec![10, 19], "the chain's own junction slots");
+        assert!(
+            plan.steps
+                .iter()
+                .any(|s| matches!(s, Step::Param { block: 10, .. })),
+            "the split's own parameters travel with it: {:?}",
+            plan.steps
+        );
+        assert!(
+            !plan.steps.iter().any(|s| matches!(s, Step::Enabled { .. })),
+            "wiring has no bypass to switch: {:?}",
+            plan.steps
+        );
+    }
+
+    /// And on a chain that does not divide there is nowhere to put one, which
+    /// is said rather than guessed at.
+    #[test]
+    fn a_split_needs_a_chain_that_has_somewhere_to_put_it() {
+        use hx_proto::preset::{Layout, Path};
+        let Some(catalog) = catalog() else { return };
+        let straight = Layout {
+            paths: vec![Path {
+                input: Some(0),
+                output: Some(9),
+                split: None,
+                join: None,
+                head: vec![1],
+                lanes: vec![],
+                tail: vec![],
+            }],
+        };
+        let json = serde_json::json!({
+            "data": { "tone": { "dsp0": {
+                "split": { "@model": "HD2_AppDSPFlowSplitY", "@attach": 2 }
+            }}}
+        });
+
+        let plan = plan_for(&json, &catalog, Some(&straight)).unwrap();
+        assert!(plan.steps.is_empty());
+        assert!(
+            plan.skipped.iter().any(|s| s.contains("no split")),
+            "{:?}",
+            plan.skipped
+        );
     }
 
     #[test]
