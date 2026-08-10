@@ -370,8 +370,11 @@ mod tests {
     #[test]
     #[ignore = "needs real .hxb backups on disk"]
     fn round_trips_real_backups() {
-        let dir = std::path::Path::new(env!("HOME"))
-            .join("Nextcloud/Documents/Line 6/Tones/Helix/Backups");
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .expect("home folder");
+        let dir =
+            std::path::Path::new(&home).join("Nextcloud/Documents/Line 6/Tones/Helix/Backups");
         let mut checked = 0;
         for entry in std::fs::read_dir(&dir).expect("backup folder") {
             let path = entry.unwrap().path();

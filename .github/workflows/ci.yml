@@ -27,7 +27,12 @@ jobs:
             libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
       - uses: Swatinem/rust-cache@v2
       # The hardware integration tests are #[ignore]d; nothing here needs a device.
-      - run: cargo test --workspace
+      - name: Test workspace
+        if: runner.os != 'Windows'
+        run: cargo test --workspace
+      - name: Test workspace without the Rails extension
+        if: runner.os == 'Windows'
+        run: cargo test --workspace --exclude hx-ruby
 
   lint:
     runs-on: ubuntu-latest
