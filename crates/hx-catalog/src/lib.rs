@@ -16,7 +16,6 @@ use std::path::{Path, PathBuf};
 pub mod build;
 pub mod extract;
 mod format;
-pub mod home;
 mod hxb;
 mod inspect;
 mod load;

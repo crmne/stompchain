@@ -280,12 +280,6 @@ enum Cmd {
 }
 
 fn main() -> Result<()> {
-    // Before anything looks for the extracted resources, which a machine that
-    // knew this program under its old name has filed under that name. Either
-    // binary may be the first to run after an upgrade, so both do this.
-    for dir in hx_catalog::home::adopt_former_name() {
-        eprintln!("brought {} across from the old name", dir.display());
-    }
     match Cli::parse().cmd {
         // Everything that needs no device, handled before we touch USB.
         Cmd::Decode { log } => decode_capture(&log),

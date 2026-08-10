@@ -1,14 +1,6 @@
 //! Desktop entry point.
 
 fn main() -> eframe::Result<()> {
-    // First of all, because everything below reads one of the directories it
-    // moves: a machine that knew this program under its old name has its
-    // library, its setlists and its extracted resources filed under that name,
-    // and looking only under the new one would show an empty library and call
-    // it the truth.
-    for dir in hx_catalog::home::adopt_former_name() {
-        eprintln!("brought {} across from the old name", dir.display());
-    }
     // A library written before tones were stored by content moves across now,
     // once, silently: a few file renames and a rewritten index. It happens here
     // rather than in `App::new` because this is the one place that only ever

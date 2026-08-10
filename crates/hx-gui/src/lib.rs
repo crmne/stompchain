@@ -398,7 +398,7 @@ impl LibColumn {
 
     fn column(self) -> table::Column {
         match self {
-            LibColumn::Sync => table::Column::new("Where", 60.0),
+            LibColumn::Sync => table::Column::new("Push", 60.0),
             LibColumn::Name => table::Column::new("Name", 190.0).editable(),
             LibColumn::Character => table::Column::new("Character", 110.0).editable(),
             LibColumn::Genre => table::Column::new("Genre", 130.0).editable(),
@@ -2817,7 +2817,7 @@ impl App {
 
         let mut grid = table::Grid {
             columns: vec![
-                table::Column::new("Where", 46.0),
+                table::Column::new("Push", 46.0),
                 table::Column::new("Slot", 54.0),
                 table::Column::new("Name", 190.0),
                 table::Column::new("Artist", 130.0),
