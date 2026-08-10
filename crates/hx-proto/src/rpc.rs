@@ -94,7 +94,21 @@ pub mod key {
     /// Low and high ends of a controller's travel, normalised 0..1.
     pub const ASSIGN_MIN: i64 = 72;
     pub const ASSIGN_MAX: i64 = 73;
-    /// Constant 4 on every captured controller assignment.
+    /// The same number as [`CC`], and what it means depends on which shape of
+    /// assignment message it is in. **[confirmed]**
+    ///
+    /// On a *parameter* assignment - the form carrying `{29, 26, 28}` - it is
+    /// an on switch: 4 when an assignment exists and 0 when it is taken off,
+    /// whatever the source. Captured against a footswitch and an expression
+    /// pedal as well as MIDI, all of which send 4.
+    ///
+    /// On a *bypass* assignment - the form carrying [`ASSIGN_TARGET`] - it is
+    /// the MIDI CC number itself. It looked like a constant 4 for a long time
+    /// because 4 is the CC the pedal picks by default; setting the row to 42,
+    /// then 43, 44, 45 and 46 sends exactly those, and 0 takes the row off.
+    ///
+    /// A parameter's CC does not travel here at all. It has its own opcode,
+    /// [`op::SET_ASSIGN_CC`].
     pub const ASSIGN_KIND: i64 = 71;
     /// Constant false on every captured controller assignment.
     pub const ASSIGN_EXTRA: i64 = 129;
@@ -162,6 +176,18 @@ pub mod op {
     pub const ASSIGN_CONTROLLER: i64 = 37;
     /// Read a parameter's controller assignment: `{98, 29, 26, 28}`.
     pub const READ_ASSIGNMENT: i64 = 36;
+    /// Which MIDI CC drives a *parameter*: `{98, 29, 26, 28, 71: cc}`.
+    /// **[confirmed]**
+    ///
+    /// The question the assign page left open for a long time. A parameter's
+    /// assignment message says only that a controller exists (key 71 is 4
+    /// there); the number itself is set through here, and HX Edit sends one of
+    /// these per intermediate value as the field is spun, the same way a knob
+    /// drag streams. Captured landing on 42, then 43, then 44.
+    ///
+    /// A *bypass* is the other way round - its CC rides key 71 of
+    /// [`ASSIGN_CONTROLLER`] and never comes through here.
+    pub const SET_ASSIGN_CC: i64 = 64;
     /// The low end of a controller's travel: `{98, 29, 26, 28, 119: value}`.
     ///
     /// Min and Max are opcodes of their own rather than keys on the assign

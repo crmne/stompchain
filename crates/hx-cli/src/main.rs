@@ -63,10 +63,12 @@ enum Cmd {
     ///
     IrLoad { slot: i64, file: std::path::PathBuf },
     /// Put a block's bypass under MIDI, or take it off, by position as in
-    /// `tonepush chain`. The pedal picks the CC number; no captured message
-    /// sets it.
+    /// `tonepush chain`.
     Assign {
         block: i64,
+        /// Which CC drives it. 4 is what the pedal picks for itself.
+        #[arg(long, default_value_t = 4)]
+        cc: i64,
         #[arg(long)]
         off: bool,
     },
@@ -374,10 +376,16 @@ fn on_device(cmd: Cmd) -> Result<()> {
         Cmd::Move { from, to } => move_block(s, from, to),
         Cmd::Snapshot { number } => snapshot(s, number),
         Cmd::IrLoad { slot, file } => load_ir(s, slot, &file),
-        Cmd::Assign { block, off } => {
-            s.assign_bypass_midi(block - 1, !off)?;
-            let what = if off { "no longer follows" } else { "follows" };
-            println!("block {block} bypass {what} MIDI");
+        Cmd::Assign { block, cc, off } => {
+            if !off && !(0..=127).contains(&cc) {
+                bail!("a MIDI CC is 0 to 127; {cc} is not one");
+            }
+            s.assign_bypass_midi(block - 1, (!off).then_some(cc))?;
+            if off {
+                println!("block {block} bypass no longer follows MIDI");
+            } else {
+                println!("block {block} bypass follows MIDI CC {cc}");
+            }
             Ok(())
         }
         Cmd::Tempo { bpm } => {

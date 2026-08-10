@@ -657,18 +657,22 @@ impl Session {
 
     /// Put a block's bypass under MIDI, or take it back off.
     ///
-    /// HX Edit's assign page gives MIDI its own row rather than a place in the
-    /// source list, and this is that row. It carries **no CC number**: the
-    /// capture sends the bypass target and the on switch and nothing else, and
-    /// the pedal answers with the number it chose (`12: 0`). Which message sets
-    /// that number has not been caught, so this does not pretend to offer it.
+    /// Put a block's bypass under a MIDI CC, and say which one.
     ///
-    /// The keys were read straight off `mac-assign-capture.log`, where turning
-    /// the row on sends `{98: block, 95: 5, 96: 300, 74: 0, 71: 4}` and turning
-    /// it off sends the same with `71: 0`. Key 71 is the assignment's on
-    /// switch, the same as it is for a parameter - an earlier reading had the
-    /// CC number here, which would have written a number into that switch.
-    pub fn assign_bypass_midi(&mut self, block: i64, on: bool) -> Result<()> {
+    /// HX Edit's assign page gives MIDI its own row rather than a place in the
+    /// source list, and this is that row. `None` takes the row off.
+    ///
+    /// **Key 71 is the CC number here**, which took two captures to see. It
+    /// reads as a constant 4 in every capture that only ever switches the row
+    /// on, because 4 is the CC the pedal picks by default - so it was written
+    /// down as an on switch. `mac-cc-capture.log` sets the row to 42, then 43,
+    /// 44, 45 and 46, and sends exactly those under key 71. Taking the row off
+    /// sends 0.
+    ///
+    /// A *parameter* works the other way round: its assignment carries the on
+    /// switch at key 71 and its CC number goes through
+    /// [`Session::set_assign_cc`].
+    pub fn assign_bypass_midi(&mut self, block: i64, cc: Option<i64>) -> Result<()> {
         /// What is being controlled: this block's bypass.
         const BYPASS_TARGET: i64 = 5;
         /// Constant across every captured assignment.
@@ -682,7 +686,31 @@ impl Session {
                 rpc::key::ASSIGN_TARGET => Value::Int(BYPASS_TARGET),
                 rpc::key::ASSIGN_SCOPE => Value::Int(SCOPE),
                 rpc::key::ASSIGN_FLAGS => Value::Int(rpc::Source::NONE),
-                rpc::key::ASSIGN_KIND => Value::Int(if on { 4 } else { 0 }),
+                rpc::key::ASSIGN_KIND => Value::Int(cc.unwrap_or(0)),
+            },
+        )
+    }
+
+    /// Which MIDI CC drives a parameter that is already assigned to one.
+    ///
+    /// Two messages, not one: [`Session::assign_parameter`] with
+    /// [`rpc::Source::MIDI`] says a controller exists, and this says which CC.
+    /// HX Edit sends one of these per intermediate value while the field is
+    /// spun, so a single call is the same thing arriving in one step.
+    ///
+    /// The bypass row is the other way round - see
+    /// [`Session::assign_bypass_midi`], where the number rides the assignment
+    /// itself.
+    pub fn set_assign_cc(&mut self, block: i64, param: i64, cc: i64) -> Result<()> {
+        self.command(
+            ChannelId::DATA,
+            rpc::op::SET_ASSIGN_CC,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::COMMIT => Value::Bool(true),
+                rpc::key::PATH => Value::Int(0),
+                rpc::key::PARAM_INDEX => Value::Int(param),
+                rpc::key::CC => Value::Int(cc),
             },
         )
     }

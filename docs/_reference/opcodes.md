@@ -110,6 +110,7 @@ the channel hello.
 | 40 | `0x1080` | pick a model in the browser; Redo | `{98: block, 100: {23: bool, 25: model, 26: model}}` | `{13: 1, 24: <slot object>}` | [confirmed] |
 | 42 | `0x1080` | click a routing choice on an Input or Output block | `{98: slot, 51: destination}` | nil | [confirmed] |
 | 41 | `0x1080` | click a block's bypass switch | `{98: block, 59: enabled bool}` | nil | [confirmed] |
+| 64 | `0x1003` | set which MIDI CC drives an assigned *parameter* | `{98: block, 29: true, 26: 0, 28: param, 71: cc}` | nil | [confirmed] |
 | 76 | `0x1080` | connect | `{}` | `{63: bool, 55: [11 floats]}` - Global EQ | [confirmed] |
 | 78 | `0x1080` | click a block in the signal chain | `{98: block, 26: 0}` | nil | [confirmed] |
 | 99 | `0x1080` | connect | `{}` (arguments ignored) | `{63: bool}` - is the tempo driven by external MIDI clock. HX Edit shows `[External]` instead of the BPM when true. | [confirmed] |

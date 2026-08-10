@@ -66,8 +66,10 @@ fn exercise(s: &mut Session) -> Summary {
         let _ = s.assign_bypass_footswitch(p, 1);
         let _ = s.unassign_bypass_footswitch(p, 1);
         let _ = s.assign_parameter(p, 0, Some(Source::Expression(1)));
-        let _ = s.assign_bypass_midi(p, true);
-        let _ = s.assign_bypass_midi(p, false);
+        // Some(4) is what `true` sent: 4 is the CC the pedal defaults to,
+        // so these bytes are unchanged and the fixture still matches.
+        let _ = s.assign_bypass_midi(p, Some(4));
+        let _ = s.assign_bypass_midi(p, None);
         let _ = s.set_model(p, 100); // change the block; rebuilt below
         let _ = s.clear_block(p);
     }

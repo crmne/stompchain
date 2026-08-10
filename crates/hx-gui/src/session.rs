@@ -891,7 +891,10 @@ impl Worker {
             }
             Cmd::AssignMidi { block, on } => {
                 self.snapshot();
-                if self.run_on_device(|d| d.assign_bypass_midi(block, on)) {
+                // 4 is the CC the pedal picks for itself, which is what this
+                // sent before the number was known to be selectable at all.
+                // The menu has nowhere to choose one yet.
+                if self.run_on_device(|d| d.assign_bypass_midi(block, on.then_some(4))) {
                     self.dirty = true;
                     self.reload();
                 }

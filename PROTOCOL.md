@@ -363,25 +363,32 @@ and Expression Pedal 2 drives the volume block.
 **A bypass's Source list holds only footswitches and None. [confirmed]** No
 expression pedals - a bypass is a switch - and no MIDI CC either, because MIDI
 is not a source for a bypass: the assign page gives it its own **MIDI In** row,
-sent as `op37 {98: block, 95: 5, 96: 300, 74: 0, 71: 4}` with no parameter keys
+sent as `op37 {98: block, 95: 5, 96: 300, 74: 0, 71: cc}` with no parameter keys
 at all, and switched off again by the same message with `71: 0`. So opcode 68,
 which the inferred table calls "set MIDI CC", was never sent.
 
-**That message carries no CC number. [confirmed]** An earlier reading of this
-paragraph had the number at key 95, and the code that followed it put the number
-at key 71 - which is the assignment's on switch, so it was writing a CC number
-where the pedal reads "is this on". The capture settles both: 95 is `5`, the
-bypass target, exactly as it is inside the document, and 71 is `4`. The reply
-names the number the pedal chose:
+**Key 71 is that CC number. [confirmed]** This paragraph has been wrong twice,
+in opposite directions, and the reason is worth keeping: every capture until now
+only ever switched the row *on*, and the pedal defaults to CC 4, so key 71 read
+as a constant 4 and was written down first as the number's home, then as an on
+switch. `mac-cc-capture.log` sets the row to 42, and then 43, 44, 45 and 46,
+and sends exactly those under key 71. Taking the row off sends `71: 0`. Key 95
+is `5`, the bypass target, throughout. The reply names the same number:
 
 ```text
 {0: 8, 1: 4, 2: nil, 3: nil, 4: 2, 5: 12, 9: 5, 10: 300, 11: true, 12: 0}
 ```
 
 Key 0 is 8, MIDI CC, so the source is inferred from the shape rather than sent
-at 74; **key 12 is the CC number**, defaulting to 0. Which message *sets* that
-number has not been caught - the same gap as a parameter's CC - so nothing here
-offers to choose one.
+at 74, and **key 12 is the CC number** coming back.
+
+**A parameter's CC is set somewhere else entirely: opcode 64. [confirmed]**
+`{98: block, 29: true, 26: 0, 28: param, 71: cc}`. The two forms do not share a
+mechanism, which is why looking for a parameter's CC inside its assignment
+message never found one: an assignment says a controller exists - key 71 is the
+constant 4 there, for a footswitch as much as for MIDI - and opcode 64 says
+which CC. HX Edit sends one per intermediate value as the field is spun, the way
+a knob drag streams, so the last one is the answer.
 
 **A bypass on a footswitch is not in the document. [confirmed]** The controller
 table at top-level key 4 holds every parameter assignment and the bypasses an
