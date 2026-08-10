@@ -495,11 +495,18 @@ impl App {
                     self.snapshots = snapshots;
                     self.chain = chain;
                     // Land on something editable rather than the input, which
-                    // has nothing to show.
+                    // has nothing to show. A split or a join counts: changing
+                    // its type reloads the preset, and treating a junction as
+                    // not-editable threw you out of the very panel you were
+                    // using every time you clicked Y, A/B or Crossover.
+                    let editable = |app: &Self, b: &session::Block| {
+                        use hx_proto::preset::Kind;
+                        app.is_effect(b) || matches!(b.kind, Kind::Split | Kind::Join)
+                    };
                     if !self
                         .chain
                         .get(self.selected)
-                        .is_some_and(|b| self.is_effect(b))
+                        .is_some_and(|b| editable(self, b))
                     {
                         self.selected = self
                             .chain
@@ -1069,6 +1076,13 @@ impl App {
                     self.select_for_action(index);
                     self.note(format!("pasting {name}"));
                     self.send(Cmd::PastePreset(blob));
+                    // The name travels with the tone. A document does not carry
+                    // one - the slot's label is a separate thing in flash - so
+                    // pasting without this left the new tone under the old
+                    // one's name. The label changes now and the chain follows
+                    // when you save, which is the same bargain every other edit
+                    // on this bar makes.
+                    self.send(Cmd::Rename { index, name });
                 }
             }
             RowAction::Export => {
@@ -1211,11 +1225,47 @@ impl App {
                 ..Default::default()
             },
         );
-        ui.label(title).on_hover_text(if self.dirty {
-            "unsaved changes — right-click a preset in the list to rename it"
-        } else {
-            "right-click a preset in the list to rename it"
-        });
+        // Clicking the name renames it, here as well as in the list. It is the
+        // name, in the place you are looking when you decide it is wrong.
+        let renaming_here =
+            matches!(&self.renaming, Some((i, _)) if *i == self.preset_index);
+        if renaming_here {
+            let mut done: Option<Option<String>> = None;
+            if let Some((_, draft)) = self.renaming.as_mut() {
+                let field = ui.add(
+                    egui::TextEdit::singleline(draft)
+                        .desired_width(200.0)
+                        .font(theme::semibold(16.0)),
+                );
+                if !field.has_focus() && !field.lost_focus() {
+                    field.request_focus();
+                }
+                if field.lost_focus() {
+                    let commit = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    done = Some(commit.then(|| draft.clone()));
+                }
+            }
+            if let Some(result) = done {
+                let index = self.preset_index;
+                self.renaming = None;
+                if let Some(name) = result {
+                    self.send(Cmd::Rename { index, name });
+                }
+            }
+            return;
+        }
+
+        let shown = ui.add(egui::Label::new(title).sense(egui::Sense::click()));
+        if shown
+            .on_hover_text(if self.dirty {
+                "unsaved changes — click the name to rename it"
+            } else {
+                "click the name to rename it"
+            })
+            .clicked()
+        {
+            self.renaming = Some((self.preset_index, self.preset_name.clone()));
+        }
     }
 
     /// Work out a tempo from the intervals between taps.
@@ -4127,6 +4177,44 @@ impl App {
             if hit.drag_started() {
                 self.dragging = Some(slot);
             }
+            // The same three actions the block's own header offers, on the
+            // block itself - which is where a hand goes when the block it wants
+            // is not the one being edited.
+            if self.is_effect(&block) {
+                let copied = self.copied_block;
+                let mut action = None;
+                hit.context_menu(|ui| {
+                    if ui.button("Copy").clicked() {
+                        action = Some(RowAction::Copy);
+                        ui.close_menu();
+                    }
+                    if ui
+                        .add_enabled(copied.is_some(), egui::Button::new("Paste"))
+                        .clicked()
+                    {
+                        action = Some(RowAction::Paste);
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Remove").clicked() {
+                        action = Some(RowAction::Remove);
+                        ui.close_menu();
+                    }
+                });
+                match action {
+                    Some(RowAction::Copy) => {
+                        self.copied_block = Some(slot);
+                        self.note(format!("copied {}", self.slot_label(&block)));
+                    }
+                    Some(RowAction::Paste) => {
+                        if let Some(from) = copied {
+                            self.edit(Cmd::CopyBlock { from, to: slot });
+                        }
+                    }
+                    Some(RowAction::Remove) => self.edit(Cmd::ClearBlock(block.position)),
+                    _ => {}
+                }
+            }
         }
         hit.clicked().then_some(i)
     }
@@ -4938,6 +5026,10 @@ impl App {
         // The pedal, at a size worth looking at. This is the thing being
         // worked on, so it gets the room; the shelf next door is deliberately
         // smaller.
+        // What kind of split this is goes with the block's name, not below its
+        // knobs: it is what the block *is*, and it was the one control you had
+        // to scroll past the picture to reach.
+        let retype = self.split_type_menu(ui, position);
         ui.vertical_centered(|ui| {
             if let Some(art) = art {
                 theme::pedal_image(ui, art, 240.0);
@@ -4947,7 +5039,6 @@ impl App {
         });
         ui.add_space(10.0);
         let reroute = self.routing_menu(ui, model, position);
-        let retype = self.split_type_menu(ui, position);
 
         // Values arrive in the order the device indexes them, which the catalog
         // knows how to reproduce — it is not simply the model's parameter list.
