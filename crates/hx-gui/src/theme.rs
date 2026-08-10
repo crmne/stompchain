@@ -149,10 +149,42 @@ const CATEGORY_ICONS: &[(&str, &str, &[u8])] = category_icons! {
     "Connected Devices" => "connected-devices",
 };
 
+/// The interface icons, from Lucide (ISC).
+///
+/// These were hand-plotted polylines for a while, because there was no SVG
+/// loader when they were first needed. There is one now, and a set drawn by
+/// people who draw icons for a living is better than one plotted from
+/// coordinates by someone who does not — more consistent with itself, above
+/// all, which is what a row of them has to be.
+macro_rules! ui_icons {
+    ($($variant:ident => $file:literal),* $(,)?) => {
+        &[$((
+            Icon::$variant,
+            concat!("bytes://ui-", $file, ".svg"),
+            include_bytes!(concat!("../assets/icons/ui/", $file, ".svg")).as_slice(),
+        )),*]
+    };
+}
+
+const UI_ICONS: &[(Icon, &str, &[u8])] = ui_icons! {
+    Save => "save",
+    Undo => "undo-2",
+    Redo => "redo-2",
+    Copy => "copy",
+    Paste => "clipboard-paste",
+    Remove => "trash-2",
+    Gear => "settings",
+    Sliders => "sliders-horizontal",
+    Keep => "import",
+};
+
 /// Hand the icons to egui's loaders, once, so they can be drawn by URI like any
 /// other image.
 pub fn register_icons(ctx: &egui::Context) {
     for (_, uri, bytes) in CATEGORY_ICONS {
+        ctx.include_bytes(*uri, *bytes);
+    }
+    for (_, uri, bytes) in UI_ICONS {
         ctx.include_bytes(*uri, *bytes);
     }
 }
@@ -300,114 +332,15 @@ pub enum Icon {
 }
 
 impl Icon {
-    /// The strokes, as polylines on a 24×24 grid.
-    fn strokes(self) -> &'static [&'static [(f32, f32)]] {
-        match self {
-            // A floppy disk: body with the corner taken off, shutter, label.
-            Icon::Save => &[
-                &[
-                    (3.0, 3.0),
-                    (16.0, 3.0),
-                    (21.0, 8.0),
-                    (21.0, 19.0),
-                    (3.0, 19.0),
-                    (3.0, 3.0),
-                ],
-                &[(7.0, 19.0), (7.0, 12.0), (17.0, 12.0), (17.0, 19.0)],
-                &[(7.0, 3.0), (7.0, 8.0), (15.0, 8.0)],
-            ],
-            // An arrow turning back on itself, left for undo and right for redo.
-            Icon::Undo => &[
-                &[(9.0, 14.0), (4.0, 9.0), (9.0, 4.0)],
-                &[(20.0, 20.0), (20.0, 13.0), (16.0, 9.0), (4.0, 9.0)],
-            ],
-            Icon::Redo => &[
-                &[(15.0, 14.0), (20.0, 9.0), (15.0, 4.0)],
-                &[(4.0, 20.0), (4.0, 13.0), (8.0, 9.0), (20.0, 9.0)],
-            ],
-            // Two sheets, one behind the other.
-            Icon::Copy => &[
-                &[
-                    (9.0, 9.0),
-                    (21.0, 9.0),
-                    (21.0, 21.0),
-                    (9.0, 21.0),
-                    (9.0, 9.0),
-                ],
-                &[(5.0, 15.0), (3.0, 15.0), (3.0, 3.0), (15.0, 3.0), (15.0, 5.0)],
-            ],
-            // A clipboard, with its clip.
-            Icon::Paste => &[
-                &[
-                    (4.0, 5.0),
-                    (20.0, 5.0),
-                    (20.0, 22.0),
-                    (4.0, 22.0),
-                    (4.0, 5.0),
-                ],
-                &[(9.0, 5.0), (9.0, 2.0), (15.0, 2.0), (15.0, 5.0)],
-            ],
-            // A bin: lid, body, handle.
-            Icon::Remove => &[
-                &[(3.0, 6.0), (21.0, 6.0)],
-                &[(5.0, 6.0), (5.0, 22.0), (19.0, 22.0), (19.0, 6.0)],
-                &[(9.0, 6.0), (9.0, 3.0), (15.0, 3.0), (15.0, 6.0)],
-            ],
-            // The cog is two circles and eight teeth, drawn in `paint` rather
-            // than listed here: as a traced rim it came out as a muddy blob at
-            // the size it is actually used, because a 26-point outline has no
-            // room to be a cog in seventeen pixels.
-            Icon::Gear => &[],
-            // An arrow going down into a tray: put this away.
-            Icon::Keep => &[
-                &[(12.0, 3.0), (12.0, 14.0)],
-                &[(7.0, 9.0), (12.0, 14.0), (17.0, 9.0)],
-                &[(3.0, 16.0), (3.0, 21.0), (21.0, 21.0), (21.0, 16.0)],
-            ],
-            // Three faders, each with its cap at a different place: an EQ.
-            Icon::Sliders => &[
-                &[(6.0, 3.0), (6.0, 9.0)],
-                &[(6.0, 14.0), (6.0, 21.0)],
-                &[(3.0, 11.5), (9.0, 11.5)],
-                &[(12.0, 3.0), (12.0, 15.0)],
-                &[(9.0, 17.5), (15.0, 17.5)],
-                &[(12.0, 20.0), (12.0, 21.0)],
-                &[(18.0, 3.0), (18.0, 5.0)],
-                &[(15.0, 7.5), (21.0, 7.5)],
-                &[(18.0, 10.0), (18.0, 21.0)],
-            ],
-        }
+    /// Where this icon's artwork is registered.
+    fn uri(self) -> &'static str {
+        UI_ICONS
+            .iter()
+            .find(|(icon, _, _)| *icon == self)
+            .map(|(_, uri, _)| *uri)
+            .unwrap_or_default()
     }
 
-    /// Paint into a square, at whatever size the square is.
-    pub fn paint(self, painter: &egui::Painter, box_: egui::Rect, colour: Color32) {
-        let scale = box_.width() / 24.0;
-        let stroke = Stroke::new((1.6 * scale).max(1.0), colour);
-        let at = |(x, y): (f32, f32)| box_.min + Vec2::new(x * scale, y * scale);
-        for line in self.strokes() {
-            painter.add(egui::Shape::line(
-                line.iter().map(|&p| at(p)).collect(),
-                stroke,
-            ));
-        }
-        if self == Icon::Gear {
-            // A rim, a hub, and eight teeth standing off the rim. Circles drawn
-            // as circles stay round at any size, which a traced outline does
-            // not.
-            let centre = box_.center();
-            painter.circle_stroke(centre, 6.5 * scale, stroke);
-            painter.circle_stroke(centre, 2.6 * scale, stroke);
-            for i in 0..8 {
-                let angle = std::f32::consts::TAU * i as f32 / 8.0;
-                let (sin, cos) = angle.sin_cos();
-                let dir = Vec2::new(cos, sin);
-                painter.line_segment(
-                    [centre + dir * 6.0 * scale, centre + dir * 10.0 * scale],
-                    stroke,
-                );
-            }
-        }
-    }
 }
 
 /// One drawn action, as a frameless button.
@@ -442,8 +375,10 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, enabled: bool) -> Response {
             );
         }
         // The glyph sits inside the hit box, so neighbours do not crowd it.
+        // Drawn through the image loader like every other icon, which is what
+        // keeps this row and the category chips the same weight.
         let inset = egui::Rect::from_center_size(rect.center(), Vec2::splat(BOX - 7.0));
-        icon.paint(ui.painter(), inset, colour);
+        Art::whole(icon.uri().to_owned()).paint(ui, inset, colour);
     }
     response
 }

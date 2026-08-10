@@ -453,7 +453,7 @@ impl Source {
 
     pub fn label(self) -> String {
         match self {
-            Source::Expression(n) => format!("EXP Pedal {n}"),
+            Source::Expression(n) => format!("Expression Pedal {n}"),
             Source::Footswitch(n) => format!("Footswitch {n}"),
             Source::MidiCc => "MIDI CC".into(),
             Source::Snapshots => "Snapshots".into(),

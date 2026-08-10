@@ -2683,14 +2683,6 @@ impl App {
             .collapsible(false)
             .show(ctx, |ui| {
                 ui.set_max_width(400.0);
-                ui.label(
-                    RichText::new(
-                        "The device's own global settings — the same ones HX Edit's \
-                         preferences write. They belong to the device, not the preset.",
-                    )
-                    .small()
-                    .color(theme::DIM),
-                );
                 ui.separator();
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
@@ -4656,7 +4648,10 @@ impl App {
 
             for switch in 1..=5u8 {
                 if ui
-                    .button(format!("FS{switch}"))
+                    // Spelled out: "FS3" is the pedal's shorthand, not
+                    // a word, and this is the one place a person has to work
+                    // out which switch they mean.
+                    .button(format!("Footswitch {switch}"))
                     .on_hover_text(format!("footswitch {switch} toggles this block"))
                     .clicked()
                 {
