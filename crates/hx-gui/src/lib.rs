@@ -195,6 +195,16 @@ pub struct App {
     /// The metadata draft for the selected entry, saved as it is edited.
     lib_draft: library::Meta,
     lib_tag_filter: Option<String>,
+    /// Tones picked out in the table, by file name. By file name rather than
+    /// row so a sort or a filter does not silently change what is selected.
+    lib_chosen: std::collections::BTreeSet<String>,
+    /// Where a shift-click measures its range from.
+    lib_anchor: Option<usize>,
+    /// Which column orders the table, and which way.
+    lib_sort: (LibColumn, bool),
+    /// Tones waiting on an answer about being deleted, and the setlists that
+    /// would lose them.
+    confirm_delete: Option<(Vec<String>, Vec<String>)>,
     /// Comma-separated genres and a pending tag, edited in the inspector.
     lib_genres_buf: String,
     lib_tag_add: String,
@@ -267,6 +277,48 @@ enum CopyTarget {
     File(std::path::PathBuf),
     /// Into the library, as a portable .hlx named after the preset.
     Library,
+}
+
+/// A column of the library table, and what it sorts by.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LibColumn {
+    Name,
+    Character,
+    Genre,
+    Artist,
+    Chain,
+}
+
+impl LibColumn {
+    const ALL: [LibColumn; 5] = [
+        LibColumn::Name,
+        LibColumn::Character,
+        LibColumn::Genre,
+        LibColumn::Artist,
+        LibColumn::Chain,
+    ];
+
+    fn title(self) -> &'static str {
+        match self {
+            LibColumn::Name => "Name",
+            LibColumn::Character => "Character",
+            LibColumn::Genre => "Genre",
+            LibColumn::Artist => "Artist",
+            LibColumn::Chain => "Chain",
+        }
+    }
+
+    /// What this column shows for a row, which is also what it sorts on - so
+    /// the order can never disagree with what is on screen.
+    fn of(self, entry: &LibEntry) -> String {
+        match self {
+            LibColumn::Name => entry.name.clone(),
+            LibColumn::Character => entry.meta.character.clone(),
+            LibColumn::Genre => entry.meta.genres.join(", "),
+            LibColumn::Artist => entry.meta.artist.clone(),
+            LibColumn::Chain => entry.line.clone(),
+        }
+    }
 }
 
 /// The two halves of the computer's library.
@@ -373,6 +425,10 @@ impl App {
             lib_selected: None,
             lib_draft: library::Meta::default(),
             lib_tag_filter: None,
+            lib_chosen: Default::default(),
+            lib_anchor: None,
+            lib_sort: (LibColumn::Name, true),
+            confirm_delete: None,
             lib_genres_buf: String::new(),
             lib_tag_add: String::new(),
             tempo_draft: None,
@@ -1455,12 +1511,21 @@ impl App {
                             let selected = index == self.preset_index;
                             let label = format!("{}  {}", hx_proto::rpc::slot_label(index), name);
                             ui.horizontal(|ui| {
+                                // One height for the row, and every widget in it
+                                // centred on that: a text star, a drawn icon and
+                                // a label are three different heights, and left
+                                // to themselves they sat on three baselines.
+                                ui.set_min_height(24.0);
                                 // The star leads the row, clear of the scrollbar
                                 // that overlaps the right edge and eats the click.
                                 let mark = if fav { "★" } else { "☆" };
                                 let color = if fav { theme::ACCENT } else { theme::DIM };
                                 if ui
-                                    .add(egui::Button::new(RichText::new(mark).color(color)).frame(false))
+                                    .add_sized(
+                                        [22.0, 24.0],
+                                        egui::Button::new(RichText::new(mark).color(color))
+                                            .frame(false),
+                                    )
                                     .on_hover_text(if fav { "Remove favorite" } else { "Favorite" })
                                     .clicked()
                                 {
@@ -1905,6 +1970,7 @@ impl App {
             self.send(Cmd::CaptureSetlist);
         }
         self.confirm_push_window(ctx);
+        self.confirm_delete_window(ctx);
     }
 
     /// Every setlist in the library, by name.
@@ -2225,58 +2291,240 @@ impl App {
             .map(|(i, _)| i)
             .collect();
 
-        let mut select = None;
+        // Sorted by the column that was last clicked, and the sort is done on
+        // the very strings the table shows - so the order can never disagree
+        // with what is on screen.
+        let (column, ascending) = self.lib_sort;
+        let mut rows = rows;
+        rows.sort_by(|a, b| {
+            let key = |i: &usize| column.of(&self.lib_entries[*i]).to_lowercase();
+            let ord = key(a).cmp(&key(b));
+            if ascending { ord } else { ord.reverse() }
+        });
+
+        let mut select: Option<(usize, bool, bool)> = None;
         let mut open_preview = None;
-        TableBuilder::new(ui)
+        let mut delete = false;
+        let chosen = self.lib_chosen.clone();
+
+        // Read before the table takes the ui: a row's click needs to know
+        // whether a modifier was down, and by then `ui` is spoken for.
+        let (ctrl, shift) = ui.input(|i| (i.modifiers.command, i.modifiers.shift));
+        let mut table = TableBuilder::new(ui)
             .striped(true)
-            .sense(egui::Sense::click())
-            .column(Column::auto().at_least(150.0).resizable(true))
-            .column(Column::auto().at_least(70.0).resizable(true))
-            .column(Column::auto().at_least(90.0).resizable(true))
-            .column(Column::auto().at_least(110.0).resizable(true))
-            .column(Column::remainder())
-            .header(20.0, |mut header| {
-                for title in ["Name", "Character", "Genre", "Artist", "Chain"] {
+            .sense(egui::Sense::click());
+        for _ in 0..LibColumn::ALL.len() - 1 {
+            table = table.column(Column::auto().at_least(90.0).resizable(true));
+        }
+        table = table.column(Column::remainder());
+
+        let mut sort_by = None;
+        table
+            .header(22.0, |mut header| {
+                for col in LibColumn::ALL {
                     header.col(|ui| {
-                        ui.strong(title);
+                        // The arrow says which column is ordering the table and
+                        // which way, and clicking a header is how you change it.
+                        let arrow = if col == column {
+                            if ascending { " ↑" } else { " ↓" }
+                        } else {
+                            ""
+                        };
+                        let label = RichText::new(format!("{}{arrow}", col.title())).strong();
+                        if ui
+                            .add(egui::Button::new(label).frame(false))
+                            .on_hover_text("sort by this column")
+                            .clicked()
+                        {
+                            sort_by = Some(col);
+                        }
                     });
                 }
             })
             .body(|mut body| {
                 for &i in &rows {
                     let e = &self.lib_entries[i];
+                    let picked = chosen.contains(&e.file_name);
                     body.row(22.0, |mut row| {
-                        row.set_selected(self.lib_selected == Some(i));
-                        row.col(|ui| {
-                            ui.label(e.name.as_str());
-                        });
-                        row.col(|ui| {
-                            ui.label(e.meta.character.as_str());
-                        });
-                        row.col(|ui| {
-                            ui.label(e.meta.genres.join(", "));
-                        });
-                        row.col(|ui| {
-                            ui.label(e.meta.artist.as_str());
-                        });
-                        row.col(|ui| {
-                            ui.label(RichText::new(e.line.as_str()).color(theme::DIM));
-                        });
+                        row.set_selected(picked || self.lib_selected == Some(i));
+                        for col in LibColumn::ALL {
+                            row.col(|ui| {
+                                // Not selectable. egui makes label text
+                                // selectable by default, which puts an I-beam
+                                // and a highlight on every cell - it reads as
+                                // an edit field that refuses to be edited.
+                                let text = col.of(e);
+                                let text = if col == LibColumn::Chain {
+                                    RichText::new(text).color(theme::DIM)
+                                } else {
+                                    RichText::new(text)
+                                };
+                                ui.add(egui::Label::new(text).selectable(false));
+                            });
+                        }
                         let r = row.response();
                         if r.clicked() {
-                            select = Some(i);
+                            select = Some((i, ctrl, shift));
                         }
                         if r.double_clicked() {
                             open_preview = Some(e.file.clone());
                         }
+                        r.context_menu(|ui| {
+                            let n = chosen.len().max(1);
+                            if ui
+                                .button(if n > 1 {
+                                    format!("Delete {n} tones")
+                                } else {
+                                    "Delete".to_owned()
+                                })
+                                .clicked()
+                            {
+                                delete = true;
+                                ui.close_menu();
+                            }
+                        });
                     });
                 }
             });
-        if let Some(i) = select {
-            self.select_lib_entry(i);
+
+        if let Some(col) = sort_by {
+            // Clicking the column that is already sorting turns it around.
+            self.lib_sort = if col == column {
+                (col, !ascending)
+            } else {
+                (col, true)
+            };
+        }
+        if let Some((i, ctrl, shift)) = select {
+            self.pick_lib_row(&rows, i, ctrl, shift);
+        }
+        if delete {
+            self.ask_to_delete();
         }
         if let Some(file) = open_preview {
             self.open_tone_file(&file);
+        }
+    }
+
+    /// What a click on a row means, with and without modifiers.
+    ///
+    /// Plain click picks one, command-click adds or removes one, shift-click
+    /// takes everything between here and the last plain click - the three
+    /// gestures every list in every file manager has had for thirty years.
+    fn pick_lib_row(&mut self, rows: &[usize], row: usize, ctrl: bool, shift: bool) {
+        let file = |app: &Self, i: usize| app.lib_entries[i].file_name.clone();
+        match (ctrl, shift) {
+            (true, _) => {
+                let name = file(self, row);
+                if !self.lib_chosen.remove(&name) {
+                    self.lib_chosen.insert(name);
+                }
+                self.lib_anchor = Some(row);
+            }
+            (false, true) => {
+                let anchor = self.lib_anchor.unwrap_or(row);
+                let (from, to) = (
+                    rows.iter().position(|&r| r == anchor).unwrap_or(0),
+                    rows.iter().position(|&r| r == row).unwrap_or(0),
+                );
+                let span = if from <= to { from..=to } else { to..=from };
+                self.lib_chosen = span.map(|k| file(self, rows[k])).collect();
+            }
+            _ => {
+                self.lib_chosen = [file(self, row)].into_iter().collect();
+                self.lib_anchor = Some(row);
+            }
+        }
+        self.select_lib_entry(row);
+    }
+
+    /// Work out what deleting the chosen tones would cost, and ask.
+    fn ask_to_delete(&mut self) {
+        let chosen: Vec<String> = if self.lib_chosen.is_empty() {
+            self.lib_selected
+                .map(|i| self.lib_entries[i].file_name.clone())
+                .into_iter()
+                .collect()
+        } else {
+            self.lib_chosen.iter().cloned().collect()
+        };
+        if chosen.is_empty() {
+            return;
+        }
+        // A setlist points at library files, so deleting one takes it out of
+        // every setlist that plays it. Saying which is the difference between
+        // a warning and a scare.
+        let affected: Vec<String> = library::setlists()
+            .into_iter()
+            .filter(|(_, s)| s.slots.iter().any(|slot| chosen.contains(&slot.file)))
+            .map(|(_, s)| s.name)
+            .collect();
+        self.confirm_delete = Some((chosen, affected));
+    }
+
+    /// The question, and what carrying it out does.
+    fn confirm_delete_window(&mut self, ctx: &egui::Context) {
+        let Some((chosen, affected)) = self.confirm_delete.clone() else {
+            return;
+        };
+        let mut decided = None;
+        egui::Window::new("Delete tones")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_max_width(360.0);
+                ui.label(if chosen.len() == 1 {
+                    "Delete this tone from the library?".to_owned()
+                } else {
+                    format!("Delete {} tones from the library?", chosen.len())
+                });
+                if !affected.is_empty() {
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(format!(
+                            "{} plays {}, and would lose {}.",
+                            if affected.len() == 1 { "One setlist" } else { "Setlists" },
+                            affected.join(", "),
+                            if chosen.len() == 1 { "it" } else { "them" }
+                        ))
+                        .color(theme::ACCENT),
+                    );
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("They go to the library's trash, not out of existence.")
+                        .small()
+                        .color(theme::DIM),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        decided = Some(false);
+                    }
+                    if ui.button("Delete").clicked() {
+                        decided = Some(true);
+                    }
+                });
+            });
+        match decided {
+            Some(true) => {
+                self.confirm_delete = None;
+                let Some(dir) = library::dir() else { return };
+                let mut gone = 0;
+                for file in &chosen {
+                    match library::remove(&dir.join(file)) {
+                        Ok(()) => gone += 1,
+                        Err(why) => self.note(why),
+                    }
+                }
+                self.note(format!("removed {gone} tones"));
+                self.lib_chosen.clear();
+                self.lib_selected = None;
+                self.refresh_library();
+            }
+            Some(false) => self.confirm_delete = None,
+            None => {}
         }
     }
 
