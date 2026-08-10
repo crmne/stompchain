@@ -221,10 +221,22 @@ jobs:
   crates:
     name: crates.io
     runs-on: ubuntu-latest
+    outputs:
+      # Whether both crates are on crates.io at this version by the time this
+      # job is done, however they got there. The gem is only worth publishing
+      # if they are.
+      available: ${{ steps.confirm.outputs.available }}
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+
+      # Absent rather than failed, the same way the macOS signing above treats
+      # its certificate: a release without the token still builds every binary
+      # and cuts the GitHub release, and simply does not publish.
       - name: Publish
+        if: env.CARGO_REGISTRY_TOKEN != ''
         run: |
           set -euo pipefail
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
@@ -240,12 +252,34 @@ jobs:
             # here rather than on somebody's machine.
             cargo publish -p "$crate"
           done
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Confirm both are on crates.io
+        id: confirm
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          available=true
+          for crate in hx-proto hx-catalog; do
+            if curl -sSf "https://crates.io/api/v1/crates/${crate}" \
+               | grep -q "\"num\":\"${version}\""; then
+              echo "${crate} ${version}: present"
+            else
+              echo "${crate} ${version}: missing"
+              available=false
+            fi
+          done
+          echo "available=${available}" >> "$GITHUB_OUTPUT"
+          if [ "$available" = false ]; then
+            echo "::notice::hx_ruby will not be published: its crates are not on" \
+                 "crates.io at this version. Set CARGO_REGISTRY_TOKEN to publish them."
+          fi
 
   gem:
     name: RubyGems
     needs: [crates]
+    # A gem whose crates are not published installs for nobody, so it is better
+    # not to have been published at all than to be broken on RubyGems for ever.
+    if: needs.crates.outputs.available == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -301,7 +335,7 @@ jobs:
           OWNER: ${{ github.repository_owner }}
 
       - name: Publish to RubyGems
-        if: steps.check.outputs.needed == 'true'
+        if: steps.check.outputs.needed == 'true' && env.GEM_HOST_API_KEY != ''
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.gem"
