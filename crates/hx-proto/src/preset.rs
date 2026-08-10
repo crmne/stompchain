@@ -40,6 +40,10 @@ pub struct Assignment {
     /// 0 and 1 because that is a wah's range. They are not percentages.
     pub min: f32,
     pub max: f32,
+    /// Which MIDI CC drives it, for a bypass that MIDI drives. `None` for
+    /// everything else, including a *parameter* under MIDI: that one keeps its
+    /// number somewhere the document has not been shown to carry yet.
+    pub cc: Option<i64>,
 }
 
 /// What an assignment moves.
@@ -316,8 +320,22 @@ mod key {
     pub const ASSIGNED_WHAT: i64 = 1;
     /// And inside the assignment, the block it acts on.
     pub const ASSIGNED_ON: i64 = 5;
-    /// Inside the assignment: 4 for a parameter, 0 for a block's bypass.
+    /// Inside the assignment, and it means two things depending on the shape
+    /// around it - exactly as key 71 does on the wire. **[confirmed]**
+    ///
+    /// On a *parameter* assignment it is 4, saying only that a controller is
+    /// there. On a *bypass* it is the MIDI CC number, and reading it as a kind
+    /// is what made a MIDI bypass vanish: the parser took anything but 0 for a
+    /// parameter, then found no parameter target and dropped the assignment, so
+    /// a bypass on CC 77 was invisible while one on CC 0 was not.
+    ///
+    /// Which shape it is comes from [`ASSIGNED_BYPASS`] against
+    /// [`ASSIGNED_TARGET`], not from here.
     pub const ASSIGNED_KIND: i64 = 1;
+    /// A bypass assignment points at the bypass with this, the document's copy
+    /// of the wire's key 95. Its presence is what tells a bypass from a
+    /// parameter.
+    pub const ASSIGNED_BYPASS: i64 = 9;
     /// The ends of the controller's travel, in the parameter's own units. The
     /// document is the only place these are right; opcode 36 reports the
     /// defaults forever.
@@ -670,26 +688,35 @@ impl Preset {
                 let Some(block) = what.get(key::ASSIGNED_ON).and_then(Value::as_i64) else {
                     continue;
                 };
-                // Key 1 says which kind this is: 4 for a parameter, 0 for a
-                // block's bypass, which carries the bypass target at key 9
-                // instead of a parameter index at 6.
-                let target = match what.get(key::ASSIGNED_KIND).and_then(Value::as_i64) {
-                    Some(0) => Target::Bypass,
-                    _ => match what
+                // Which shape this is comes from what it points at, not from
+                // key 1. A bypass carries the bypass target at key 9 and a
+                // parameter carries an index inside key 6; key 1 is 4 on a
+                // parameter and the *CC number* on a bypass, so reading it as
+                // a kind dropped every MIDI bypass whose CC was not 0.
+                let target = if what.get(key::ASSIGNED_BYPASS).is_some() {
+                    Target::Bypass
+                } else {
+                    match what
                         .get(key::ASSIGNED_TARGET)
                         .and_then(|t| t.get(key::ASSIGNED_PARAM))
                         .and_then(Value::as_i64)
                     {
                         Some(param) => Target::Param(param),
-                        // A kind we have not met, pointing at nothing we can
-                        // name. Better left out than shown as parameter zero.
+                        // Pointing at nothing we can name. Better left out
+                        // than shown as parameter zero.
                         None => continue,
-                    },
+                    }
                 };
+                // A bypass under MIDI says which CC drives it, in the same key
+                // that a parameter uses for something else entirely.
+                let cc = (target == Target::Bypass && source == crate::rpc::Source::MidiCc)
+                    .then(|| what.get(key::ASSIGNED_KIND).and_then(Value::as_i64))
+                    .flatten();
                 found.push(Assignment {
                     block,
                     source,
                     target,
+                    cc,
                     min: what
                         .get(key::ASSIGNED_MIN)
                         .and_then(Value::as_f32)
@@ -1378,6 +1405,99 @@ mod tests {
         assert_eq!(found[0].source, crate::rpc::Source::Footswitch(1));
         // In the parameter's own units, not a percentage.
         assert_eq!((found[0].min, found[0].max), (1.0, 4.0));
+    }
+
+    /// A MIDI bypass, exactly as the pedal wrote it into the document when
+    /// `tonepush assign 3 --cc 77` put block 2's bypass on CC 77:
+    ///
+    /// ```text
+    /// {0: 8, 1: 77, 2: nil, 3: nil, 4: 2, 5: 2, 9: 5, 10: 300, 11: false, 12: 0}
+    /// ```
+    ///
+    /// Key 1 is the CC, not a kind. Reading it as a kind took anything but 0
+    /// for a parameter, found no parameter target, and dropped the assignment -
+    /// so a bypass on CC 77 was invisible and the same bypass on CC 0 was not.
+    #[test]
+    fn a_midi_bypass_is_found_whatever_its_cc() {
+        let bypass = |cc: i64| {
+            crate::msgmap! {
+                0 => Value::Int(8),
+                key::ASSIGNED_KIND => Value::Int(cc),
+                key::ASSIGNED_MIN => Value::Nil,
+                key::ASSIGNED_MAX => Value::Nil,
+                4 => Value::Int(2),
+                key::ASSIGNED_ON => Value::Int(2),
+                key::ASSIGNED_BYPASS => Value::Int(5),
+                10 => Value::Int(300),
+                11 => Value::Bool(false),
+                12 => Value::Int(0),
+            }
+        };
+        let preset = |cc: i64| Preset {
+            sections: Vec::new(),
+            sections_width: 0,
+            slots: Vec::new(),
+            tone: crate::msgmap! {
+                key::ASSIGNMENTS => Value::Array(
+                    // Ordinal 8 is MIDI CC.
+                    (0..9).map(|o| if o == 8 {
+                        Value::Array(vec![crate::msgmap! {
+                            0 => Value::Int(1),
+                            key::ASSIGNED_WHAT => bypass(cc),
+                        }])
+                    } else {
+                        Value::Nil
+                    }).collect::<Vec<_>>()
+                ),
+            },
+        };
+
+        for cc in [0, 4, 42, 77, 127] {
+            let found = preset(cc).assignments();
+            assert_eq!(found.len(), 1, "a bypass on CC {cc} went missing");
+            assert_eq!(found[0].target, Target::Bypass);
+            assert_eq!(found[0].block, 2);
+            assert_eq!(found[0].source, crate::rpc::Source::MidiCc);
+            assert_eq!(found[0].cc, Some(cc), "and it should say which CC");
+        }
+    }
+
+    /// The other half of the same trap: on a parameter, key 1 really is the
+    /// constant 4, and reading it as a CC would report every knob as being on
+    /// CC 4.
+    #[test]
+    fn a_parameter_carries_no_cc_in_that_key() {
+        let assignment = crate::msgmap! {
+            key::ASSIGNED_KIND => Value::Int(4),
+            key::ASSIGNED_MIN => Value::Int(0),
+            key::ASSIGNED_MAX => Value::Int(1),
+            key::ASSIGNED_ON => Value::Int(1),
+            key::ASSIGNED_TARGET => crate::msgmap! {
+                28 => Value::Int(0),
+                key::ASSIGNED_PARAM => Value::Int(0),
+            },
+        };
+        let preset = Preset {
+            sections: Vec::new(),
+            sections_width: 0,
+            slots: Vec::new(),
+            tone: crate::msgmap! {
+                key::ASSIGNMENTS => Value::Array(vec![
+                    Value::Nil,
+                    Value::Array(vec![crate::msgmap! {
+                        0 => Value::Int(0),
+                        key::ASSIGNED_WHAT => assignment,
+                    }]),
+                ]),
+            },
+        };
+        let found = preset.assignments();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].target, Target::Param(0));
+        assert_eq!(
+            found[0].cc, None,
+            "4 there means a controller exists, not CC 4"
+        );
     }
 
     /// A branch with nothing on it is drawn as no lane at all, which is exactly

@@ -4173,6 +4173,9 @@ impl App {
                     // A switch is on or off; there is no travel to move.
                     min: 0.0,
                     max: 1.0,
+                    // This one came from the footswitch's own configuration,
+                    // where a MIDI CC has no place: a footswitch is not MIDI.
+                    cc: None,
                 });
             }
         }
