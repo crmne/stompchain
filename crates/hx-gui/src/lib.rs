@@ -2610,6 +2610,13 @@ impl App {
                     LibraryView::Setlists => {
                         egui::SidePanel::left("lib-setlists")
                             .resizable(true)
+                            // A floor taken from the table it holds, not
+                            // guessed. Without one the panel could be dragged
+                            // - or restored from a remembered width - down to
+                            // about a hundred pixels, where the headers sat on
+                            // top of each other and "Put this setlist on the
+                            // pedal" wrapped a word to a line.
+                            .min_width(table::width_wanted(&setlist_rail_columns()))
                             .default_width(340.0)
                             // Not wrapped in a scroll area: the table does its
                             // own scrolling, and a virtualised table inside a
@@ -2639,12 +2646,7 @@ impl App {
     fn setlist_rail(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
         let mut grid = table::Grid {
-            columns: vec![
-                table::Column::new("Setlist", 120.0).editable().fills(),
-                table::Column::new("Venue", 90.0).editable(),
-                table::Column::new("Date", 80.0).editable(),
-                table::Column::new("#", 34.0),
-            ],
+            columns: setlist_rail_columns(),
             sticky: 1,
             sort: self.lib_setlist_sort,
             menu: vec!["Remove this setlist".to_owned()],
@@ -7882,6 +7884,22 @@ struct Travel {
 }
 
 /// The bypass popup's own id, distinct from any parameter's.
+/// What the setlist rail shows about a setlist, and how wide each part is.
+///
+/// One function rather than a list written where the table is built, because
+/// the panel holding that table has to know how narrow it may be dragged. A
+/// floor stated separately is a floor that stops matching the day a column
+/// changes width, and the failure is silent: the table just starts drawing its
+/// headers over each other.
+fn setlist_rail_columns() -> Vec<table::Column> {
+    vec![
+        table::Column::new("Setlist", 120.0).editable().fills(),
+        table::Column::new("Venue", 90.0).editable(),
+        table::Column::new("Date", 80.0).editable(),
+        table::Column::new("#", 34.0),
+    ]
+}
+
 fn bypass_popup_id(block: i64) -> egui::Id {
     egui::Id::new(("bypass-assign", block))
 }

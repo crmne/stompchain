@@ -26,6 +26,21 @@ const PADDING: f32 = 8.0;
 /// has to bound the table's height has to know what a row costs.
 pub const ROW_HEIGHT: f32 = 22.0;
 
+/// The width a table of these columns wants before it starts overlapping its
+/// own headers: every column, the padding each one adds, and the scrollbar down
+/// the right.
+///
+/// Public because a panel holding a table is the thing that gets dragged, and
+/// it cannot know what it is holding unless the table says so. The setlist rail
+/// had no floor and could be squeezed to a hundred pixels, where the headers
+/// sat on top of each other and the buttons below wrapped a word to a line.
+pub fn width_wanted(columns: &[Column]) -> f32 {
+    columns.iter().map(|c| c.width).sum::<f32>() + PADDING * columns.len() as f32 + SCROLLBAR
+}
+
+/// What the table keeps clear down its right for the scrollbar.
+const SCROLLBAR: f32 = 12.0;
+
 /// What a cell holds.
 pub enum Cell {
     /// Ordinary text.
@@ -491,5 +506,23 @@ mod tests {
     #[test]
     fn an_ordinary_column_still_stops_at_the_usual_place() {
         assert_eq!(drag_ceiling(190.0), 800.0);
+    }
+
+    /// The floor a panel puts under itself has to cover what it is holding.
+    #[test]
+    fn the_width_wanted_covers_every_column_and_its_padding() {
+        let columns = vec![
+            Column::new("Setlist", 120.0),
+            Column::new("Venue", 90.0),
+            Column::new("Date", 80.0),
+            Column::new("#", 34.0),
+        ];
+        let bare: f32 = columns.iter().map(|c| c.width).sum();
+        assert!(
+            width_wanted(&columns) > bare,
+            "a floor that is only the sum of the columns leaves no room for \
+             the padding each one adds, nor for the scrollbar"
+        );
+        assert_eq!(width_wanted(&columns), 324.0 + 32.0 + 12.0);
     }
 }
