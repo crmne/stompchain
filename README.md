@@ -137,6 +137,35 @@ The CLI also decodes captured USB logs with no hardware attached:
 stompchain decode captures/01-connect-and-sync.log
 ```
 
+## The workflow
+
+The pedal is where you make a tone, because it is where you hear it. The library
+is where tones live afterwards, on your computer, outliving any slot on any
+device. A setlist is a whole pedal kept as one thing.
+
+That gives a loop worth naming:
+
+1. **Make a tone on the pedal.** Swap blocks, turn knobs, reorder the chain. The
+   editor writes the pedal's scratch buffer, so everything is audible at once
+   and nothing is permanent until you save.
+2. **Keep the ones worth keeping.** Each preset in the list has a button that
+   copies it into your library, whole: the device's own document, so the
+   snapshots and the routing come too.
+3. **Build a setlist.** Get the pedal holding the presets you want, in the order
+   you want, then Capture the pedal. That records all 126 slots and what is in
+   them.
+4. **Play it back.** One button puts a setlist onto the pedal again, or you can
+   send a single preset out of one into the slot it came from.
+
+Changing a setlist later means putting it back on the pedal, editing there,
+keeping the changed tones to the library, and capturing a new setlist. A setlist
+is not edited in place. That is deliberate: it is a record of a rig that worked
+on a particular night, and a record you can edit is not a record.
+
+Nothing in the library is a lock-in. Tones are the pedal's own preset documents
+in a plain folder, setlists are small JSON files beside them, and a tone can be
+written out as `.hlx` with its details alongside for uploading to the web.
+
 ## Layout
 
 | Crate | What it is |
