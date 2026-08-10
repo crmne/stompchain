@@ -242,6 +242,9 @@ pub struct App {
     /// The device's favourite blocks, as (index, name).
     favourites: Vec<(i64, String)>,
     current_snapshot: usize,
+    /// A preset the list wants to load while the edit buffer has changes that
+    /// are not saved. Loading discards them, so it asks.
+    confirm_switch: Option<i64>,
     /// A preset the Remove button is waiting on an answer about. Emptying a
     /// slot writes flash and there is no undo for it, so it asks first.
     confirm_clear: Option<i64>,
@@ -447,6 +450,7 @@ impl App {
             favourites: Vec::new(),
             current_snapshot: 0,
             confirm_clear: None,
+            confirm_switch: None,
             update_check: Some(update::check()),
             update_available: None,
         };
@@ -1177,6 +1181,64 @@ impl App {
         }
     }
 
+    /// Load a preset, saying so: it takes about a second, and a window that
+    /// does not change for a second looks like it missed the click.
+    fn load_preset(&mut self, index: i64) {
+        self.loading = true;
+        self.preset_index = index;
+        self.send(Cmd::SelectPreset(index));
+    }
+
+    /// Ask before a preset switch throws away unsaved changes.
+    fn confirm_switch_window(&mut self, ctx: &egui::Context) {
+        let Some(index) = self.confirm_switch else { return };
+        let going_to = self
+            .presets
+            .get(index as usize)
+            .filter(|n| !n.is_empty())
+            .cloned()
+            .unwrap_or_else(|| hx_proto::rpc::slot_label(index));
+        let mut decided = None;
+        egui::Window::new("Unsaved changes")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_max_width(340.0);
+                ui.label(format!(
+                    "“{}” has changes you have not saved. Loading {going_to} discards them.",
+                    self.preset_name
+                ));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        decided = Some(0);
+                    }
+                    if ui.button("Discard and load").clicked() {
+                        decided = Some(1);
+                    }
+                    if ui.button("Save, then load").clicked() {
+                        decided = Some(2);
+                    }
+                });
+            });
+        match decided {
+            Some(0) => self.confirm_switch = None,
+            Some(1) => {
+                self.confirm_switch = None;
+                self.load_preset(index);
+            }
+            Some(2) => {
+                self.confirm_switch = None;
+                // Save first; the worker runs them in order, so the load lands
+                // on a preset that has just been written.
+                self.send(Cmd::SavePreset);
+                self.load_preset(index);
+            }
+            _ => {}
+        }
+    }
+
     /// Put the device on a preset a menu action is about to work on.
     fn select_for_action(&mut self, index: i64) {
         if self.preset_index != index {
@@ -1489,7 +1551,6 @@ impl App {
                             self.presets.len() as i64
                         };
                         let setlist = self.setlist;
-                        let online = matches!(self.connection, Connection::Online);
                         let mut load = None;
                         let mut toggle = None;
                         let mut rename_start = None;
@@ -1515,18 +1576,24 @@ impl App {
                                 // centred on that: a text star, a drawn icon and
                                 // a label are three different heights, and left
                                 // to themselves they sat on three baselines.
-                                ui.set_min_height(24.0);
+                                ui.set_min_height(20.0);
+                                // Two icons that belong together sit together;
+                                // the default gap made them look like controls
+                                // for different things.
+                                ui.spacing_mut().item_spacing.x = 2.0;
                                 // The star leads the row, clear of the scrollbar
                                 // that overlaps the right edge and eats the click.
-                                let mark = if fav { "★" } else { "☆" };
-                                let color = if fav { theme::ACCENT } else { theme::DIM };
-                                if ui
-                                    .add_sized(
-                                        [22.0, 24.0],
-                                        egui::Button::new(RichText::new(mark).color(color))
-                                            .frame(false),
-                                    )
-                                    .on_hover_text(if fav { "Remove favorite" } else { "Favorite" })
+                                // The same kind of thing as the keep button
+                                // beside it: a drawn icon that lights under the
+                                // pointer. As a text glyph it did not read as
+                                // something you could press at all.
+                                let (mark, colour) = if fav {
+                                    (theme::Icon::StarOn, theme::ACCENT)
+                                } else {
+                                    (theme::Icon::Star, theme::DIM)
+                                };
+                                if theme::small_icon_button(ui, mark, Some(colour))
+                                    .on_hover_text(if fav { "Remove favourite" } else { "Favourite" })
                                     .clicked()
                                 {
                                     toggle = Some(index);
@@ -1535,7 +1602,7 @@ impl App {
                                 // sits on the preset - beside its own star, not
                                 // in the list's title where it could only ever
                                 // mean the loaded one.
-                                if theme::icon_button(ui, theme::Icon::Keep, online)
+                                if theme::small_icon_button(ui, theme::Icon::Keep, None)
                                     .on_hover_text("Keep this preset in the library")
                                     .clicked()
                                 {
@@ -1640,11 +1707,15 @@ impl App {
                             self.config.toggle_favorite(setlist, index);
                         }
                         if let Some(index) = load {
-                            // Loading takes about a second. Say so, or the window
-                            // sits unchanged and looks like it missed the click.
-                            self.loading = true;
-                            self.preset_index = index;
-                            self.send(Cmd::SelectPreset(index));
+                            // Selecting a preset throws away whatever is in the
+                            // edit buffer. That is the device's rule, not ours,
+                            // and it costs a person their unsaved work in
+                            // silence - so it asks first.
+                            if self.dirty && index != self.preset_index {
+                                self.confirm_switch = Some(index);
+                            } else {
+                                self.load_preset(index);
+                            }
                         }
                         if let Some((index, action)) = menu_action {
                             self.row_action(index, action);
@@ -1971,6 +2042,7 @@ impl App {
         }
         self.confirm_push_window(ctx);
         self.confirm_delete_window(ctx);
+        self.confirm_switch_window(ctx);
     }
 
     /// Every setlist in the library, by name.
@@ -2323,19 +2395,33 @@ impl App {
             .header(22.0, |mut header| {
                 for col in LibColumn::ALL {
                     header.col(|ui| {
-                        // The arrow says which column is ordering the table and
-                        // which way, and clicking a header is how you change it.
+                        // The whole cell sorts, not just the few pixels the
+                        // words cover. A header is a target the width of its
+                        // column; anything less is a game of hunt-the-arrow.
                         let arrow = if col == column {
                             if ascending { " ↑" } else { " ↓" }
                         } else {
                             ""
                         };
-                        let label = RichText::new(format!("{}{arrow}", col.title())).strong();
-                        if ui
-                            .add(egui::Button::new(label).frame(false))
-                            .on_hover_text("sort by this column")
-                            .clicked()
-                        {
+                        let size = ui.available_size();
+                        let (rect, hit) = ui.allocate_exact_size(size, egui::Sense::click());
+                        if ui.is_rect_visible(rect) {
+                            if hit.hovered() {
+                                ui.painter().rect_filled(
+                                    rect,
+                                    egui::Rounding::same(3.0),
+                                    egui::Color32::from_rgb(0x25, 0x29, 0x31),
+                                );
+                            }
+                            ui.painter().text(
+                                rect.left_center() + egui::vec2(4.0, 0.0),
+                                egui::Align2::LEFT_CENTER,
+                                format!("{}{arrow}", col.title()),
+                                egui::TextStyle::Body.resolve(ui.style()),
+                                if col == column { theme::ACCENT } else { theme::TEXT },
+                            );
+                        }
+                        if hit.on_hover_text("sort by this column").clicked() {
                             sort_by = Some(col);
                         }
                     });
@@ -2359,7 +2445,15 @@ impl App {
                                 } else {
                                     RichText::new(text)
                                 };
-                                ui.add(egui::Label::new(text).selectable(false));
+                                ui.add(
+                                    egui::Label::new(text)
+                                        .selectable(false)
+                                        // Truncated, not wrapped: a wrapped
+                                        // name makes one row twice the height
+                                        // of its neighbours and the table
+                                        // ripples.
+                                        .truncate(),
+                                );
                             });
                         }
                         let r = row.response();

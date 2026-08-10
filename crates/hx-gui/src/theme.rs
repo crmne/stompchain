@@ -174,8 +174,10 @@ const UI_ICONS: &[(Icon, &str, &[u8])] = ui_icons! {
     Paste => "clipboard-paste",
     Remove => "trash-2",
     Gear => "settings",
-    Sliders => "sliders-horizontal",
+    Sliders => "sliders-vertical",
     Keep => "import",
+    Star => "star",
+    StarOn => "star-on",
 };
 
 /// Hand the icons to egui's loaders, once, so they can be drawn by URI like any
@@ -329,6 +331,8 @@ pub enum Icon {
     Gear,
     Sliders,
     Keep,
+    Star,
+    StarOn,
 }
 
 impl Icon {
@@ -349,7 +353,34 @@ impl Icon {
 /// quiet group until you go looking — the header should show the preset, not
 /// an inventory of the program.
 pub fn icon_button(ui: &mut Ui, icon: Icon, enabled: bool) -> Response {
-    const BOX: f32 = 24.0;
+    tinted_icon_button(ui, icon, enabled, None)
+}
+
+/// The same, in a colour of its own - what a favourite star needs, since being
+/// on is a state rather than a hover.
+pub fn tinted_icon_button(
+    ui: &mut Ui,
+    icon: Icon,
+    enabled: bool,
+    tint: Option<Color32>,
+) -> Response {
+    sized_icon_button(ui, icon, enabled, tint, 24.0)
+}
+
+/// A smaller one, for a list row - where a 24-pixel target next to 13-pixel
+/// text is the loudest thing on the line.
+pub fn small_icon_button(ui: &mut Ui, icon: Icon, tint: Option<Color32>) -> Response {
+    sized_icon_button(ui, icon, true, tint, 18.0)
+}
+
+fn sized_icon_button(
+    ui: &mut Ui,
+    icon: Icon,
+    enabled: bool,
+    tint: Option<Color32>,
+    box_: f32,
+) -> Response {
+    let side = box_;
     // Sensing hover only, when off, is what makes the button unclickable: a
     // hand-allocated widget has no `add_enabled` to fall back on, and a
     // greyed-out icon that still fires is worse than one that is not greyed.
@@ -358,14 +389,14 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, enabled: bool) -> Response {
     } else {
         Sense::hover()
     };
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(BOX), sense);
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), sense);
     if ui.is_rect_visible(rect) {
-        let colour = if !enabled {
-            DIM.gamma_multiply(0.4)
-        } else if response.hovered() {
-            ACCENT
-        } else {
-            TEXT
+        let colour = match tint {
+            _ if !enabled => DIM.gamma_multiply(0.4),
+            Some(own) if !response.hovered() => own,
+            _ if response.hovered() => ACCENT,
+            Some(own) => own,
+            None => TEXT,
         };
         if enabled && response.hovered() {
             ui.painter().rect_filled(
@@ -377,7 +408,7 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, enabled: bool) -> Response {
         // The glyph sits inside the hit box, so neighbours do not crowd it.
         // Drawn through the image loader like every other icon, which is what
         // keeps this row and the category chips the same weight.
-        let inset = egui::Rect::from_center_size(rect.center(), Vec2::splat(BOX - 7.0));
+        let inset = egui::Rect::from_center_size(rect.center(), Vec2::splat(side - 5.0));
         Art::whole(icon.uri().to_owned()).paint(ui, inset, colour);
     }
     response
