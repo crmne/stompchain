@@ -136,7 +136,9 @@ static PLACES: std::sync::Mutex<Option<(PathBuf, BTreeMap<String, PathBuf>)>> =
 /// Read every object and remember where it is.
 fn rescan() -> BTreeMap<String, PathBuf> {
     let mut found = BTreeMap::new();
-    let Some(dir) = objects_dir() else { return found };
+    let Some(dir) = objects_dir() else {
+        return found;
+    };
     let Ok(read) = std::fs::read_dir(&dir) else {
         return found;
     };
@@ -152,8 +154,7 @@ fn rescan() -> BTreeMap<String, PathBuf> {
         // object's portable copy, not an object of its own. It hashes to
         // something different, because it is a different file, and counting it
         // as a tone would make the store look like it held twice what it does.
-        if path.extension().is_some_and(|e| e == "hlx")
-            && path.with_extension("hxpreset").is_file()
+        if path.extension().is_some_and(|e| e == "hlx") && path.with_extension("hxpreset").is_file()
         {
             continue;
         }
@@ -308,16 +309,16 @@ pub struct Meta {
     pub name: String,
     pub description: String,
     pub tags: Vec<String>,
-    pub character: String,          // clean / drive / hi-gain / fuzz / other
+    pub character: String, // clean / drive / hi-gain / fuzz / other
     pub genres: Vec<String>,
     pub artist: String,
     pub song: String,
-    pub part: String,               // rhythm / lead / clean / ...
+    pub part: String, // rhythm / lead / clean / ...
     pub guitar: String,
     pub pickup_type: String,        // single-coil / humbucker / P90
     pub pickup_electronics: String, // passive / active
     pub tuning: String,
-    pub gain: String,               // a 1-10 feel, kept free-form for now
+    pub gain: String, // a 1-10 feel, kept free-form for now
 }
 
 /// The library index: which objects the library claims, and what it calls them.
@@ -892,7 +893,9 @@ pub fn tidy_names() -> usize {
     let names = known_names();
     let mut moved = 0;
     for (hash, path) in rescan() {
-        let Some(name) = names.get(&hash) else { continue };
+        let Some(name) = names.get(&hash) else {
+            continue;
+        };
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
@@ -1071,7 +1074,11 @@ fn recover(dir: &Path, file: &str) -> Option<String> {
         .and_then(|e| e.to_str())
         .unwrap_or("hxpreset")
         .to_ascii_lowercase();
-    let stem = found.file_stem().and_then(|s| s.to_str()).unwrap_or("tone").to_owned();
+    let stem = found
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("tone")
+        .to_owned();
     store(&stem, &std::fs::read(found).ok()?, &ext).ok()
 }
 
@@ -1160,7 +1167,9 @@ mod tests {
         let (second, how) = keep("blackened", "hxpreset", b"two").unwrap();
         assert_eq!(
             how,
-            Keeping::NameTaken { holder: "Blackened".into() },
+            Keeping::NameTaken {
+                holder: "Blackened".into()
+            },
             "the name is matched however it is typed"
         );
         assert_ne!(first, second);
@@ -1214,7 +1223,12 @@ mod tests {
 
         // Edit the tone: new bytes, new hash, and Override takes the name.
         let (edited, how) = keep("Blackened", "hxpreset", b"august").unwrap();
-        assert_eq!(how, Keeping::NameTaken { holder: "Blackened".into() });
+        assert_eq!(
+            how,
+            Keeping::NameTaken {
+                holder: "Blackened".into()
+            }
+        );
         override_with(&played, &edited, "Blackened").unwrap();
 
         assert_eq!(read(&played).unwrap(), b"march", "the gig is untouched");
@@ -1263,7 +1277,10 @@ mod tests {
     #[test]
     fn saving_a_setlist_again_replaces_it() {
         let _scratch = Scratch::new("setlist-replace");
-        let mut setlist = Setlist { name: "Summer Tour".into(), ..Default::default() };
+        let mut setlist = Setlist {
+            name: "Summer Tour".into(),
+            ..Default::default()
+        };
         save_setlist(&setlist).unwrap();
         setlist.venue = "Melkweg".into();
         save_setlist(&setlist).unwrap();
@@ -1335,7 +1352,10 @@ mod tests {
             "and is still not in the library"
         );
 
-        assert!(!dir.join("Blackened.hxpreset").exists(), "the originals are gone");
+        assert!(
+            !dir.join("Blackened.hxpreset").exists(),
+            "the originals are gone"
+        );
         assert!(!dir.join(".setlists").exists());
         assert_eq!(migrate(), 0, "and running it again finds nothing to do");
     }
@@ -1386,14 +1406,26 @@ mod tests {
         let (hash, _) = keep("DIR:USDoubleNrm", "hxpreset", b"one").unwrap();
         let path = object_path(&hash).unwrap();
         let name = path.file_name().unwrap().to_str().unwrap();
-        assert_eq!(name, format!("DIR_USDoubleNrm {} .hxpreset", short(&hash)).replace(" .", "."));
+        assert_eq!(
+            name,
+            format!("DIR_USDoubleNrm {} .hxpreset", short(&hash)).replace(" .", ".")
+        );
         assert!(!name.contains(':'), "a colon cannot reach the filesystem");
 
         // Renaming the tone renames the file, or the folder goes stale.
         adopt(&hash, "Blackened").unwrap();
         let path = object_path(&hash).unwrap();
-        assert!(path.file_name().unwrap().to_str().unwrap().starts_with("Blackened "));
-        assert_eq!(read(&hash).unwrap(), b"one", "and it is still the same tone");
+        assert!(path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("Blackened "));
+        assert_eq!(
+            read(&hash).unwrap(),
+            b"one",
+            "and it is still the same tone"
+        );
 
         // Two tones of the same name are told apart by the hash, not by a
         // number nobody could interpret.
@@ -1421,7 +1453,10 @@ mod tests {
         attach_portable(&hash, "{\"tone\": true}").unwrap();
         assert!(has_portable(&hash));
         let beside = object_path(&hash).unwrap().with_extension("hlx");
-        assert_eq!(std::fs::read_to_string(&beside).unwrap(), "{\"tone\": true}");
+        assert_eq!(
+            std::fs::read_to_string(&beside).unwrap(),
+            "{\"tone\": true}"
+        );
 
         // The pair is one tone, not two, and stays a pair through a rename.
         assert_eq!(entries().len(), 1);
@@ -1459,10 +1494,19 @@ mod tests {
         assert_eq!(json["tags"][0], "thrash");
 
         // Nothing typed, nothing sent - and no song makes it an original.
-        let bare = Meta { pickup_type: "mystery".into(), ..Default::default() };
+        let bare = Meta {
+            pickup_type: "mystery".into(),
+            ..Default::default()
+        };
         let json = bare.for_the_web("Untitled");
-        assert!(json.get("pickup_type").is_none(), "an unmappable pickup is left out");
-        assert!(json.get("description").is_none(), "empty fields are left out");
+        assert!(
+            json.get("pickup_type").is_none(),
+            "an unmappable pickup is left out"
+        );
+        assert!(
+            json.get("description").is_none(),
+            "empty fields are left out"
+        );
         assert_eq!(json["kind"], "original");
     }
 

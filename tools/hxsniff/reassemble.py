@@ -7,7 +7,7 @@ Within a channel the payload begins with its own 8-byte header:
 
     +0  u16   sequence number
     +2  u16   message type   (bit 0x04 carries data, 0x08 is a bare acknowledgement)
-    +4  u32   acknowledgement — bytes received so far from the peer
+    +4  u32   acknowledgement - bytes received so far from the peer
 
 Everything after that is a byte stream that is chunked arbitrarily across USB
 messages, so it has to be concatenated per channel before it can be parsed.
@@ -121,8 +121,8 @@ class MsgPack:
     def str(self, n):
         s = self.raw(n)
         # Line 6 stores C strings, so the declared length includes the NUL.
-        # The same string type is also used for opaque blobs — notably the
-        # preset body, which is itself a MessagePack document — so anything
+        # The same string type is also used for opaque blobs - notably the
+        # preset body, which is itself a MessagePack document - so anything
         # that is not clean text is handed back as bytes for the caller to
         # re-parse rather than being mangled into replacement characters.
         body = s.rstrip(b"\0")

@@ -139,7 +139,7 @@ fn categories(dir: &Path, models: &HashMap<String, Model>) -> Result<Vec<Categor
             } else {
                 c.short_name.clone()
             };
-            // "0xf5901e" — a hex string, not a number. A category with no
+            // "0xf5901e" - a hex string, not a number. A category with no
             // colour falls back to plain white rather than black, which would
             // be indistinguishable from an unpainted block.
             let colour =
@@ -172,7 +172,7 @@ fn categories(dir: &Path, models: &HashMap<String, Model>) -> Result<Vec<Categor
 
 /// Rebuild the Amp+Cab category, which `HX_ModelCatalog.json` does not carry.
 ///
-/// The file numbers its categories 0-9 and then jumps to 11 — there is no 10 —
+/// The file numbers its categories 0-9 and then jumps to 11 - there is no 10 -
 /// yet `icons_category` ships `FX_HX_Category_Amp+Cab.png` and HX Edit shows
 /// the category between Wah and Amp. What it lists is not a separate set of
 /// models: every amp in `amp.models` carries a `cablink` naming the cab it
@@ -238,7 +238,7 @@ struct RawCategory {
     image: Option<String>,
     #[serde(default, rename = "shortName")]
     short_name: String,
-    /// Written as a hex string — "0xf5901e" — not a number.
+    /// Written as a hex string - "0xf5901e" - not a number.
     #[serde(default)]
     color: String,
     #[serde(default)]
@@ -291,8 +291,8 @@ struct RawModel {
 
 /// Parameters come through as a raw map rather than a struct.
 ///
-/// Two reasons. Some entries in Line 6's files repeat a key — `distortion.models`
-/// has a parameter with two `assign` fields — which a derived deserialiser
+/// Two reasons. Some entries in Line 6's files repeat a key - `distortion.models`
+/// has a parameter with two `assign` fields - which a derived deserialiser
 /// rejects outright; taking the last value is both tolerant and obviously
 /// right. And bounds are written as whichever type suits the parameter, so
 /// `false`/`true` for a switch and numbers for a knob, which one lenient

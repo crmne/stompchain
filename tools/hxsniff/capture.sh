@@ -379,7 +379,7 @@ enums)
 #
 # The backup capture showed 803 objects going past with nothing to tell them
 # apart. Restore lets you tick what to put back, so restoring one kind at a
-# time is the partition — and restoring a backup you took minutes earlier is
+# time is the partition - and restoring a backup you took minutes earlier is
 # the same data going back, which costs the pedal nothing.
 partition)
     step "partition/connect" "Wait for HX Edit to finish connecting to the pedal."

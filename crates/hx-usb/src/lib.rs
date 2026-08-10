@@ -34,7 +34,7 @@ pub enum Error {
     NotFound,
     #[error(
         "could not claim interface 0 ({0}).\n\
-         If HX Edit is running, quit it — it holds the interface exclusively.\n\
+         If HX Edit is running, quit it - it holds the interface exclusively.\n\
          If nothing is running, the device is wedged: disconnect its 9V adapter \
          for a few seconds. A USB replug is not enough, because the unit is \
          externally powered and keeps its session across re-enumeration."
@@ -83,14 +83,14 @@ struct Channel {
     rx_bytes: u32,
     /// How much of `rx_bytes` the device has been told about. It paces itself
     /// by the difference, so a channel that is never acknowledged eventually
-    /// stops the device dead — including the channels nobody is waiting on.
+    /// stops the device dead - including the channels nobody is waiting on.
     acked: u32,
     reader: StreamReader,
     txn: i64,
 }
 
 impl Channel {
-    /// Acknowledgements do not start at zero — the host advertises a base of
+    /// Acknowledgements do not start at zero - the host advertises a base of
     /// 0x1000 and adds the bytes it has consumed. Sending a bare byte count
     /// makes the device stop responding.
     const ACK_BASE: u32 = 0x1000;
@@ -131,7 +131,7 @@ pub struct Session {
     /// A stream message that is only half-sent leaves the device waiting for
     /// bytes that will never arrive, and it then refuses new sessions until its
     /// power is pulled. Once that has happened there is nothing useful left to
-    /// do on this session, and continuing to write only digs deeper — so the
+    /// do on this session, and continuing to write only digs deeper - so the
     /// session refuses further work and says why.
     poisoned: Option<String>,
     pub profile: DeviceProfile,
@@ -190,7 +190,7 @@ impl Found {
     /// Open the device and bring every channel up.
     ///
     /// Retried once, because the device ignores a fresh session's opening
-    /// handshake on almost exactly every other attempt — a deterministic
+    /// handshake on almost exactly every other attempt - a deterministic
     /// alternation we have not explained. Opening again clears it.
     ///
     /// This belongs here rather than in each caller: it was in the CLI for a
@@ -270,7 +270,7 @@ impl Found {
             .map_err(|e| Error::Usb(e.to_string()))?;
 
         // The device keeps per-channel state, and a client that exits without
-        // closing leaves the endpoints holding stale data — which made every
+        // closing leaves the endpoints holding stale data - which made every
         // other session start out of phase. Clearing halts and draining gives
         // each session a known-clean starting point.
         let _ = ep_out.clear_halt().wait();
@@ -329,8 +329,8 @@ impl Session {
         for id in ChannelId::ALL {
             // The control channel is opened twice: once for service 5, then
             // again from scratch for service 2, which is where its requests
-            // ride. It is a full second handshake — sequence restarting at
-            // zero — not a second service opened on the same one. Doing it the
+            // ride. It is a full second handshake - sequence restarting at
+            // zero - not a second service opened on the same one. Doing it the
             // latter way silently breaks every channel.
             for (n, &service) in services(id).iter().enumerate() {
                 if n > 0 {
@@ -408,14 +408,14 @@ impl Session {
     /// A client that exits without closing leaves its channels running, and the
     /// device keeps acknowledging into a buffer nobody is reading. That backlog
     /// survives process restarts and even a device power cycle, because it is
-    /// queued on the host — so the next session reads thousands of stale
+    /// queued on the host - so the next session reads thousands of stale
     /// acknowledgements instead of its own handshake reply and concludes the
     /// device is dead.
     ///
     /// Draining continues until reads time out, not until the interesting
     /// messages stop: acknowledgements carry no data, and an earlier version
     /// that watched only for data gave up with the queue still full. A
-    /// zero-length transfer counts as activity — the device does send them, so
+    /// zero-length transfer counts as activity - the device does send them, so
     /// treating one as silence would end the drain early.
     ///
     /// It is bounded, though. An unbounded drain kept the endpoint under
@@ -483,7 +483,7 @@ impl Session {
 
     /// Take the next sequence number and current acknowledgement for a channel.
     ///
-    /// Channels stay in the map throughout — an earlier version removed them
+    /// Channels stay in the map throughout - an earlier version removed them
     /// while a request was in flight, which silently discarded every byte the
     /// device sent back because routing could no longer find the channel.
     fn tick(&mut self, id: ChannelId) -> Result<(u16, u32)> {
@@ -516,7 +516,7 @@ impl Session {
     /// Bytes of stream data per frame.
     ///
     /// The device chunks its own large transfers at 256 and will not accept a
-    /// single oversized frame — an 8 KB impulse response sent whole simply
+    /// single oversized frame - an 8 KB impulse response sent whole simply
     /// times out. Matching its size is the safe choice.
     const CHUNK: usize = 256;
 
@@ -559,7 +559,7 @@ impl Session {
 
             // Read between chunks on a long send. The device paces us with
             // acknowledgements, and writing a whole impulse response blind
-            // fills its receive window and stalls the endpoint — the transfer
+            // fills its receive window and stalls the endpoint - the transfer
             // then times out with nothing obviously wrong. HX Edit interleaves
             // the same way. One chunk needs none of this, so skip it there.
             if n + 1 < chunks.len() {
@@ -571,7 +571,7 @@ impl Session {
 
     /// Send a deferred request and wait for the device to finish it.
     ///
-    /// Select-preset, write-preset and IR upload answer status 1 — accepted —
+    /// Select-preset, write-preset and IR upload answer status 1 - accepted -
     /// and complete afterwards, announcing the completion as notification 20
     /// carrying the same transaction. HX Edit will not start the next such
     /// operation until that notification arrives; fourteen consecutive undo
@@ -609,7 +609,7 @@ impl Session {
             self.ack_idle_channels(id)?;
         }
         // No announcement inside the budget. That does not mean the device is
-        // stuck — not every deferred operation emits notification 20, and
+        // stuck - not every deferred operation emits notification 20, and
         // select-preset frequently does not. What the caller actually needs is
         // for the device to be free again, so ask it something cheap and take
         // an answer as proof. Only silence here is a real failure.
@@ -651,7 +651,7 @@ impl Session {
     ///
     /// A timeout is reported, not retried. An earlier version answered failures
     /// by re-running the whole handshake up to four times, which meant sending
-    /// fresh HELLO frames on channels the device already had open — and every
+    /// fresh HELLO frames on channels the device already had open - and every
     /// failure amplified into a burst of them. That correlated with the device
     /// locking up hard enough to need its power pulled, so the retry is gone.
     /// If a request goes unanswered the honest thing is to say so and let the
@@ -724,13 +724,13 @@ impl Session {
                     if t == txn {
                         // Key 103 is not a plain error code. A successful
                         // select-preset answers with 1 and a nil result, while
-                        // a preset read answers with 0 and a blob — HX Edit
+                        // a preset read answers with 0 and a blob - HX Edit
                         // sees the same values. Since no value is known to mean
                         // failure, the status is reported rather than judged.
                         // 0 is done and 1 is accepted-completes-later; 255 is
                         // the device refusing, with a signed error code under
                         // key 111 (-3 bad reference, -46 bad snapshot, -302
-                        // unknown model — the map is in PROTOCOL.md). Statuses
+                        // unknown model - the map is in PROTOCOL.md). Statuses
                         // were unjudged for a long time because every value HX
                         // Edit's own traffic shows is 0 or 1; the refusals only
                         // appeared once we sent deliberately bad requests.
@@ -750,7 +750,7 @@ impl Session {
             if got {
                 self.ack_channel(id)?;
             }
-            // And the channels nobody is waiting on need it too — see
+            // And the channels nobody is waiting on need it too - see
             // `ack_idle_channels`.
             self.ack_idle_channels(id)?;
         }
@@ -802,13 +802,13 @@ impl Session {
     /// anyone asked, and we never send anything back, so its acknowledgement
     /// never advances. The device paces itself by that number, and once the
     /// unacknowledged bytes pile up high enough it stops accepting writes
-    /// altogether — the lock-up that needed the 9V adapter pulled. It looked
+    /// altogether - the lock-up that needed the 9V adapter pulled. It looked
     /// count-based because it was: every preset write pushes another burst of
     /// notifications nobody was acknowledging.
     ///
     /// The busy channel is deliberately excluded. Acknowledging it here as
     /// well, on top of the acknowledgement its own frames already carry, burns
-    /// a sequence number mid-transaction and desynchronises the stream — which
+    /// a sequence number mid-transaction and desynchronises the stream - which
     /// wedges the device faster than the problem being fixed.
     fn ack_idle_channels(&mut self, busy: ChannelId) -> Result<()> {
         for id in ChannelId::ALL {
@@ -866,7 +866,7 @@ impl Session {
     ///
     /// A select is deferred and frequently completes unannounced, and the
     /// device answers ordinary questions while the switch is still in
-    /// flight — so "it answers again" is not "it finished". Starting the
+    /// flight - so "it answers again" is not "it finished". Starting the
     /// next select inside that window stacks racing commits, and the device
     /// jams for good after roughly a dozen; browsing quickly through a
     /// setlist wedged a unit exactly that way. The one honest completion
@@ -1003,7 +1003,7 @@ impl Session {
 /// The field accompanying an IR upload: the samples summed as little-endian
 /// 32-bit words, wrapping.
 ///
-/// Not a CRC, which cost some time to establish — two captured uploads were
+/// Not a CRC, which cost some time to establish - two captured uploads were
 /// checked against CRC-32, Adler-32, byte sum and length before this plain
 /// word sum reproduced both exactly.
 /// The word-sum checksum opcode 9 carries (key 113): wrapping sum of LE u32s.
@@ -1022,7 +1022,7 @@ impl Drop for Session {
     /// A captured clean quit shows the actual teardown: acknowledge whatever
     /// is outstanding, send a bare type-0x02 (HELLO) frame on each channel,
     /// collect the device's answering HELLOs, release the interface. The 0x02
-    /// message is a session boundary marker, not just an opening handshake —
+    /// message is a session boundary marker, not just an opening handshake -
     /// it appears at both ends of the conversation. A session that vanishes
     /// without this is what leaves the device refusing new connections until
     /// its power is pulled.
@@ -1039,7 +1039,7 @@ impl Drop for Session {
             }
         }
         // No closing handshake. HX Edit sends a bare type-0x02 frame per
-        // channel when it quits, and this used to imitate that — but the
+        // channel when it quits, and this used to imitate that - but the
         // capture behind it turned out to record HX Edit failing against an
         // already-wedged device, so it was never evidence of a clean teardown.
         // Sending it per session, rather than once when an application exits,

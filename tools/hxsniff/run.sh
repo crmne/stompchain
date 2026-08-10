@@ -3,7 +3,7 @@
 #
 # The shipped app is signed with the hardened runtime and library validation,
 # both of which make dyld ignore DYLD_INSERT_LIBRARIES. We therefore work on a
-# *copy* — the installed app is never touched — strip its signature, and re-sign
+# *copy* - the installed app is never touched - strip its signature, and re-sign
 # it ad-hoc, which drops the runtime flag and re-enables insertion.
 set -euo pipefail
 
@@ -23,7 +23,7 @@ clang -arch arm64 -O2 -dynamiclib \
     "$SRC_APP/Contents/MacOS/libusb-1.0.0.dylib"
 
 # We link against the *bundled* libusb so our calls to the real functions bind
-# to the very same image HX Edit loads rather than a second Homebrew copy — two
+# to the very same image HX Edit loads rather than a second Homebrew copy - two
 # live libusb contexts over one device would not end well. The bundled dylib's
 # install name is the bare "libusb-1.0.0.dylib", but HX Edit loads it as
 # "@executable_path/../MacOS/libusb-1.0.0.dylib"; dyld keys images by that

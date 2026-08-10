@@ -16,27 +16,27 @@
 //!                 12: {…the cab's values…}}}
 //! ```
 //!
-//! and every field of it can be read off a `.hlx` except two — the engine class
-//! and that second count `n'` — which is what [`Catalog::type_tag`] and
+//! and every field of it can be read off a `.hlx` except two - the engine class
+//! and that second count `n'` - which is what [`Catalog::type_tag`] and
 //! [`Catalog::value_count_2`] exist for. See PROTOCOL.md.
 //!
 //! **The pedal will not take what this produces.** Checked on hardware: a
 //! document rebuilt from its own symbolic form, with a chain identical to the
 //! original block for block and value for value, is written and read back
-//! empty. A `.hlx` does not record how each number was encoded — the same 1.0
-//! is an integer in one preset and a float in another — and the document
+//! empty. A `.hlx` does not record how each number was encoded - the same 1.0
+//! is an integer in one preset and a float in another - and the document
 //! carries a table of byte offsets into itself, so the wrong tag width is fatal
 //! rather than cosmetic. This is the same failure the parser's own notes
 //! describe: re-encode a wide tag narrow and "the device reads the result as
 //! empty".
 //!
 //! So this is for reading a `.hxb` into something inspectable, and for building
-//! tones offline — not for restoring onto a pedal. Restoring goes through
+//! tones offline - not for restoring onto a pedal. Restoring goes through
 //! `.hxbundle`, which keeps the device's own bytes and cannot lose their shape.
 //!
 //! This writes slots into an existing document rather than inventing one from
-//! nothing. A preset carries a great deal besides its chain — a section table
-//! of byte offsets into itself, snapshot state, footswitch assignments — and
+//! nothing. A preset carries a great deal besides its chain - a section table
+//! of byte offsets into itself, snapshot state, footswitch assignments - and
 //! the honest way to get those right is to start from a document the device
 //! wrote and replace the part being described.
 
@@ -47,7 +47,7 @@ use hx_proto::Preset;
 
 use crate::Catalog;
 
-/// Wire keys, named. These mirror `hx_proto::preset::key`, which is private —
+/// Wire keys, named. These mirror `hx_proto::preset::key`, which is private -
 /// deliberately, since nothing outside the parser should be reading a document
 /// by hand. Writing one is the exception that earns them.
 mod key {
@@ -83,7 +83,7 @@ pub struct Built {
 ///
 /// `preset` supplies everything the JSON does not: the section table, the
 /// snapshot section, the endpoints and the junctions. Pass a document the
-/// device wrote — an empty preset is the natural template.
+/// device wrote - an empty preset is the natural template.
 ///
 /// Blocks land in the order the document names them, `block0` first, into the
 /// slots the template keeps for them. A block that will not resolve is reported
@@ -144,7 +144,9 @@ pub fn slots_from_hlx(preset: &mut Preset, document: &Json, catalog: &Catalog) -
 
         let mut free = run.iter().copied();
         for (_, block_key) in named {
-            let Some(node) = dsp.get(&block_key) else { continue };
+            let Some(node) = dsp.get(&block_key) else {
+                continue;
+            };
             // Where the block sat, said one of two ways. `@slot` is ours and is
             // the device's own index. `@path` and `@position` are HX Edit's:
             // the branch, and the place along that branch's row, which is not
@@ -164,7 +166,7 @@ pub fn slots_from_hlx(preset: &mut Preset, document: &Json, catalog: &Catalog) -
                 skipped.push(format!("{block_key}: the chain has no room left"));
                 continue;
             };
-            // Whose cab it is, said rather than guessed — two ways again. HX
+            // Whose cab it is, said rather than guessed - two ways again. HX
             // Edit has the amp name its cab node, `"@cab": "cab0"`; ours has
             // the cab name the amp's slot. Either beats counting cabs against
             // amps and hoping the k-th is the k-th.
@@ -194,13 +196,18 @@ pub fn slots_from_hlx(preset: &mut Preset, document: &Json, catalog: &Catalog) -
 
         // The wiring is the template's, not the file's. A `.hlx` says which
         // kind of split it has and where it attaches, and writing either would
-        // mean building a junction slot rather than a block — a different shape
+        // mean building a junction slot rather than a block - a different shape
         // this does not make. Where the two disagree, say so: a Y read as an
         // A/B divides the signal differently, and a chain that quietly kept the
         // wrong one is worse than one that says it did.
-        let Some(path) = layout.paths.get(dsp_index) else { continue };
+        let Some(path) = layout.paths.get(dsp_index) else {
+            continue;
+        };
         for (node_key, junction) in [("split", path.split), ("join", path.join)] {
-            let Some(wanted) = dsp.get(node_key).and_then(|n| n.get("@model")).and_then(Json::as_str)
+            let Some(wanted) = dsp
+                .get(node_key)
+                .and_then(|n| n.get("@model"))
+                .and_then(Json::as_str)
             else {
                 continue;
             };
@@ -226,7 +233,7 @@ pub fn slots_from_hlx(preset: &mut Preset, document: &Json, catalog: &Catalog) -
 /// Turn a whole `.hxb` backup into documents ready for the pedal.
 ///
 /// This is what makes `.hxb` a format TonePush can *restore* rather than only
-/// write. A bundle stores its presets as symbolic JSON — HX Edit's own choice —
+/// write. A bundle stores its presets as symbolic JSON - HX Edit's own choice -
 /// so putting one back has always needed this direction, and until now the only
 /// route was rebuilding a tone through parameter edits, which loses whatever
 /// the editor does not model.
@@ -304,10 +311,7 @@ fn build_slot(node: &Json, cab: Option<&Json>, catalog: &Catalog) -> Result<Valu
         None => None,
     };
 
-    let enabled = node
-        .get("@enabled")
-        .and_then(Json::as_bool)
-        .unwrap_or(true);
+    let enabled = node.get("@enabled").and_then(Json::as_bool).unwrap_or(true);
     let type_tag = catalog
         .type_tag(model, paired.is_some())
         .ok_or_else(|| format!("no engine class for {symbol_name}"))?;
@@ -353,7 +357,7 @@ fn build_slot(node: &Json, cab: Option<&Json>, catalog: &Catalog) -> Result<Valu
 /// A block node's values, in the order the device indexes them.
 ///
 /// A parameter the document does not mention keeps the catalog's default rather
-/// than becoming zero — for a knob like Master that is the difference between a
+/// than becoming zero - for a knob like Master that is the difference between a
 /// preset and a silent one. The values the symbol table does not name follow the
 /// named ones; `to_hlx` keeps them under `@unnamed`, and a file from HX Edit
 /// will not have them.
@@ -371,7 +375,7 @@ fn values_for(symbol: &crate::Symbol, node: &Json, catalog: &Catalog) -> Vec<f32
 
 /// Which firmware symbol a `@model` names.
 ///
-/// A `.hlx` writes the *shared* model id — `HD2_DistMinotaur` — where the
+/// A `.hlx` writes the *shared* model id - `HD2_DistMinotaur` - where the
 /// firmware has a mono symbol and a stereo one, each with its own wire number
 /// and its own parameter list. The name alone therefore does not say which, and
 /// picking the first would silently turn every stereo block mono.

@@ -1,8 +1,8 @@
 //! Is there a newer TonePush than the one running?
 //!
 //! The check is a courtesy, not a feature: it asks GitHub once at startup, off
-//! the UI thread, and if the answer does not arrive — no network, rate limited,
-//! GitHub down — nothing is said. An editor that nags about its own version
+//! the UI thread, and if the answer does not arrive - no network, rate limited,
+//! GitHub down - nothing is said. An editor that nags about its own version
 //! while you are trying to hear a preset has its priorities wrong.
 
 use std::sync::mpsc::{channel, Receiver};
@@ -33,7 +33,7 @@ pub fn check() -> Receiver<String> {
 }
 
 /// The `tag_name` of the newest release, or nothing if the question could not
-/// be answered. Every failure here is the same failure — say nothing.
+/// be answered. Every failure here is the same failure - say nothing.
 fn latest_tag() -> Option<String> {
     let body = ureq::get(LATEST)
         // GitHub rejects requests without one, and the honest answer is more
@@ -53,7 +53,7 @@ fn latest_tag() -> Option<String> {
 /// Whether `tag` names a version after `ours`.
 ///
 /// Tags are compared as the three numbers they are, so `v0.10.0` beats
-/// `v0.9.0` — which a string comparison gets backwards. Anything that will not
+/// `v0.9.0` - which a string comparison gets backwards. Anything that will not
 /// parse as three numbers is treated as not newer, because guessing about
 /// versions is how an editor ends up telling people to downgrade.
 fn newer(tag: &str, ours: &str) -> bool {
@@ -67,10 +67,7 @@ fn newer(tag: &str, ours: &str) -> bool {
 /// off first: a prerelease of a version is close enough to it for this.
 fn parts(version: &str) -> Option<(u64, u64, u64)> {
     let trimmed = version.trim().trim_start_matches(['v', 'V']);
-    let core = trimmed
-        .split(['-', '+'])
-        .next()
-        .filter(|s| !s.is_empty())?;
+    let core = trimmed.split(['-', '+']).next().filter(|s| !s.is_empty())?;
     let mut fields = core.split('.');
     let major = fields.next()?.parse().ok()?;
     let minor = fields.next().unwrap_or("0").parse().ok()?;

@@ -139,7 +139,9 @@ pub fn to_hlx(preset: &Preset, catalog: &Catalog, name: &str) -> Written {
     // what this writer used to produce.
     let layout = preset.layout();
     for (index, dsp_path) in layout.paths.iter().enumerate() {
-        let Some(dsp) = dsps.get_mut(index) else { continue };
+        let Some(dsp) = dsps.get_mut(index) else {
+            continue;
+        };
         if dsp_path.input.is_some() {
             dsp.insert("inputA".into(), endpoint(device, true, false));
         }
@@ -203,7 +205,9 @@ pub fn to_hlx(preset: &Preset, catalog: &Catalog, name: &str) -> Written {
             else {
                 continue;
             };
-            let Some(node) = node.as_object_mut() else { continue };
+            let Some(node) = node.as_object_mut() else {
+                continue;
+            };
             node.insert("@path".into(), json!(branch));
             node.insert("@position".into(), json!(position));
         }
@@ -303,6 +307,7 @@ fn junction(model: &str, attach: Option<usize>, position: Option<usize>) -> Valu
 /// Write one model into a DSP's block map at its next position, or record why it
 /// could not be. The amp and its cab both come through here, so both resolve
 /// their model and parameters the same way.
+#[allow(clippy::too_many_arguments)]
 fn emit(
     dsp: &mut Map<String, Value>,
     next_block: &mut i64,
@@ -324,7 +329,10 @@ fn emit(
     // HX Edit writes the shared model name - `HD2_DistScream808` - where the
     // firmware symbol is the mono or stereo variant of it. The symbol table
     // carries both, so use the one a `.hlx` is expected to name.
-    let written_name = symbol.model.clone().unwrap_or_else(|| symbol.symbol.clone());
+    let written_name = symbol
+        .model
+        .clone()
+        .unwrap_or_else(|| symbol.symbol.clone());
     block.insert("@model".into(), Value::String(written_name));
     block.insert("@enabled".into(), Value::Bool(enabled));
     // Which slot of the chain this came out of. HX Edit numbers its blocks
@@ -395,7 +403,16 @@ fn emit_named(
     // carries the amp's index - which is what says whose cab it is. Positional
     // pairing guessed wrong whenever a preset held a standalone amp as well as
     // a paired one.
-    emit(&mut one, &mut scratch, slot, model, values, enabled, catalog, skipped);
+    emit(
+        &mut one,
+        &mut scratch,
+        slot,
+        model,
+        values,
+        enabled,
+        catalog,
+        skipped,
+    );
     if let Some((_, body)) = one.into_iter().next() {
         dsp.insert(node, body);
     }
@@ -441,7 +458,13 @@ mod tests {
 
     /// A block slot holding `model`, optionally with a cab riding in the same
     /// slot the way `paired` records it on the wire.
-    fn block(model: u32, paired: Option<u32>, vals: &[f32], cab_vals: &[f32], enabled: bool) -> Value {
+    fn block(
+        model: u32,
+        paired: Option<u32>,
+        vals: &[f32],
+        cab_vals: &[f32],
+        enabled: bool,
+    ) -> Value {
         let model_ref = Value::Map(vec![
             (Key::Int(MODEL), Value::Int(model as i64)),
             (
@@ -595,7 +618,11 @@ mod tests {
 
         // Two blocks on dsp0 (amp, cab), one on dsp1 (the effect).
         assert_eq!(tone.blocks.iter().filter(|b| b.path == 0).count(), 2);
-        let second = tone.blocks.iter().find(|b| b.path == 1).expect("a dsp1 block");
+        let second = tone
+            .blocks
+            .iter()
+            .find(|b| b.path == 1)
+            .expect("a dsp1 block");
         assert_eq!(second.model_number, 101);
     }
 
@@ -646,7 +673,10 @@ mod faithful_tests {
             .as_object()
             .expect("a dsp0 object");
 
-        assert!(dsp0.contains_key("inputA"), "the signal has to enter somewhere");
+        assert!(
+            dsp0.contains_key("inputA"),
+            "the signal has to enter somewhere"
+        );
         assert!(dsp0.contains_key("outputA"), "and leave somewhere");
         assert_eq!(
             dsp0["outputA"]["@model"].as_str().unwrap(),
@@ -675,7 +705,9 @@ mod faithful_tests {
             assert_eq!(snapshot["@name"].as_str().unwrap(), name);
             // Each one remembers the state of the blocks, not just its name.
             assert!(
-                snapshot["blocks"]["dsp0"].as_object().is_some_and(|b| !b.is_empty()),
+                snapshot["blocks"]["dsp0"]
+                    .as_object()
+                    .is_some_and(|b| !b.is_empty()),
                 "snapshot {index} should record which blocks were on"
             );
         }

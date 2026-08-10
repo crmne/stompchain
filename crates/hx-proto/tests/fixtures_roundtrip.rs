@@ -66,8 +66,8 @@ fn first_difference(a: &[u8], b: &[u8]) -> Option<String> {
 fn every_fixture_re_encodes_at_the_msgpack_layer() {
     let mut failures = Vec::new();
     for (name, bytes) in fixtures() {
-        let values = Decoder::decode_all(&bytes)
-            .unwrap_or_else(|e| panic!("{name} does not decode: {e:?}"));
+        let values =
+            Decoder::decode_all(&bytes).unwrap_or_else(|e| panic!("{name} does not decode: {e:?}"));
         let mut out = Vec::new();
         for value in &values {
             out.extend(Encoder::encode(value));
@@ -76,7 +76,11 @@ fn every_fixture_re_encodes_at_the_msgpack_layer() {
             failures.push(format!("{name}: {where_}"));
         }
     }
-    assert!(failures.is_empty(), "msgpack re-encoding is not byte-exact:\n{}", failures.join("\n\n"));
+    assert!(
+        failures.is_empty(),
+        "msgpack re-encoding is not byte-exact:\n{}",
+        failures.join("\n\n")
+    );
 }
 
 /// The full document layer: parse into a Preset and write it back. This is the
@@ -96,5 +100,9 @@ fn every_fixture_parses_and_re_encodes_byte_for_byte() {
             None => failures.push(format!("{name}: failed to parse")),
         }
     }
-    assert!(failures.is_empty(), "a real preset does not round-trip:\n{}", failures.join("\n\n"));
+    assert!(
+        failures.is_empty(),
+        "a real preset does not round-trip:\n{}",
+        failures.join("\n\n")
+    );
 }

@@ -1,7 +1,7 @@
 //! Re-encoding a preset must be byte-exact.
 //!
 //! A preset carries a table of byte offsets into itself, so any change in
-//! length — an integer written narrower, a string tag shrunk — leaves those
+//! length - an integer written narrower, a string tag shrunk - leaves those
 //! offsets pointing at the wrong places. The device accepts the document and
 //! then reads the preset as empty, which is a hard failure to diagnose from the
 //! outside. This test turns it into a diff.

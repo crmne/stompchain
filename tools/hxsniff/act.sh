@@ -1,5 +1,5 @@
 #!/bin/bash
-# act.sh "<label>" <x> <y> [clicks] — annotate the capture, then click.
+# act.sh "<label>" <x> <y> [clicks] - annotate the capture, then click.
 #
 # Coordinates are given in the coordinate space of the 1400px-wide window
 # screenshots produced by shot.sh, and converted here against the window's

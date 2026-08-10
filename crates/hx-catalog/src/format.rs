@@ -1,6 +1,6 @@
 //! Turning raw parameter values into the text HX Edit shows.
 //!
-//! The device deals in native units — `0.78`, `-0.1`, `1.0`. HX Edit shows
+//! The device deals in native units - `0.78`, `-0.1`, `1.0`. HX Edit shows
 //! "78%", "-0.1 dB", "Limit". The mapping lives in `HelixControls.json` as a
 //! small formatting language: an optional scale, then either a printf pattern,
 //! a list of labels for a menu, or a set of ranges each with its own pattern.
@@ -85,7 +85,7 @@ impl Display {
     ///
     /// The exact inverse of [`render`](Self::render) for the common cases:
     /// undo the scale and offset, or match a menu label. Ranged formats are
-    /// not inverted — they are rare and not uniquely invertible — so they fall
+    /// not inverted - they are rare and not uniquely invertible - so they fall
     /// back to the plain scale.
     pub(crate) fn to_native(&self, shown: f32, catalog: &Catalog) -> f32 {
         if let Some(target) = self.alias.as_deref().and_then(|a| catalog.display(a)) {

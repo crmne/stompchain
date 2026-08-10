@@ -1,7 +1,7 @@
 # Backup and restore
 
-Goal: **bulletproof backup and restore** for the HX Stomp — never lose a preset
-again — covering presets, global settings, IRs, setlists, and favorites, with
+Goal: **bulletproof backup and restore** for the HX Stomp - never lose a preset
+again - covering presets, global settings, IRs, setlists, and favorites, with
 automatic backups so a mistake is a shrug, not a crisis.
 
 ## Two formats, on purpose
@@ -11,26 +11,26 @@ automatic backups so a mistake is a shrug, not a crisis.
 | Fidelity | **byte-exact** (what the pedal stores) | faithful, needs conversion |
 | Portability | same pedal / firmware | **any firmware, any Helix-family unit** |
 | Write path | `write_preset` + `save_preset` (hardware-validated) | needs a device→JSON converter (see below) |
-| Risk | none — no transform | a wrong transform loses routing/snapshots |
+| Risk | none - no transform | a wrong transform loses routing/snapshots |
 
 Decision: the **MessagePack bundle is the safety/auto-backup format and our
-restore path** — it cannot lose anything. The `.hxb` is a portable **export**,
+restore path** - it cannot lose anything. The `.hxb` is a portable **export**,
 added once the faithful converter exists. We already **read** `.hxb`
 (`hx_catalog::read_backup`) and **write** the container byte-for-byte
 (`hx_catalog::Container`, proven against four real backups).
 
 ## What a complete backup holds
 
-- **Presets** — 126 slots, byte-exact `.hxpreset`. `backup-all` already does this;
+- **Presets** - 126 slots, byte-exact `.hxpreset`. `backup-all` already does this;
   measured **~114 s** for a full read (each preset must be loaded; see fast-read below).
-- **Global settings** — **154** answering device objects (`object(id)`), which line
+- **Global settings** - **154** answering device objects (`object(id)`), which line
   up with HX Edit's `GLOB` block (156 named fields: EQ 13, Tuner 11, DSP 5, System 127).
   Store id→value; labels can come later.
-- **Setlists** — one on the HX Stomp, named `PRESETS`.
-- **IRs** — read-back decoded: `op12` for the descriptor, `op11` for the samples
+- **Setlists** - one on the HX Stomp, named `PRESETS`.
+- **IRs** - read-back decoded: `op12` for the descriptor, `op11` for the samples
   (see below). Carmine's pedal normally carries **none** (cab models, not IRs),
   so today's backups are complete without them either way.
-- **Favorites** — tonepush-local.
+- **Favorites** - tonepush-local.
 
 ## Cadence [built]
 
@@ -43,7 +43,7 @@ of that, **Back up…** and **Restore…** on the preset list do it on demand.
 So the copy on disk is never older than the last thing you did, and nothing
 ever interrupts playing.
 
-## The `.hxb` container (AF6L) — decoded
+## The `.hxb` container (AF6L) - decoded
 
 ```
 [0:4]   "AF6L"
@@ -54,7 +54,7 @@ ever interrupts playing.
 [table] 36-byte entries: tag(4) offset(u64) stored_len(u64) flags(u32) raw_len(u64) reserved(u32)
 ```
 
-Blocks: `IDXH` (device id + Unix timestamp — the field that looked like a
+Blocks: `IDXH` (device id + Unix timestamp - the field that looked like a
 checksum), `GLOB` (globals JSON), `SDMU`, `MNLS` (the name `PRESETS`), `SL00`
 (setlist: `data.presets[]`, all 126 as `{meta,device,tone,device_version}`).
 Compressed blocks are one zlib stream (flags==1); integrity is zlib's adler32,
@@ -64,7 +64,7 @@ so there is **no container checksum**. Implemented in `hx-catalog/src/hxb.rs`.
 
 The device document (`Preset.tone`, numeric keys) and HX Edit's `.hlx`/`.hxb`
 JSON (symbolic) are two encodings of the same tone. `to_hlx` today emits blocks +
-params + models correctly but **drops routing, snapshots, and the sections** — it
+params + models correctly but **drops routing, snapshots, and the sections** - it
 is lossy. A faithful converter must map, both directions:
 
 - **Paths** `tone[0]`, `tone[1]` → `dsp0`, `dsp1`. Each path is `{21: routing, 22: [slots]}`.
@@ -79,7 +79,7 @@ is lossy. A faithful converter must map, both directions:
   Each needs byte-exact identification against the golden pairs.
 
 Validation is fully offline: the presets exist as both `.hxpreset` (from a
-backup) and HX Edit JSON (from the `.hxb`), matched by name — golden pairs for
+backup) and HX Edit JSON (from the `.hxb`), matched by name - golden pairs for
 both directions. **All 94 that pair up now agree exactly** on node structure,
 model names and all three snapshots' bypass states.
 
@@ -90,13 +90,13 @@ What it took, beyond the blocks that were already written:
 - **The split's kind**, off the junction body's model number: 256 is A/B, 257 a
   Y, 258 a crossover. Calling them all Y described a chain that forks wrongly.
 - **Snapshots**, with what each switches on. A junction joins that list only
-  when its body says a snapshot may switch it (key 18) — 31 of the 97 do.
+  when its body says a snapshot may switch it (key 18) - 31 of the 97 do.
 - **The cab as `cab0`**, not another block number, which is what HX Edit calls
   it. It carries no position because it belongs to the amp before it, so the
   reader puts the Nth cab after the Nth amp.
 - **The looper**, slot kind 7, which was being dropped: it carries its model
   inline like a junction rather than under a model reference.
-- **Shared model names** — `HD2_DistScream808`, not the `…Mono` firmware symbol.
+- **Shared model names** - `HD2_DistScream808`, not the `…Mono` firmware symbol.
 
 Still not written: `variax`, `controller`, `footswitch`, and most of `global`
 (only the tempo goes out). Those are device state rather than tone, and nothing
@@ -135,7 +135,7 @@ A `tools/hxsniff/capture.sh backup` capture of HX Edit backing up shows it does
 **not** load each preset. After a short handshake (`END`, `LIST_SETLISTS`,
 `LIST_PRESETS` args=2 → 126 names, `READY`, `LIST_IRS`, `BEGIN`) it drives the
 whole backup with **opcode 109**, a chunked *transfer* read, and the device
-streams **342 KB** back on the reply channel — the pedal shows "transferring
+streams **342 KB** back on the reply channel - the pedal shows "transferring
 data" rather than cycling presets. This is the fast read we could not find by
 probing (`READ_PRESET`+index returns the *loaded* preset; `LIST_PRESETS`
 selectors 0–6 return only names+flags).
@@ -149,7 +149,7 @@ Opcode 109 request args (RPC envelope: `100`=opcode, `101`=args, `102`=txn):
 ```
 
 In the backup capture, opcode 109 transfers **803 distinct objects** (`64` ids
-0..832, with gaps), so it is not a preset reader — it is a general
+0..832, with gaps), so it is not a preset reader - it is a general
 **object-store transfer**. Its write inverse is **opcode 111**, same argument
 shape, and a restore-everything sends exactly the same 803 ids back.
 
@@ -170,14 +170,14 @@ op16 {107: setlist, 108: index}          → empty a slot
 ```
 
 This is the fast per-preset read the design went looking for and could not find
-by probing — `READ_PRESET` plus an index returns the *loaded* preset, so the
+by probing - `READ_PRESET` plus an index returns the *loaded* preset, so the
 conclusion was that indexed reads did not exist. They do, under an opcode that
 was sitting in the very first capture being read as something else. It answers
 in about 50 ms with no preset load, against the ~114 s a `backup-all` takes
 today because it loads all 126 in turn.
 
 `capture.sh library` is what settled it: exporting a single preset to a file
-sends exactly one op4, and exporting the setlist sends 126 — no object store
+sends exactly one op4, and exporting the setlist sends 126 - no object store
 involved. Importing a setlist is op5 per slot, op16 for the empty ones.
 
 So there are two fast paths, not one, and the simpler one is enough:
@@ -191,7 +191,7 @@ So there are two fast paths, not one, and the simpler one is enough:
 
 ## What a restore actually sends [confirmed]
 
-Not one mechanism but four, chosen by what is ticked in the dialog — which is
+Not one mechanism but four, chosen by what is ticked in the dialog - which is
 why ticking one kind at a time partitions the work by **opcode** rather than by
 object id:
 
@@ -210,7 +210,7 @@ no op109 at all).
 ## Capturing the restore
 
 The backup capture gives the fast **read**; the matching **write** is captured
-too — HX Edit doing **File → Restore from Backup** of the `.hxb` it had just
+too - HX Edit doing **File → Restore from Backup** of the `.hxb` it had just
 made, so the same data went back and nothing was lost. It is
 `captures/mac-restore-capture.log` (`capture.sh restore`), and decoding it is
 what turns op 109's write inverse into the restore path we want instead of 126
@@ -246,21 +246,21 @@ op12 {112: slot}          → {112: slot, 113: checksum, 109: name,
 op11 {112: slot, 101: 2}  → <blob of samples>
 ```
 
-`op12` returns the **descriptor** — the same argument map `upload_ir` sends
-under op 9, checksum included — and `op11` returns the **samples**. Op 10
+`op12` returns the **descriptor** - the same argument map `upload_ir` sends
+under op 9, checksum included - and `op11` returns the **samples**. Op 10
 renames a slot. A copy between slots is op12+op11 followed by op 9: the samples
 travel to the host and back rather than moving inside the device.
 
 **Both implemented and verified on hardware** (`read_ir`, `rename_ir`): a ramp
 whose every sample is its own index goes up and comes back bit-identical. One
 correction to the note below: what comes back is as many samples as the *upload
-declared*, not always 2048 — our uploader declares the 1024 size code for
+declared*, not always 2048 - our uploader declares the 1024 size code for
 anything that fits it, and the device then stores and returns 1024.
 
 The probe IRs say what the device does to what it is given. Everything comes
 back **48 kHz mono 32-bit float, always 2048 samples**, whatever went in:
 `ramp1024` returns as its exact `i/4096` ramp zero-padded to 2048, `steps2048`
-with its powers of two intact, and `long96k` — 4096 samples at 96 kHz —
+with its powers of two intact, and `long96k` - 4096 samples at 96 kHz -
 resampled rather than decimated (its values fall between the source's, so a
 filter ran). Key 115 is 3 on every read, so the stored length is always the
 2048-sample code.
@@ -268,12 +268,12 @@ filter ran). Key 115 is 3 on every read, so the stored length is always the
 **Stereo IR Import is inverted, or its labels are. [confirmed, one import per
 setting]** The probe's left channel is `+ramp` and its right is `-ramp`, so the
 sign of what comes back names the channel that was kept. Importing under **Use
-Left Channel** returned the *negative* ramp — the right channel — and under
+Left Channel** returned the *negative* ramp - the right channel - and under
 **Use Right Channel** the positive one. Mix Both Channels returned silence,
 which is exactly `(L + -L)/2` and confirms the mechanism works per import.
 
 **IRs, both directions.** IR *read-back* is the last unknown in the inventory
-below, and it cannot be captured on a pedal with no IRs on it — so the scenario
+below, and it cannot be captured on a pedal with no IRs on it - so the scenario
 imports first and exports after. The probe files come from
 `tools/hxsniff/make-irs.py` and exist to be recognisable in a stream we cannot
 yet frame: `ramp1024` is `s[i] = i/4096`, exact in both 24-bit PCM and f32, so
@@ -284,7 +284,7 @@ preference actually did; `long96k` is over both the 2048-sample limit and the
 device's rate, so the capture shows what HX Edit converts before it uploads.
 The scenario also takes a backup **with IRs present**, which is what places IRs
 in the op-109 object store and in the `.hxb` blocks, and it clears the slots
-again at the end. Export the files back out and keep them next to the capture —
+again at the end. Export the files back out and keep them next to the capture -
 the wire bytes are only decodable against the files they came back as.
 
 ### What the settings capture settled [confirmed]
@@ -311,7 +311,7 @@ distinct target value per control is what keeps them apart:
 | 203 | Global EQ enabled | bool |
 
 The footswitch function enum is one numbering shared by all three ids, and FS3
-simply offers fewer of it — no banking, no FS Mode:
+simply offers fewer of it - no banking, no FS Mode:
 
 | | | | | | |
 |---|---|---|---|---|---|
@@ -322,12 +322,12 @@ Ids 198 and 200 were inferred from `op76` before they were seen written, and
 `capture.sh enums` then wrote them: 198 took +6.0 dB and 200 took 12.3 kHz,
 exactly where the array said they would be. `op76` returns the whole set as
 `{63: enabled, 55: [110, 0.707, 0, 2000, 0.707, 0, 8000, 0.707, 0, 19.9, 20100]}`
-— eleven values that 190–200 land on in exactly that order. `op77` is the
+- eleven values that 190–200 land on in exactly that order. `op77` is the
 window's RESET and answers with the same shape. Opening the window reads ids
 201 and 202 (202 = 1, 201 = null on an HX Stomp) rather than the coefficients.
 
 **A negative result worth as much as the map.** Show/Hide Names, Manage
-Favorites By and Stereo IR Import send **nothing to the device** — they are
+Favorites By and Stereo IR Import send **nothing to the device** - they are
 HX Edit's own preferences. Preset Numbering Format sits beside Stereo IR Import
 on the same tab and *is* a device write. Nothing in the dialog distinguishes
 them.
@@ -336,10 +336,10 @@ them.
 Settings menu; HX Edit writes a subset, and that subset is what a capture can
 name. From HX Edit 3.82's resources it is: **Preferences → View** (name labels,
 favourites ordering, preset numbering format), **Preferences → Presets/IRs**
-(stereo IR import), **Preferences → Hardware Compatibility** — the device half,
+(stereo IR import), **Preferences → Hardware Compatibility** - the device half,
 pedal jacks and footswitch functions, which is populated per device and so is
-prompted for by name at capture time — the **Global EQ** window (bypass, and the
-eleven coefficients: Low Cut, three peaks of freq/Q/gain, High Cut — its
+prompted for by name at capture time - the **Global EQ** window (bypass, and the
+eleven coefficients: Low Cut, three peaks of freq/Q/gain, High Cut - its
 apply-to-1/4"-or-XLR selector is in `globaleq.xml` but hidden on an HX Stomp,
 which has no XLR outs), the **tempo** field and its per-snapshot /
 per-preset / global / host-sync mode, and a **tuner** panel that ships in
@@ -353,7 +353,7 @@ nothing is learned that a single setting write does not already show.
 
 **A partition falls out of the restore dialog.** *Restore From Backup* lets you
 tick which items to restore, so restoring **only Global Settings** from a `.hxb`
-writes the globals and nothing else — the cleanest way to learn which `64` ids
+writes the globals and nothing else - the cleanest way to learn which `64` ids
 in the op-109 object store are globals rather than presets or IRs. Same data
 going back, so it costs nothing to run.
 
@@ -370,16 +370,16 @@ going back, so it costs nothing to run.
 
 ## Other open reverse-engineering
 
-- **IR read-back.** Decoded — op12 then op11, above. What is left is the reply
+- **IR read-back.** Decoded - op12 then op11, above. What is left is the reply
   framing of op11's blob, against `captures/ir-exports/`: those are the files
   HX Edit wrote from the same reads, so the bytes on the wire have a known
   answer to be checked against.
 - **Globals id ↔ name.** The 21 ids HX Edit writes are named above, values and
   all. The rest of the 154 still want correlating with the `GLOB` block's 156
-  named fields by value — they are reachable only from the pedal's own menu, so
+  named fields by value - they are reachable only from the pedal's own menu, so
   no capture will ever name them.
 - **The op-111 blob framing.** The only thing standing between us and the
-  object-store path — and op4/op5 may make it unnecessary.
+  object-store path - and op4/op5 may make it unnecessary.
 - **Favorites are their own opcodes**, not just object-store entries.
   **Implemented and verified on hardware** (`favourites`, `save_favourite`,
   `rename_favourite`, `clear_favourite`), with the argument shapes read out of
@@ -397,4 +397,4 @@ going back, so it costs nothing to run.
   op119 is the editor's own "save to favourites" and is the one worth sending:
   it reads the block itself, so there is nothing to pass but where it is and
   what to call it. A favorite exports as an 896-byte JSON `.fav`, a setlist as a
-  62 KB `.hls` — both in `captures/library-exports/`, still to be decoded.
+  62 KB `.hls` - both in `captures/library-exports/`, still to be decoded.

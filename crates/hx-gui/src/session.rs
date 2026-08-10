@@ -1,6 +1,6 @@
 //! The device, on its own thread.
 //!
-//! Talking to the hardware blocks — a preset read is a dozen round trips — so
+//! Talking to the hardware blocks - a preset read is a dozen round trips - so
 //! the session lives on a worker and the UI speaks to it through channels. The
 //! worker owns it outright: the protocol is a strictly ordered stream, and two
 //! callers would interleave transfers and desynchronise it.
@@ -9,7 +9,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 /// One slot on its way to the pedal: where it goes, and the preset that goes
-/// there — its name and its document — or nothing, to empty the slot.
+/// there - its name and its document - or nothing, to empty the slot.
 pub type SlotWrite = (i64, Option<(String, Vec<u8>)>);
 
 /// What the UI asks for.
@@ -29,7 +29,7 @@ pub enum Cmd {
         to: usize,
     },
     /// Move a block into the gap just before `before`, shifting the blocks
-    /// between to close ranks — what dropping it there means.
+    /// between to close ranks - what dropping it there means.
     MoveBlockBefore {
         from: usize,
         before: usize,
@@ -104,7 +104,10 @@ pub enum Cmd {
     SelectSetlist(i64),
     /// Load a preset document into a chosen preset's edit buffer: put the
     /// device there first, then write the bytes. Save is the user's call.
-    LoadDocument { dest: i64, bytes: Vec<u8> },
+    LoadDocument {
+        dest: i64,
+        bytes: Vec<u8>,
+    },
     /// Load a symbolic tone into a chosen preset: clear the chain, then build
     /// it back block by block. Clearing first is what makes room - probed on
     /// hardware; a model set into a cleared slot is an ordinary edit.
@@ -132,7 +135,7 @@ pub enum Cmd {
     },
     SelectSnapshot(i64),
     ClearBlock(i64),
-    /// Point an input or output somewhere else — opcode 42, the operation
+    /// Point an input or output somewhere else - opcode 42, the operation
     /// HX Edit's own routing clicks send.
     SetRouting {
         block: i64,
@@ -254,7 +257,7 @@ pub enum Evt {
         irs: usize,
     },
     /// Whether the worker is in the middle of a device conversation. Edits
-    /// take real round trips — a document write near a second — and a window
+    /// take real round trips - a document write near a second - and a window
     /// that does nothing for a second looks broken.
     Busy(bool),
     /// How many steps can be undone and redone.
@@ -378,7 +381,7 @@ struct Worker {
     /// Which setlist preset selections apply to.
     setlist: i64,
     /// Preset documents as they were before each document-level edit, newest
-    /// last. Bounded — an undo history, not an archive.
+    /// last. Bounded - an undo history, not an archive.
     history: Vec<Vec<u8>>,
     /// States undone and therefore redoable, cleared by any fresh edit.
     future: Vec<Vec<u8>>,
@@ -386,14 +389,14 @@ struct Worker {
     ///
     /// Turning a knob is one edit per pixel of drag; a history entry each
     /// would be useless. One entry is taken for the first change after a load
-    /// or a save, so undo steps back to the last known-good state — which is
+    /// or a save, so undo steps back to the last known-good state - which is
     /// what "undo" means to someone who has just been turning knobs.
     snapshot_taken: bool,
     /// Whether the edit buffer differs from the stored preset. Kept here
     /// rather than in the UI because only the worker knows which reloads are
     /// fresh presets and which are edits taking effect.
     dirty: bool,
-    /// The loaded preset's slot and name, as last read from the device — so a
+    /// The loaded preset's slot and name, as last read from the device - so a
     /// view built from a document we hold does not need a round trip to say
     /// which preset it is.
     shown: (i64, String),
@@ -543,7 +546,7 @@ impl Worker {
                 let original = preset.encode();
 
                 // The gap before an endpoint or a junction means "at the end
-                // of the lane that finishes here" — you cannot put a pedal on
+                // of the lane that finishes here" - you cannot put a pedal on
                 // the output itself, which is what asking for that slot did.
                 let holds_blocks = preset
                     .slots
@@ -567,7 +570,7 @@ impl Worker {
                         Some(slot) => slot,
                         None => {
                             return self.send(Evt::Failed(
-                                "this row is full — remove a block first".into(),
+                                "this row is full - remove a block first".into(),
                             ))
                         }
                     }
@@ -576,7 +579,7 @@ impl Worker {
                 // The first block on an empty branch should parallel the whole
                 // line: fork just after the input, merge just before the
                 // output. The device initialises the attach points itself when
-                // the model lands — to zero, which parallels nothing — so ours
+                // the model lands - to zero, which parallels nothing - so ours
                 // have to be written *after* the model, not before. Verified
                 // against the hardware; later inserts leave them alone.
                 let layout = preset.layout();
@@ -597,7 +600,7 @@ impl Worker {
                 if preset.slots.get(target).is_some_and(|s| s.model.is_some()) {
                     if !preset.make_room(target, bounds) {
                         return self.send(Evt::Failed(
-                            "this row is full — remove a block first".into(),
+                            "this row is full - remove a block first".into(),
                         ));
                     }
                     if !self.run_on_device(|d| d.write_preset(&preset)) {
@@ -648,7 +651,11 @@ impl Worker {
                     self.reload();
                 }
             }
-            Cmd::AssignParameter { block, param, source } => {
+            Cmd::AssignParameter {
+                block,
+                param,
+                source,
+            } => {
                 self.snapshot();
                 if self.run_on_device(|d| d.assign_parameter(block, param, source)) {
                     self.dirty = true;
@@ -730,9 +737,7 @@ impl Worker {
                         hx_proto::msgpack::Value::Bool(value >= 0.5)
                     }
                     hx_proto::msgpack::Value::F32(_) => hx_proto::msgpack::Value::F32(value),
-                    hx_proto::msgpack::Value::F64(_) => {
-                        hx_proto::msgpack::Value::F64(value as f64)
-                    }
+                    hx_proto::msgpack::Value::F64(_) => hx_proto::msgpack::Value::F64(value as f64),
                     _ => hx_proto::msgpack::Value::Int(value.round() as i64),
                 };
                 if self.run_on_device(|d| d.set_object(id, shaped)) {
@@ -781,7 +786,7 @@ impl Worker {
                     // Same care as a rename: `clear_preset_at` paces its own
                     // flash commit, so the list read lands on a settled device.
                     // Unlike a rename this does change the document, so the
-                    // loaded preset is read back too — but only if it is the one
+                    // loaded preset is read back too - but only if it is the one
                     // that was emptied.
                     if let Some(names) = self.try_on_device(|d| d.presets(setlist)) {
                         self.send(Evt::Presets(names));
@@ -839,7 +844,7 @@ impl Worker {
             Cmd::MoveBlockBefore { from, before } => {
                 self.edit_document(|p| {
                     // A block dropped onto an empty branch claims the whole
-                    // line, the same as adding one there — and because this is
+                    // line, the same as adding one there - and because this is
                     // a document move rather than a model change, the claim
                     // rides in the same write with nothing to reset it.
                     let layout = p.layout();
@@ -933,21 +938,16 @@ impl Worker {
                     self.handle(Cmd::ListFavourites);
                 }
             }
-            Cmd::SaveIr { slot, file } => {
-                match self.try_on_device(|d| d.read_ir(slot)) {
-                    Some(Some((name, samples))) => {
-                        match crate::wav::write(&file, &samples, 48_000) {
-                            Ok(()) => self.send(Evt::Activity(format!(
-                                "saved {name} to {}",
-                                file.display()
-                            ))),
-                            Err(e) => self.send(Evt::Failed(e.to_string())),
-                        }
+            Cmd::SaveIr { slot, file } => match self.try_on_device(|d| d.read_ir(slot)) {
+                Some(Some((name, samples))) => match crate::wav::write(&file, &samples, 48_000) {
+                    Ok(()) => {
+                        self.send(Evt::Activity(format!("saved {name} to {}", file.display())))
                     }
-                    Some(None) => self.send(Evt::Failed("that slot is empty".into())),
-                    None => {}
-                }
-            }
+                    Err(e) => self.send(Evt::Failed(e.to_string())),
+                },
+                Some(None) => self.send(Evt::Failed("that slot is empty".into())),
+                None => {}
+            },
             Cmd::RenameIr { slot, name } => {
                 if self.run_on_device(|d| d.rename_ir(slot, &name)) {
                     self.handle(Cmd::ListIrs);
@@ -979,7 +979,7 @@ impl Worker {
         };
         let Some(found) = found else {
             return self.send(Evt::Failed(
-                "No HX device found — check the USB cable.".into(),
+                "No HX device found - check the USB cable.".into(),
             ));
         };
         // Retry once: the device ignores a fresh session's opening handshake
@@ -1080,7 +1080,7 @@ impl Worker {
             to.push(current.encode());
         }
         if self.run_on_device(|d| d.write_preset(&preset)) {
-            // The buffer now differs from the stored preset — almost always,
+            // The buffer now differs from the stored preset - almost always,
             // and "save available after undo" errs on the side of not losing
             // the state someone deliberately stepped to.
             self.dirty = true;
@@ -1118,7 +1118,7 @@ impl Worker {
             // A fresh edit is a new branch; anything undone is unreachable now.
             self.future.clear();
             self.report_history();
-            // What was written is what there is — no read-back to race.
+            // What was written is what there is - no read-back to race.
             self.present(&preset);
         }
     }
@@ -1195,9 +1195,7 @@ impl Worker {
     fn apply_steps(&mut self, blocks: &[ApplyBlock]) -> Result<(), String> {
         use hx_proto::msgpack::Value;
 
-        let preset = self
-            .read_settled()
-            .ok_or("the device stopped answering")?;
+        let preset = self.read_settled().ok_or("the device stopped answering")?;
         for (position, slot) in preset.slots.iter().enumerate() {
             if slot.kind == hx_proto::preset::Kind::Block && slot.model.is_some() {
                 let p = position as i64;
@@ -1216,7 +1214,10 @@ impl Worker {
         // hardware: an HX Stomp carries its input at slot 0, blocks across
         // slots 1 to 8, and the output after them.
         let layout = preset.layout();
-        let path = layout.paths.first().ok_or("this preset has no signal path")?;
+        let path = layout
+            .paths
+            .first()
+            .ok_or("this preset has no signal path")?;
         let base = path.input.map(|input| input + 1).unwrap_or(1);
         let ceiling = path.output.unwrap_or(preset.slots.len());
 
@@ -1266,10 +1267,7 @@ impl Worker {
 
     /// Ask the device without reporting a refusal: for requests that will be
     /// retried, where the first no is pacing rather than an answer.
-    fn quietly<T>(
-        &mut self,
-        f: impl FnOnce(&mut hx_usb::Session) -> hx_usb::Result<T>,
-    ) -> bool {
+    fn quietly<T>(&mut self, f: impl FnOnce(&mut hx_usb::Session) -> hx_usb::Result<T>) -> bool {
         self.device.as_mut().is_some_and(|d| f(d).is_ok())
     }
 
@@ -1305,14 +1303,17 @@ impl Worker {
                 .map(|preset| preset.encode());
             slots.push((name, bytes));
         }
-        self.send(Evt::Working { what: String::new(), progress: 1.0 });
+        self.send(Evt::Working {
+            what: String::new(),
+            progress: 1.0,
+        });
         self.send(Evt::CapturedSetlist(slots));
     }
 
     /// Write a whole setlist onto the pedal.
     ///
     /// Every slot is a flash write, and unpaced flash writes are what once
-    /// corrupted a setlist past a power cycle — so this goes through
+    /// corrupted a setlist past a power cycle - so this goes through
     /// `write_preset_at` and `clear_preset_at`, which pace their own commits,
     /// one slot at a time and never in a hurry.
     fn push_setlist(&mut self, slots: Vec<SlotWrite>) {
@@ -1346,12 +1347,17 @@ impl Worker {
             }
             written += 1;
         }
-        self.send(Evt::Working { what: String::new(), progress: 1.0 });
+        self.send(Evt::Working {
+            what: String::new(),
+            progress: 1.0,
+        });
         if let Some(names) = self.try_on_device(|d| d.presets(setlist)) {
             self.send(Evt::Presets(names));
         }
         self.reload();
-        self.send(Evt::Activity(format!("wrote {written} presets to the pedal")));
+        self.send(Evt::Activity(format!(
+            "wrote {written} presets to the pedal"
+        )));
         // The bundle now describes a pedal that no longer exists. Re-reading it
         // whole costs a couple of seconds against the minutes of flash writes
         // that just happened, and the snapshot it rotates aside is the pedal as
@@ -1390,7 +1396,7 @@ impl Worker {
         let stamp = now();
         // Put the copy that is there aside before overwriting it. Corruption is
         // noticed later than it happens, and a single bundle that every
-        // connection refreshes is always the pedal as it is now — which is no
+        // connection refreshes is always the pedal as it is now - which is no
         // use at all when what you need is the pedal as it was on Tuesday.
         if Some(dir) == automatic_dir().as_deref() {
             match hx_usb::backup::snapshot(dir, &datestamp(), KEEP_SNAPSHOTS) {
@@ -1490,8 +1496,8 @@ impl Worker {
     /// Show a preset document the worker already holds.
     ///
     /// Every edit used to be followed by a read-back, and the device commits
-    /// writes slowly enough that the read could return the *old* document —
-    /// a drag that "didn't take" — or fail outright and drop the session.
+    /// writes slowly enough that the read could return the *old* document -
+    /// a drag that "didn't take" - or fail outright and drop the session.
     /// For our own writes the written bytes are the truth, so the view is
     /// built from them and the wire stays quiet.
     fn present(&mut self, preset: &hx_proto::Preset) {
@@ -1679,11 +1685,7 @@ mod tests {
 
         // Sorting the names sorts them by time, which is what prunes the
         // oldest snapshot rather than an arbitrary one.
-        let mut names = [
-            stamp_of(1_786_060_800),
-            stamp_of(0),
-            stamp_of(951_782_400),
-        ];
+        let mut names = [stamp_of(1_786_060_800), stamp_of(0), stamp_of(951_782_400)];
         names.sort();
         assert_eq!(names[0], stamp_of(0));
         assert_eq!(names[2], stamp_of(1_786_060_800));

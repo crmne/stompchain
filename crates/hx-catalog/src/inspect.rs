@@ -150,7 +150,7 @@ pub fn inspect(json: &Value, catalog: &Catalog) -> Tone {
                 }
             }
             // A cab with no amp before it still belongs in the chain.
-            merged.extend(cabs.map(|(n, cab)| (n, cab)));
+            merged.extend(cabs);
             positioned = merged;
         }
 
@@ -210,7 +210,10 @@ fn read_block(
     let Some(symbol) = block.get("@model").and_then(Value::as_str) else {
         return;
     };
-    let stereo = block.get("@stereo").and_then(Value::as_bool).unwrap_or(false);
+    let stereo = block
+        .get("@stereo")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     let Some(number) = resolve(catalog, symbol, stereo) else {
         skipped.push(format!("dsp{path}/block{position}: unknown model {symbol}"));
@@ -225,7 +228,10 @@ fn read_block(
 
     // No `@enabled` means on: the endpoints and a handful of blocks omit it, and
     // treating them as bypassed would misread the tone.
-    let enabled = block.get("@enabled").and_then(Value::as_bool).unwrap_or(true);
+    let enabled = block
+        .get("@enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
 
     let mut params = Vec::new();
     for (key, value) in block.as_object().into_iter().flatten() {
@@ -320,12 +326,20 @@ mod tests {
         assert!(tone.skipped.is_empty(), "{:?}", tone.skipped);
         assert_eq!(tone.blocks.len(), 2, "both DSPs parsed");
 
-        let dsp0 = tone.blocks.iter().find(|b| b.path == 0).expect("a dsp0 block");
+        let dsp0 = tone
+            .blocks
+            .iter()
+            .find(|b| b.path == 0)
+            .expect("a dsp0 block");
         assert_eq!(dsp0.position, 0);
         assert_eq!(dsp0.model_name, "Scream 808", "base name resolved");
         assert!(dsp0.enabled);
 
-        let dsp1 = tone.blocks.iter().find(|b| b.path == 1).expect("a dsp1 block");
+        let dsp1 = tone
+            .blocks
+            .iter()
+            .find(|b| b.path == 1)
+            .expect("a dsp1 block");
         assert_eq!(dsp1.model_name, "Room");
         assert!(!dsp1.enabled);
     }
@@ -349,7 +363,11 @@ mod tests {
 
         // The amp is category Amp, the cab category Cab - the facts come from
         // the catalog, not from any guess in the file.
-        let amp = tone.blocks.iter().find(|b| b.model_name.contains("Double")).unwrap();
+        let amp = tone
+            .blocks
+            .iter()
+            .find(|b| b.model_name.contains("Double"))
+            .unwrap();
         assert_eq!(amp.category, Some(Category::AMP));
     }
 

@@ -12,7 +12,7 @@ use std::fmt;
 /// A decoded MessagePack value.
 ///
 /// Map keys are kept as `Key` because the protocol only ever uses integers and
-/// strings, and integer keys are the norm — `{102: txn, 100: opcode}`.
+/// strings, and integer keys are the norm - `{102: txn, 100: opcode}`.
 #[derive(Clone, PartialEq)]
 pub enum Value {
     Nil,
@@ -33,7 +33,7 @@ pub enum Value {
     F64(f64),
     /// Text that decoded cleanly as UTF-8, with trailing NULs stripped.
     Str(String),
-    /// A string or binary field that is not text — typically a nested document.
+    /// A string or binary field that is not text - typically a nested document.
     ///
     /// The second field is the header width the device used (1, 2 or 4 bytes,
     /// or 0 for a fixstr). It is carried so a document can be written back
@@ -484,7 +484,7 @@ impl Encoder {
     }
 }
 
-/// Build a map from integer-keyed pairs — the shape nearly every request takes.
+/// Build a map from integer-keyed pairs - the shape nearly every request takes.
 #[macro_export]
 macro_rules! msgmap {
     ($($k:expr => $v:expr),* $(,)?) => {{

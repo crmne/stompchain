@@ -76,7 +76,7 @@ enum Cmd {
     SnapshotName { number: usize, name: String },
     /// Route an input or output, by slot position and destination name.
     ///
-    /// `tonepush route 0 "Return L/R"` — see `tonepush chain` for slots,
+    /// `tonepush route 0 "Return L/R"` - see `tonepush chain` for slots,
     /// and pass a partial name; it is matched against the device's own menu.
     Route { block: i64, to: String },
     /// Print the signal path as the device is wired: one row per lane.
@@ -85,7 +85,7 @@ enum Cmd {
     Slot { position: usize },
     /// Copy a block over another slot, by position as shown in `chain`.
     ///
-    /// Writes the whole preset document, so the block arrives complete —
+    /// Writes the whole preset document, so the block arrives complete -
     /// model, values, paired cab and all.
     CopyBlock { from: usize, to: usize },
     /// Copy a snapshot's settings over another, keeping the target's name.
@@ -210,7 +210,7 @@ enum Cmd {
     /// Writes one `NNN Name.hxpreset` per occupied slot rather than touching
     /// the pedal, so a restore can be looked at before it is trusted.
     ///
-    /// Needs a device attached — not to write to, but because a .hlx does not
+    /// Needs a device attached - not to write to, but because a .hlx does not
     /// describe everything a preset carries and the missing parts have to come
     /// from a document the device itself wrote.
     BundleToPresets {
@@ -239,7 +239,13 @@ enum Cmd {
     /// The raw reply behind one parameter's assignment. Reads only.
     AssignmentRaw { block: i64, param: i64 },
     /// Move one end of a controller's travel. Edit buffer only.
-    AssignRange { block: i64, param: i64, value: f32, #[arg(long)] max: bool },
+    AssignRange {
+        block: i64,
+        param: i64,
+        value: f32,
+        #[arg(long)]
+        max: bool,
+    },
     /// Read a footswitch's configuration, for protocol work. Reads only.
     Switch { switch: u8 },
     /// Put a block's bypass on a footswitch, or take it off. Edit buffer only.
@@ -317,7 +323,7 @@ fn list_devices() -> Result<()> {
     }
     for d in &devices {
         println!(
-            "{} (pid {:#06x}) serial {} — {} presets",
+            "{} (pid {:#06x}) serial {} - {} presets",
             d.profile.name,
             d.profile.product_id,
             d.serial.as_deref().unwrap_or("?"),
@@ -334,7 +340,7 @@ fn on_device(cmd: Cmd) -> Result<()> {
     let cmd = &cmd;
     let devices = hx_usb::list().context("enumerating USB devices")?;
     let Some(device) = devices.first() else {
-        bail!("no HX device found — check the USB cable");
+        bail!("no HX device found - check the USB cable");
     };
     let mut session = device.open().context("opening the device")?;
     let s = &mut session;
@@ -538,11 +544,20 @@ fn on_device(cmd: Cmd) -> Result<()> {
             println!("{:#?}", s.read_assignment_raw(block, param)?);
             Ok(())
         }
-        Cmd::AssignRange { block, param, value, max } => {
+        Cmd::AssignRange {
+            block,
+            param,
+            value,
+            max,
+        } => {
             s.set_assign_range(block, param, value, max)?;
             Ok(())
         }
-        Cmd::AssignParam { block, param, source } => {
+        Cmd::AssignParam {
+            block,
+            param,
+            source,
+        } => {
             let source = hx_proto::rpc::Source::from_ordinal(source);
             s.assign_parameter(block, param, source)?;
             Ok(())
@@ -551,7 +566,12 @@ fn on_device(cmd: Cmd) -> Result<()> {
             println!("{:#?}", s.read_switch(switch)?);
             Ok(())
         }
-        Cmd::SwitchSet { switch, name, colour, momentary } => {
+        Cmd::SwitchSet {
+            switch,
+            name,
+            colour,
+            momentary,
+        } => {
             if let Some(name) = name {
                 // An empty name is not a name; it clears back to what the
                 // switch carries, which is what opcode 60 is for.
@@ -918,7 +938,11 @@ fn restore_all(
 
     // Naming no part means all of them, which is what a restore usually is.
     let parts = if presets || globals || irs {
-        Parts { presets, globals, irs }
+        Parts {
+            presets,
+            globals,
+            irs,
+        }
     } else {
         Parts::default()
     };
@@ -983,10 +1007,10 @@ fn copy_block(session: &mut hx_usb::Session, from: usize, to: usize) -> Result<(
         .copy_slot(from)
         .with_context(|| format!("no slot {from}"))?;
     if !preset.paste_slot(to, &block) {
-        bail!("slot {to} cannot hold a block — inputs, outputs, splits and joins are fixed");
+        bail!("slot {to} cannot hold a block - inputs, outputs, splits and joins are fixed");
     }
     session.write_preset(&preset)?;
-    println!("copied block {from} to {to} (unsaved — run `tonepush save`)");
+    println!("copied block {from} to {to} (unsaved - run `tonepush save`)");
     Ok(())
 }
 
@@ -1003,7 +1027,7 @@ fn copy_snapshot(session: &mut hx_usb::Session, from: usize, to: usize) -> Resul
         bail!("could not write snapshot {to}");
     }
     session.write_preset(&preset)?;
-    println!("copied snapshot {from} to {to} (unsaved — run `tonepush save`)");
+    println!("copied snapshot {from} to {to} (unsaved - run `tonepush save`)");
     Ok(())
 }
 
@@ -1224,7 +1248,10 @@ fn inspect_hlx(file: &std::path::Path) -> Result<()> {
     for block in &tone.blocks {
         let path = if block.path == 1 { " (path 2)" } else { "" };
         let state = if block.enabled { "" } else { "  bypassed" };
-        println!("  {}{}  {}{}", block.position, path, block.model_name, state);
+        println!(
+            "  {}{}  {}{}",
+            block.position, path, block.model_name, state
+        );
     }
     if tone.blocks.is_empty() {
         println!("  (no blocks)");
@@ -1288,7 +1315,11 @@ fn export_hxb(bundle: &std::path::Path, output: &std::path::Path) -> Result<()> 
         .unwrap_or_else(|| serde_json::json!({}));
 
     let bytes = hx_catalog::write_backup(&hx_catalog::NewBackup {
-        setlist: manifest.setlists.first().map(String::as_str).unwrap_or("PRESETS"),
+        setlist: manifest
+            .setlists
+            .first()
+            .map(String::as_str)
+            .unwrap_or("PRESETS"),
         presets: &presets,
         globals,
         device: 0x0021_0006,
@@ -1303,7 +1334,9 @@ fn export_hxb(bundle: &std::path::Path, output: &std::path::Path) -> Result<()> 
         output.display(),
         bytes.len()
     );
-    println!("note: whether HX Edit accepts this is untested; TonePush restores from the bundle itself");
+    println!(
+        "note: whether HX Edit accepts this is untested; TonePush restores from the bundle itself"
+    );
     Ok(())
 }
 
@@ -1312,10 +1345,20 @@ fn sanitise_bundle(name: &str) -> String {
     let cleaned: String = name
         .trim()
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == ' ' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let cleaned = cleaned.trim().to_owned();
-    if cleaned.is_empty() { "untitled".to_owned() } else { cleaned }
+    if cleaned.is_empty() {
+        "untitled".to_owned()
+    } else {
+        cleaned
+    }
 }
 
 /// Lift every occupied tone out of an HX Edit `.hxb` backup into `.hlx` files.
@@ -1351,7 +1394,9 @@ fn bundle_to_presets(
     let built = hx_catalog::documents_from_backup(&backup, &template, &catalog);
     let mut written = 0;
     for (index, entry) in built.iter().enumerate() {
-        let Some((name, document, report)) = entry else { continue };
+        let Some((name, document, report)) = entry else {
+            continue;
+        };
         for note in &report.skipped {
             println!("  {index:>3}  {name}: {note}");
         }

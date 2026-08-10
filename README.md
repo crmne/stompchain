@@ -245,10 +245,10 @@ bash tools/hxsniff/capture.sh assign     # the Bypass/Controller Assign page
 DRY=1 bash tools/hxsniff/capture.sh ir   # read the steps through first
 ```
 
-The IR scenario imports the probe files `make-irs.py` writes — a ramp whose
+The IR scenario imports the probe files `make-irs.py` writes - a ramp whose
 every sample encodes its own index, a staircase of powers of two, a stereo pair
 with the channels opposite in sign, and one file over both the length and rate
-limits — so sample bytes are identifiable in a reply stream we cannot yet frame.
+limits - so sample bytes are identifiable in a reply stream we cannot yet frame.
 
 `tools/midiprobe` and `tools/usbprobe` cover the MIDI and USB-descriptor sides;
 `tools/hxpower` power-cycles a wedged device through a Home Assistant smart

@@ -2,10 +2,6 @@
 title: What is TonePush?
 description: Why TonePush exists, what it does, and what it honestly does not do yet.
 nav_order: 0
-# This page was /what-is-stompchain/ under the old name, and that URL is
-# the one in every link anybody has made to it so far.
-redirect_from:
-  - /what-is-stompchain/
 ---
 
 ## The problem

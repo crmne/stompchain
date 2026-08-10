@@ -3,7 +3,7 @@
 
 `reassemble.py` can turn a channel into a clean MessagePack stream but throws away
 the one piece of information that makes a capture interpretable: which `### MARK`
-line — that is, which UI click — each message belongs to.
+line - that is, which UI click - each message belongs to.
 
 The difficulty is that the application stream is chunked arbitrarily across USB
 transfers, so a stream offset has no timestamp of its own. This script keeps an
@@ -100,7 +100,7 @@ def mark_timeline(msgs):
 
 
 def mark_at(timeline, idx):
-    """The mark in force at transfer `idx` — the last one attached at or before it."""
+    """The mark in force at transfer `idx` - the last one attached at or before it."""
     cur = None
     for i, name in timeline:
         if i > idx:
@@ -123,7 +123,7 @@ def streams(msgs):
         _seq, typ = struct.unpack_from(">HH", p, 0)
         # Bit 0x04 is "carries stream data". It is set on plain data (0x04) but
         # also on data that piggybacks an acknowledgement (0x0c) or rides a
-        # keep-alive slot (0x14). Reading only 0x04 silently drops messages —
+        # keep-alive slot (0x14). Reading only 0x04 silently drops messages -
         # in 03-feature-sweep that hid two thirds of every slider drag.
         if not (typ & 0x04) or len(p) <= 8:
             continue  # 0x02 handshake, 0x08 bare ack, 0x10 keep-alive

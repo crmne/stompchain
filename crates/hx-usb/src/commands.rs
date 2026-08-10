@@ -2,7 +2,7 @@
 //! and impulse responses.
 //!
 //! Split from the transport deliberately. Everything here is a thin call onto
-//! `Session::request` — the interesting code is the channel protocol next door,
+//! `Session::request` - the interesting code is the channel protocol next door,
 //! and mixing the two made one file read as a protocol engine with a service
 //! catalogue stapled on.
 
@@ -52,7 +52,8 @@ impl Switch {
 
     /// The colour to light it: the one chosen, or the one its block wears.
     pub fn lit(&self) -> Option<i64> {
-        self.colour.or_else(|| self.carries.first().and_then(|c| c.colour))
+        self.colour
+            .or_else(|| self.carries.first().and_then(|c| c.colour))
     }
 }
 
@@ -290,7 +291,7 @@ impl Session {
     /// Bring the control channel up to the state HX Edit leaves it in.
     ///
     /// Opening the service is not enough: HX Edit follows it with a fixed
-    /// sequence — end, setlists, presets, ready, list IRs — and the device
+    /// sequence - end, setlists, presets, ready, list IRs - and the device
     /// will not service an IR upload without it. Cheap enough to do before any
     /// control-channel work.
     fn bootstrap(&mut self) -> Result<()> {
@@ -317,7 +318,7 @@ impl Session {
     /// Send an impulse response to a slot.
     ///
     /// Samples are mono `f32`. The IR is one RPC message on the control
-    /// channel — 4 KB of samples for a 1024-sample file — which the transport
+    /// channel - 4 KB of samples for a 1024-sample file - which the transport
     /// then splits across frames like any other large message.
     ///
     /// The checksum field is reproduced from a capture and its algorithm is
@@ -326,7 +327,7 @@ impl Session {
     pub fn upload_ir(&mut self, slot: i64, name: &str, samples: &[f32]) -> Result<()> {
         // The descriptor declares the stored length as 256 × 2^code samples
         // (key 115; key 114 is a multiplier the editor always sends as 1).
-        // The device zero-pads shorter data to the declared length — but data
+        // The device zero-pads shorter data to the declared length - but data
         // *longer* than declared wedges its transfer state machine hard enough
         // to need the 9V adapter pulled, so the length is checked here rather
         // than discovered there.
@@ -365,13 +366,13 @@ impl Session {
         // Opcode 9 answers "accepted", not "done": the device writes the IR to
         // flash afterwards and shows "transferring data" while it does. HX Edit
         // closes the operation with an end marker and then re-reads the slot
-        // list, and doing the same is what takes the device out of that state —
+        // list, and doing the same is what takes the device out of that state -
         // simply waiting does not.
         self.command(ChannelId::CONTROL, rpc::op::END, hx_proto::msgmap! {})?;
 
         // Poll the slot list until our name shows up. That is the only honest
         // signal that the write finished rather than merely being accepted, and
-        // it is what the device's "transferring data" display is tracking —
+        // it is what the device's "transferring data" display is tracking -
         // returning before it appears is what used to leave the unit stuck.
         let deadline = Instant::now() + Duration::from_secs(30);
         while Instant::now() < deadline {
@@ -408,7 +409,7 @@ impl Session {
     ///
     /// The device wants the editing cursor moved to the block first. Sending
     /// the clear alone is answered as though it succeeded and changes nothing,
-    /// which is a quietly misleading combination — HX Edit always selects then
+    /// which is a quietly misleading combination - HX Edit always selects then
     /// clears, and so do we.
     pub fn clear_block(&mut self, block: i64) -> Result<()> {
         self.select_block(block)?;
@@ -431,22 +432,22 @@ impl Session {
     /// Write a whole preset document back to the device, and do not return
     /// until it has demonstrably landed.
     ///
-    /// Several operations — reordering blocks, switching snapshots, pasting a
-    /// preset — have no dedicated opcode. This is how HX Edit performs its
+    /// Several operations - reordering blocks, switching snapshots, pasting a
+    /// preset - have no dedicated opcode. This is how HX Edit performs its
     /// undo, and it is the general mechanism for anything the opcode table does
     /// not cover.
     ///
     /// The commit is verified by reading the chain back, because acceptance is
     /// not landing: the completion notification is sometimes missed, and the
     /// device answers other questions happily while the commit is still in
-    /// flight. A session that closes in that window — any one-shot CLI
-    /// command — leaves the device holding a half-committed document, and it
+    /// flight. A session that closes in that window - any one-shot CLI
+    /// command - leaves the device holding a half-committed document, and it
     /// resolves that by wiping the edit buffer. Verified against the
     /// hardware; the read-back loop is what makes a write safe to be the
     /// last thing a process does.
     pub fn write_preset(&mut self, preset: &Preset) -> Result<()> {
         // An empty branch must go out the way the device itself would keep
-        // it — attach points zeroed — or the document contradicts itself in a
+        // it - attach points zeroed - or the document contradicts itself in a
         // way the device settles by wiping the edit buffer. Normalised here,
         // at the one place every document leaves through.
         let mut settled = Preset::parse(&preset.encode())
@@ -522,7 +523,7 @@ impl Session {
         Ok(())
     }
 
-    /// Read one device object — a global setting, by numeric id.
+    /// Read one device object - a global setting, by numeric id.
     pub fn object(&mut self, id: i64) -> Result<Value> {
         let v = self.request(
             ChannelId::DATA,
@@ -536,7 +537,7 @@ impl Session {
     ///
     /// Global settings live in a flat numbered namespace rather than a
     /// structured document: 147 of the first 160 ids answer on an HX Stomp.
-    /// The value's type has to match what the device holds — sending a float
+    /// The value's type has to match what the device holds - sending a float
     /// where it wants a boolean is refused with error -3.
     pub fn set_object(&mut self, id: i64, value: Value) -> Result<()> {
         self.command(
@@ -569,7 +570,7 @@ impl Session {
             .unwrap_or(false))
     }
 
-    /// Point an input or output somewhere else — opcode 42, `{98: slot, 51:
+    /// Point an input or output somewhere else - opcode 42, `{98: slot, 51:
     /// destination}`. The destination indexes the same menu the preset stores
     /// under the slot's routing key; changing it through a document write is
     /// ignored, and this opcode, captured from HX Edit's own routing clicks,
@@ -611,7 +612,7 @@ impl Session {
 
     /// Change what a block is.
     ///
-    /// Like clearing, this needs the editing cursor on the block first — see
+    /// Like clearing, this needs the editing cursor on the block first - see
     /// [`Session::clear_block`] for why that matters.
     pub fn set_model(&mut self, block: i64, model: u32) -> Result<()> {
         self.set_model_ref(block, model, None)
@@ -620,7 +621,7 @@ impl Session {
     /// Make a block an Amp+Cab: an amp with its cab riding along in the same
     /// slot, each keeping its own parameters.
     ///
-    /// The pairing is the amp's, not a free choice — `amp.models` gives every
+    /// The pairing is the amp's, not a free choice - `amp.models` gives every
     /// amp a `cablink`, and `hx_catalog::Catalog::paired_cab` resolves it.
     pub fn set_model_pair(&mut self, block: i64, amp: u32, cab: u32) -> Result<()> {
         self.set_model_ref(block, amp, Some(cab))
@@ -665,7 +666,7 @@ impl Session {
     /// The keys were read straight off `mac-assign-capture.log`, where turning
     /// the row on sends `{98: block, 95: 5, 96: 300, 74: 0, 71: 4}` and turning
     /// it off sends the same with `71: 0`. Key 71 is the assignment's on
-    /// switch, the same as it is for a parameter — an earlier reading had the
+    /// switch, the same as it is for a parameter - an earlier reading had the
     /// CC number here, which would have written a number into that switch.
     pub fn assign_bypass_midi(&mut self, block: i64, on: bool) -> Result<()> {
         /// What is being controlled: this block's bypass.
@@ -686,7 +687,7 @@ impl Session {
         )
     }
 
-    /// Put a parameter under a controller — an expression pedal, a footswitch,
+    /// Put a parameter under a controller - an expression pedal, a footswitch,
     /// a MIDI CC.
     ///
     /// Captured from HX Edit's Bypass/Controller Assign page by scrolling its
@@ -755,7 +756,7 @@ impl Session {
 
     /// What controls a parameter now, and over what travel.
     ///
-    /// `None` for a parameter nothing controls — which the device reports as
+    /// `None` for a parameter nothing controls - which the device reports as
     /// source ordinal 0, the same "None" the assign page offers.
     pub fn read_assignment_raw(&mut self, block: i64, param: i64) -> Result<Value> {
         self.request(
@@ -801,7 +802,7 @@ impl Session {
 
     /// Make a footswitch toggle a block in and out.
     ///
-    /// Bypass is a switch, so only a footswitch or a MIDI CC can drive it —
+    /// Bypass is a switch, so only a footswitch or a MIDI CC can drive it -
     /// HX Edit lists expression pedals for it but steps over them.
     pub fn assign_bypass_footswitch(&mut self, block: i64, switch: u8) -> Result<()> {
         self.command(
@@ -954,8 +955,8 @@ impl Session {
         let Value::Array(entries) = result else {
             return Ok(Vec::new());
         };
-        // A setlist entry is a single-pair map from index to name — `{0:
-        // 'PRESETS'}` — rather than the keyed record the preset list uses.
+        // A setlist entry is a single-pair map from index to name - `{0:
+        // 'PRESETS'}` - rather than the keyed record the preset list uses.
         Ok(entries
             .iter()
             .map(|e| match e {

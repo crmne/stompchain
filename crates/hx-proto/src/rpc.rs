@@ -11,7 +11,7 @@ pub mod key {
     pub const ARGS: i64 = 101;
     /// Request and response: transaction id.
     pub const TXN: i64 = 102;
-    /// Response: how the request completed. Not an error code — a successful
+    /// Response: how the request completed. Not an error code - a successful
     /// select-preset answers 1 and a preset read answers 0.
     pub const STATUS: i64 = 103;
     /// Response: result payload.
@@ -28,7 +28,7 @@ pub mod key {
 
     /// Setlist number.
     pub const SETLIST: i64 = 107;
-    /// Preset index within the setlist, zero-based and linear — index 7 is the
+    /// Preset index within the setlist, zero-based and linear - index 7 is the
     /// slot the front panel calls 03B, not "bank 7".
     pub const PRESET_INDEX: i64 = 108;
     pub const NAME: i64 = 109;
@@ -73,7 +73,7 @@ pub mod key {
     /// Two further fields on an assignment whose meaning is not known; they
     /// were constant across every assignment captured.
     pub const ASSIGN_SCOPE: i64 = 96;
-    /// Which controller drives a parameter, on the way *in* — see `Source`.
+    /// Which controller drives a parameter, on the way *in* - see `Source`.
     pub const ASSIGN_FLAGS: i64 = 74;
     /// And which drives it on the way *out*. Opcode 36 does not answer with the
     /// key it was asked with: the reply puts the source ordinal at key 0.
@@ -101,8 +101,8 @@ pub mod key {
 
     /// Zero-based impulse response slot.
     pub const IR_SLOT: i64 = 112;
-    /// Accompanies an IR upload. Looks like a checksum — it changed between two
-    /// uploads of the same length — but the algorithm is not known, so it is
+    /// Accompanies an IR upload. Looks like a checksum - it changed between two
+    /// uploads of the same length - but the algorithm is not known, so it is
     /// sent as observed and may need to be right. **Unverified.**
     pub const IR_CHECKSUM: i64 = 113;
     /// Sample data: little-endian `f32`, mono.
@@ -114,7 +114,7 @@ pub mod key {
 
 /// Operation codes carried in [`key::OPCODE`].
 pub mod op {
-    /// `{107: setlist, 101: 2}` — every preset name in a setlist.
+    /// `{107: setlist, 101: 2}` - every preset name in a setlist.
     pub const LIST_PRESETS: i64 = 1;
     /// `{107: setlist, 108: preset index}`
     pub const SELECT_PRESET: i64 = 20;
@@ -122,9 +122,9 @@ pub mod op {
     pub const READ_PRESET: i64 = 22;
     /// Metadata for the current preset: bank, slot and name.
     pub const PRESET_INFO: i64 = 23;
-    /// `{118: id}` — fetch an object by id.
+    /// `{118: id}` - fetch an object by id.
     pub const FETCH_OBJECT: i64 = 24;
-    /// Write a device object — the mirror of [`FETCH_OBJECT`].
+    /// Write a device object - the mirror of [`FETCH_OBJECT`].
     /// `{118: object id, 119: value}`.
     pub const SET_OBJECT: i64 = 25;
     /// `{98: block, 29: true, 26: path, 28: index, 119: value}`
@@ -144,19 +144,19 @@ pub mod op {
     pub const SAVE_PRESET: i64 = 71;
     /// Setlist names. Control channel.
     pub const LIST_SETLISTS: i64 = 0;
-    /// `{101: 2}` — impulse response slots. Control channel.
+    /// `{101: 2}` - impulse response slots. Control channel.
     pub const LIST_IRS: i64 = 13;
     /// Opens and closes each control-channel exchange in HX Edit's traffic.
     pub const BEGIN: i64 = 255;
     pub const END: i64 = 254;
     /// Sent once during control-channel setup; purpose unknown.
     pub const READY: i64 = 112;
-    /// `{110: document}` — write a whole preset back.
+    /// `{110: document}` - write a whole preset back.
     pub const WRITE_PRESET: i64 = 21;
     /// Assign a MIDI controller to a block's parameter.
     ///
     /// `{98: block, 95: target, 96: ?, 74: ?, 71: cc}`. Captured by stepping
-    /// HX Edit's MIDI In field on a block's Bypass, where only key 71 moved —
+    /// HX Edit's MIDI In field on a block's Bypass, where only key 71 moved -
     /// so that is the CC number and the rest describe what is being controlled.
     /// Keys 95, 96 and 74 are replayed as observed. **[inferred]**
     pub const ASSIGN_CONTROLLER: i64 = 37;
@@ -165,7 +165,7 @@ pub mod op {
     /// The low end of a controller's travel: `{98, 29, 26, 28, 119: value}`.
     ///
     /// Min and Max are opcodes of their own rather than keys on the assign
-    /// message — keys 72 and 73 are what a *read* returns, not what a write
+    /// message - keys 72 and 73 are what a *read* returns, not what a write
     /// takes. Dragging either end streams one write per intermediate value, the
     /// way the global EQ does.
     pub const ASSIGN_MIN_OP: i64 = 65;
@@ -177,30 +177,30 @@ pub mod op {
     pub const UNASSIGN_FOOTSWITCH: i64 = 57;
     /// Read a footswitch's configuration: `{102: switch}`.
     pub const FOOTSWITCH_CONFIG: i64 = 33;
-    /// `{102: switch, 65: momentary}` — latching or momentary.
+    /// `{102: switch, 65: momentary}` - latching or momentary.
     pub const SWITCH_TYPE: i64 = 58;
-    /// `{102: switch, 109: label}` — the name written under your foot.
+    /// `{102: switch, 109: label}` - the name written under your foot.
     pub const SWITCH_LABEL: i64 = 59;
-    /// `{102: switch}` — clear the name again, back to what it carries.
+    /// `{102: switch}` - clear the name again, back to what it carries.
     pub const SWITCH_LABEL_CLEAR: i64 = 60;
-    /// `{102: switch, 66: colour}` — the LED colour, as an index into HX Edit's
+    /// `{102: switch, 66: colour}` - the LED colour, as an index into HX Edit's
     /// own `footswitchLED` list rather than an RGB value.
     pub const SWITCH_COLOUR: i64 = 61;
-    /// `{102: switch}` — back to Auto Color, which is index 0 of that list and
+    /// `{102: switch}` - back to Auto Color, which is index 0 of that list and
     /// has an opcode of its own rather than a value.
     pub const SWITCH_COLOUR_AUTO: i64 = 62;
-    /// `{98: block}` — empty a slot.
+    /// `{98: block}` - empty a slot.
     pub const CLEAR_BLOCK: i64 = 28;
     /// Upload an impulse response. Control channel.
     pub const UPLOAD_IR: i64 = 9;
-    /// `{112: slot}` — empty an impulse response slot. Control channel.
+    /// `{112: slot}` - empty an impulse response slot. Control channel.
     pub const CLEAR_IR: i64 = 15;
     /// `{98: block, 100: {23: paired, 25: model, 26: second model or -1}}`
     pub const SET_MODEL: i64 = 40;
-    /// `{98: block, 26: path}` — move the editing cursor, which the front panel
+    /// `{98: block, 26: path}` - move the editing cursor, which the front panel
     /// follows.
     pub const SELECT_BLOCK: i64 = 78;
-    /// `{92: index}` — switch snapshot.
+    /// `{92: index}` - switch snapshot.
     pub const SELECT_SNAPSHOT: i64 = 88;
 
     // ------------------------------------------------------ addressed slots ---
@@ -208,14 +208,14 @@ pub mod op {
     // (see docs/backup-and-restore.md). Everything above works on the *loaded*
     // preset; these name the slot, so a whole-pedal backup never loads anything
     // and answers in about 50 ms a preset instead of the seconds a load costs.
-    /// `{107: setlist, 108: index, 101: 2}` — read any slot's document.
+    /// `{107: setlist, 108: index, 101: 2}` - read any slot's document.
     pub const FETCH_PRESET: i64 = 4;
-    /// `{107, 108, 110: document}` — write a document straight into a slot.
+    /// `{107, 108, 110: document}` - write a document straight into a slot.
     pub const WRITE_SLOT: i64 = 5;
-    /// `{107, 108, 109: name, 110: document}` — write a slot and name it, which
+    /// `{107, 108, 109: name, 110: document}` - write a slot and name it, which
     /// is what a paste or an import does.
     pub const WRITE_SLOT_NAMED: i64 = 8;
-    /// `{107: setlist, 108: index}` — empty a slot.
+    /// `{107: setlist, 108: index}` - empty a slot.
     pub const CLEAR_SLOT: i64 = 16;
 
     // ------------------------------------------------------------ the store ---
@@ -230,17 +230,17 @@ pub mod op {
     /// Write the whole global-settings block as one msgpack blob. What a
     /// "restore global settings only" sends, in a single message.
     pub const WRITE_GLOBALS: i64 = 86;
-    /// Global EQ reset — answers with the same shape as [`GLOBAL_EQ`].
+    /// Global EQ reset - answers with the same shape as [`GLOBAL_EQ`].
     pub const GLOBAL_EQ_RESET: i64 = 77;
 
     // --------------------------------------------------------------- the IRs ---
-    /// `{112: slot}` — an IR slot's descriptor: name, checksum and format, the
+    /// `{112: slot}` - an IR slot's descriptor: name, checksum and format, the
     /// same argument map [`UPLOAD_IR`] sends.
     pub const IR_DESCRIPTOR: i64 = 12;
-    /// `{112: slot, 101: 2}` — an IR slot's samples. Everything comes back
+    /// `{112: slot, 101: 2}` - an IR slot's samples. Everything comes back
     /// 48 kHz mono `f32`, always 2048 samples, whatever was uploaded.
     pub const IR_SAMPLES: i64 = 11;
-    /// `{112: slot, 109: name}` — rename an IR slot.
+    /// `{112: slot, 109: name}` - rename an IR slot.
     pub const RENAME_IR: i64 = 10;
 
     // ----------------------------------------------------------- favourites ---
@@ -249,7 +249,7 @@ pub mod op {
     // entries. Control channel.
     /// List the favourites.
     pub const LIST_FAVOURITES: i64 = 112;
-    /// `{98: block}` — read a block back in the shape a favourite is stored in.
+    /// `{98: block}` - read a block back in the shape a favourite is stored in.
     pub const READ_AS_FAVOURITE: i64 = 45;
     /// Read one favourite: `{118: index}`.
     pub const FETCH_FAVOURITE: i64 = 113;
@@ -310,7 +310,7 @@ impl Message {
         }
     }
 
-    /// Field order matches HX Edit's own — transaction id first — so encoded
+    /// Field order matches HX Edit's own - transaction id first - so encoded
     /// messages are byte-identical to captured ones.
     pub fn to_value(&self) -> Value {
         let m = match self {
@@ -407,7 +407,7 @@ impl StreamReader {
             // symmetry but never gated on.
             let flags = u16::from_le_bytes([self.buf[pos], self.buf[pos + 1]]);
             // Nominally the service id, but the device sends uninitialised
-            // memory here on some replies — the same reply arrives with
+            // memory here on some replies - the same reply arrives with
             // different values across captures. Only the length can be
             // trusted, so this is carried, not checked.
             let service = u16::from_le_bytes([self.buf[pos + 2], self.buf[pos + 3]]);

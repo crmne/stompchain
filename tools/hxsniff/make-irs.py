@@ -3,7 +3,7 @@
 
 Capturing HX Edit's IR *download* means finding the sample bytes in a reply
 stream that has no framing we understand yet. A real cab IR is noise for that
-purpose — one f32 word looks like any other. These files are built so that any
+purpose - one f32 word looks like any other. These files are built so that any
 four bytes on the wire say where they came from:
 
   ramp1024    s[i] = i / 4096          exact in f32 and in 24-bit PCM, so the
@@ -31,7 +31,7 @@ FULL = 1 << 23  # 24-bit full scale
 
 
 def wav(path, rate, channels, frames):
-    """Write frames — a list of per-channel int tuples — as a 24-bit PCM WAV."""
+    """Write frames - a list of per-channel int tuples - as a 24-bit PCM WAV."""
     data = bytearray()
     for frame in frames:
         for v in frame:

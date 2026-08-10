@@ -1,7 +1,7 @@
 //! The model catalog: what every block model is called, and what its knobs do.
 //!
 //! The wire protocol identifies parameters by position and carries bare floats.
-//! On its own that is unreadable — `{98: 1, 26: 0, 119: 0.78}` says nothing
+//! On its own that is unreadable - `{98: 1, 26: 0, 119: 0.78}` says nothing
 //! about "Peak Reduction at 78%". The missing half is metadata, and HX Edit
 //! already ships it as plain JSON.
 //!
@@ -21,13 +21,13 @@ mod inspect;
 mod load;
 mod write;
 
+pub use build::{documents_from_backup, empty_the_chain, resolve, slots_from_hlx, Built};
 pub use format::Display;
 pub use hxb::{
-    read_backup, read_favourite_file, read_setlist_file, write_backup, NewBackup, Backup, BackupPreset, Block,
-    Container, Favourite,
+    read_backup, read_favourite_file, read_setlist_file, write_backup, Backup, BackupPreset, Block,
+    Container, Favourite, NewBackup,
 };
 pub use inspect::{inspect, ChainContent, OutputTarget, Tone, ToneBlock};
-pub use build::{documents_from_backup, empty_the_chain, resolve, slots_from_hlx, Built};
 pub use write::{to_hlx, Written};
 
 /// The key of HX Edit's footswitch LED colour list, for [`Catalog::menu`].
@@ -48,7 +48,7 @@ pub struct Catalog {
 ///
 /// The device identifies a model by a number and a parameter by its position.
 /// `Helix.sym` is an array whose index *is* that number and whose entries carry
-/// the parameters in the order the device indexes them — so it resolves both at
+/// the parameters in the order the device indexes them - so it resolves both at
 /// once. Nothing else in HX Edit's resources does.
 #[derive(Debug, Clone)]
 pub struct Symbol {
@@ -63,7 +63,7 @@ pub struct Symbol {
     pub model: Option<String>,
 }
 
-/// One block model — an amp, a delay, a compressor.
+/// One block model - an amp, a delay, a compressor.
 #[derive(Debug, Clone)]
 pub struct Model {
     /// Symbolic id, e.g. `HD2_CompressorLAStudioComp`. This is the identity
@@ -108,7 +108,7 @@ pub enum Kind {
     Continuous,
     /// A switch.
     Switch,
-    /// Free text. Rare — three parameters in the whole catalog.
+    /// Free text. Rare - three parameters in the whole catalog.
     Text,
 }
 
@@ -117,7 +117,7 @@ pub enum Kind {
 pub struct Category {
     pub id: u32,
     pub name: String,
-    /// Abbreviation HX Edit uses where space is tight — "Dist", "Verb".
+    /// Abbreviation HX Edit uses where space is tight - "Dist", "Verb".
     pub short_name: String,
     /// The colour HX Edit tints this category's blocks, as `0xRRGGBB`.
     /// Taken from the catalog rather than invented, so a chain drawn here
@@ -126,7 +126,7 @@ pub struct Category {
     /// Icon file name, e.g. `FX_HX_Category_Amp.png`. Resolve it with
     /// [`Catalog::category_artwork`].
     pub image: Option<String>,
-    /// Whether choosing from this category fills a block with *two* models —
+    /// Whether choosing from this category fills a block with *two* models -
     /// true only of Amp+Cab. Such a category re-lists models that belong to
     /// another one, so [`Catalog::category_of`] steps over it.
     pub paired: bool,
@@ -160,7 +160,7 @@ impl Category {
     ///
     /// Five of them do not: Input and Output are fixed endpoints of the
     /// topology, Split and Merge are the junctions between lanes, and
-    /// Connected Devices is settings for external gear — a Variax, a Powercab.
+    /// Connected Devices is settings for external gear - a Variax, a Powercab.
     /// None belongs in a list of pedals to pick from, and offering them there
     /// only invites the question of what happens when you choose one.
     pub fn is_effect(&self) -> bool {
@@ -298,7 +298,7 @@ impl Catalog {
     ///
     /// HX Edit does not give the endpoints a fixed picture: it draws whichever
     /// destination they are routed to, from a vertical strip of 72×72 frames
-    /// named with the count — `icon-inputs_%18.png`. Frame 0 is a placeholder,
+    /// named with the count - `icon-inputs_%18.png`. Frame 0 is a placeholder,
     /// so the frame for a routing value is one past it: value 0 (None) is the
     /// cross, value 1 (Multi) the guitars.
     pub fn endpoint_icons(&self, input: bool) -> Option<(PathBuf, usize)> {
@@ -321,7 +321,7 @@ impl Catalog {
     /// Two orderings exist and they are not the same. Effects are indexed by
     /// the firmware symbol table, which lists only real controls. Inputs,
     /// outputs and the like have no symbol entry, and their catalog list mixes
-    /// in `@`-prefixed structural fields — `@input`, `@enabled` — that carry no
+    /// in `@`-prefixed structural fields - `@input`, `@enabled` - that carry no
     /// value, so those have to come out or every knob is shifted by one.
     pub fn ordered_params<'a>(&self, model: &'a Model) -> Vec<&'a Param> {
         let by_symbol = self
@@ -362,8 +362,8 @@ impl Catalog {
     /// Which browsable category a model belongs to.
     ///
     /// Not `Model::category`. That field comes from the `.models` files and is
-    /// numbered in a different space from the catalog's own category ids —
-    /// Cali Q Graphic carries 14 there, while the EQ category is 106 — so
+    /// numbered in a different space from the catalog's own category ids -
+    /// Cali Q Graphic carries 14 there, while the EQ category is 106 - so
     /// using it to open the browser landed on whichever category happened to
     /// share the number. The membership lists are the authority.
     /// Amp+Cab is skipped: it re-lists the amps, so searching it first would
@@ -383,10 +383,10 @@ impl Catalog {
         self.model(model.cab_link.as_deref()?)
     }
 
-    /// The second count a slot's value array carries — key 3, beside key 2.
+    /// The second count a slot's value array carries - key 3, beside key 2.
     ///
     /// Key 2 is the number of values. Key 3 is the same number for most models
-    /// and one less for cabs, delays, reverbs and the FX Loop — the models that
+    /// and one less for cabs, delays, reverbs and the FX Loop - the models that
     /// carry a parameter the array holds but this count does not admit to. What
     /// that parameter is remains open; what it costs is one, consistently, so a
     /// written document can carry the right number without knowing why.
@@ -412,7 +412,7 @@ impl Catalog {
         Some(values as i64 - short as i64)
     }
 
-    /// The engine class the device stamps on a slot — key 9 in the document.
+    /// The engine class the device stamps on a slot - key 9 in the document.
     ///
     /// Needed to *build* a preset rather than edit one: every other field of a
     /// slot can be read off a `.hlx`, and this one cannot, so without it a
@@ -487,7 +487,7 @@ impl Catalog {
     ///
     /// The inverse of [`format`](Self::format): `"5.0"` on a knob shown 0..10
     /// becomes `0.5`, `"Limit"` on a switch becomes `1.0`. Displayed units in,
-    /// native units out — so nothing above this line has to know about scales.
+    /// native units out - so nothing above this line has to know about scales.
     pub fn parse(&self, param: &Param, text: &str) -> Option<f32> {
         let entry = param.display.as_deref().and_then(|k| self.displays.get(k));
 
@@ -511,7 +511,7 @@ impl Catalog {
     }
 
     /// The list a parameter is chosen from, when it is a menu rather than a
-    /// knob — routing destinations, cab mics, waveform shapes.
+    /// knob - routing destinations, cab mics, waveform shapes.
     pub fn choices(&self, param: &Param) -> Option<&[String]> {
         param
             .display
@@ -520,7 +520,7 @@ impl Catalog {
             .and_then(|d| d.choices(self))
     }
 
-    /// A named list that belongs to no parameter — the footswitch LED colours,
+    /// A named list that belongs to no parameter - the footswitch LED colours,
     /// for one. HX Edit keeps them in the same table it keeps every other menu
     /// in, so they are read the same way rather than typed out here.
     pub fn menu(&self, key: &str) -> Option<&[String]> {
@@ -576,7 +576,7 @@ pub(crate) mod tests {
     /// The real installed catalog, or `None` where HX Edit is not present.
     ///
     /// Only a missing install is a reason to skip. A catalog that is present
-    /// but will not parse is a genuine failure, and must not pass quietly —
+    /// but will not parse is a genuine failure, and must not pass quietly -
     /// swallowing it once already let a parse bug through.
     pub(crate) fn catalog() -> Option<Catalog> {
         match Catalog::load() {
@@ -704,7 +704,7 @@ pub(crate) mod tests {
         assert_eq!(frames, c.choices(from).unwrap().len() + 1);
     }
 
-    /// HX Edit paints its categories, and those colours are in the catalog —
+    /// HX Edit paints its categories, and those colours are in the catalog -
     /// so a chain drawn here can look like the same chain drawn there rather
     /// than like someone's guess at it.
     #[test]
@@ -727,8 +727,8 @@ pub(crate) mod tests {
         }
     }
 
-    /// Amp+Cab is the one category HX Edit's own catalog leaves out — its ids
-    /// run 0-9 and then 11 — so it is rebuilt from the amps that name a cab.
+    /// Amp+Cab is the one category HX Edit's own catalog leaves out - its ids
+    /// run 0-9 and then 11 - so it is rebuilt from the amps that name a cab.
     #[test]
     fn amp_and_cab_is_rebuilt_from_the_amps_that_name_a_cab() {
         let Some(c) = catalog() else { return };
@@ -745,7 +745,7 @@ pub(crate) mod tests {
         assert_eq!(ids[at + 1], Category::AMP, "Amp comes after it");
 
         // Every model in it pairs with a cab, that cab is a real model, and
-        // both halves are known to the firmware by number — which is what
+        // both halves are known to the firmware by number - which is what
         // choosing one actually sends, so a pair that cannot be numbered would
         // be a tile that quietly does nothing.
         assert!(!amp_cab.models.is_empty());
@@ -760,7 +760,7 @@ pub(crate) mod tests {
         }
 
         // And it re-lists amps rather than owning them, so an amp still
-        // browses as an Amp — otherwise swapping one would land here instead.
+        // browses as an Amp - otherwise swapping one would land here instead.
         let amp = c.models_in(Category::AMP_CAB)[0];
         assert_eq!(c.category_of(&amp.id), Some(Category::AMP));
     }
@@ -780,7 +780,7 @@ pub(crate) mod tests {
             assert_eq!(frames, 1, "{name} is a single image");
         }
 
-        // Send/Return's is a strip, one frame per direction the block faces —
+        // Send/Return's is a strip, one frame per direction the block faces -
         // the `%3` in its filename, the same convention as the endpoints.
         let (_, frames) = c.category_artwork(by_name("Send/Return")).unwrap();
         assert_eq!(frames, 3);
@@ -864,7 +864,7 @@ pub(crate) mod tests {
             ["Decay", "Predelay", "Low Cut", "High Cut", "Mix", "Level"]
         );
 
-        // An input has no symbol entry, and `@input` must not occupy a slot —
+        // An input has no symbol entry, and `@input` must not occupy a slot -
         // the device sends three values for it, not four.
         let input = c.model("HD2_AppDSPFlow1Input").unwrap();
         let names: Vec<_> = c

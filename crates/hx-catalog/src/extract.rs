@@ -204,8 +204,8 @@ fn from_archive(installer: &Path) -> Result<usize, String> {
     result
 }
 
-/// Run 7-Zip. Its exit code is not the verdict — it reports 2 on warnings
-/// while still extracting what matters — so the caller checks for files.
+/// Run 7-Zip. Its exit code is not the verdict - it reports 2 on warnings
+/// while still extracting what matters - so the caller checks for files.
 fn unpack(sevenzip: &str, archive: &Path, into: &Path) -> Result<(), String> {
     let out_flag = format!("-o{}", into.display());
     Command::new(sevenzip)

@@ -80,7 +80,12 @@ pub struct Column {
 
 impl Column {
     pub fn new(title: &'static str, width: f32) -> Column {
-        Column { title, width, editable: false, fills: false }
+        Column {
+            title,
+            width,
+            editable: false,
+            fills: false,
+        }
     }
 
     pub fn editable(mut self) -> Column {
@@ -158,7 +163,7 @@ pub fn show(ui: &mut Ui, id: &str, grid: &mut Grid) -> Did {
     let (ctrl, shift) = ui.input(|i| (i.modifiers.command, i.modifiers.shift));
     let available = ui.available_width();
     // Every column is widened by its own padding below, so the filling column
-    // has to give that room back for every one of them — including its own.
+    // has to give that room back for every one of them - including its own.
     // Counting only the fixed widths made the columns add up to wider than the
     // table and put a scrollbar under a table that fitted.
     let fixed: f32 = grid
@@ -192,7 +197,12 @@ pub fn show(ui: &mut Ui, id: &str, grid: &mut Grid) -> Did {
         })
         .collect();
 
-    let mut delegate = Delegate { grid, did: Did::default(), ctrl, shift };
+    let mut delegate = Delegate {
+        grid,
+        did: Did::default(),
+        ctrl,
+        shift,
+    };
     egui_table::Table::new()
         .id_salt(id)
         .num_rows(delegate.grid.rows.len() as u64)
@@ -216,18 +226,24 @@ fn row_height(grid: &Grid) -> f32 {
 fn draw_headers(ui: &mut Ui, grid: &Grid) {
     ui.horizontal(|ui| {
         for (i, column) in grid.columns.iter().enumerate() {
-            let width = if column.fills { ui.available_width() } else { column.width };
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(width, ROW_HEIGHT),
-                egui::Sense::hover(),
-            );
+            let width = if column.fills {
+                ui.available_width()
+            } else {
+                column.width
+            };
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), egui::Sense::hover());
             if ui.is_rect_visible(rect) && !column.title.is_empty() {
                 ui.painter().text(
                     rect.left_center() + egui::vec2(PADDING, 0.0),
                     egui::Align2::LEFT_CENTER,
                     column.title,
                     egui::TextStyle::Body.resolve(ui.style()),
-                    if i == grid.sort.0 { theme::ACCENT } else { theme::TEXT },
+                    if i == grid.sort.0 {
+                        theme::ACCENT
+                    } else {
+                        theme::TEXT
+                    },
                 );
             }
         }
@@ -272,7 +288,11 @@ impl egui_table::TableDelegate for Delegate<'_> {
                 egui::Align2::LEFT_CENTER,
                 format!("{}{arrow}", column.title),
                 egui::TextStyle::Body.resolve(ui.style()),
-                if index == sorting { theme::ACCENT } else { theme::TEXT },
+                if index == sorting {
+                    theme::ACCENT
+                } else {
+                    theme::TEXT
+                },
             );
         }
         if hit.on_hover_text("sort by this column").clicked() {
@@ -283,8 +303,8 @@ impl egui_table::TableDelegate for Delegate<'_> {
     fn cell_ui(&mut self, ui: &mut Ui, cell: &egui_table::CellInfo) {
         let row = cell.row_nr as usize;
         let col = cell.col_nr;
-        let picked = self.grid.chosen.get(row).copied().unwrap_or(false)
-            || self.grid.selected == Some(row);
+        let picked =
+            self.grid.chosen.get(row).copied().unwrap_or(false) || self.grid.selected == Some(row);
         // Striping and selection are painted here rather than by the table:
         // egui_table draws cells, and the row is the thing a person sees.
         let background = if picked {
@@ -295,7 +315,8 @@ impl egui_table::TableDelegate for Delegate<'_> {
             None
         };
         if let Some(fill) = background {
-            ui.painter().rect_filled(ui.max_rect(), egui::Rounding::ZERO, fill);
+            ui.painter()
+                .rect_filled(ui.max_rect(), egui::Rounding::ZERO, fill);
         }
 
         // Every cell is inset from its column's edge. Without it the text sits

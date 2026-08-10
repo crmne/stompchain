@@ -11,7 +11,7 @@ pub const DIM: Color32 = Color32::from_rgb(0x7d, 0x84, 0x92);
 pub const ACCENT: Color32 = Color32::from_rgb(0xd8, 0xa8, 0x3b);
 
 /// The name of the semibold family, for the few places that want real weight
-/// rather than egui's `strong()` — which only brightens the colour.
+/// rather than egui's `strong()` - which only brightens the colour.
 pub const SEMIBOLD: &str = "semibold";
 
 /// A font id in the semibold family.
@@ -22,9 +22,9 @@ pub fn semibold(size: f32) -> egui::FontId {
 /// The typeface: IBM Plex.
 ///
 /// A tone editor is a panel of numbers that change while you look at them, so
-/// the figures matter more than the letters. Plex has proper tabular figures —
+/// the figures matter more than the letters. Plex has proper tabular figures -
 /// 0.0 and 8.8 occupy the same width, so a value does not shuffle sideways as
-/// a knob turns — a one that cannot be mistaken for an l, and a slashed zero in
+/// a knob turns - a one that cannot be mistaken for an l, and a slashed zero in
 /// the mono cut for the slot labels. It was drawn for machinery, which is what
 /// this is, and it is OFL, so it ships with the binaries.
 ///
@@ -35,13 +35,23 @@ pub fn fonts(ctx: &egui::Context) {
 
     let mut fonts = egui::FontDefinitions::default();
     for (name, bytes) in [
-        ("plex", &include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf")[..]),
-        ("plex-semibold", &include_bytes!("../assets/fonts/IBMPlexSans-SemiBold.ttf")[..]),
-        ("plex-mono", &include_bytes!("../assets/fonts/IBMPlexMono-Regular.ttf")[..]),
+        (
+            "plex",
+            &include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf")[..],
+        ),
+        (
+            "plex-semibold",
+            &include_bytes!("../assets/fonts/IBMPlexSans-SemiBold.ttf")[..],
+        ),
+        (
+            "plex-mono",
+            &include_bytes!("../assets/fonts/IBMPlexMono-Regular.ttf")[..],
+        ),
     ] {
-        fonts
-            .font_data
-            .insert(name.to_owned(), std::sync::Arc::new(FontData::from_static(bytes)));
+        fonts.font_data.insert(
+            name.to_owned(),
+            std::sync::Arc::new(FontData::from_static(bytes)),
+        );
     }
 
     // First in the list is the primary; what follows is the fallback chain, so
@@ -106,14 +116,14 @@ pub fn apply(ctx: &egui::Context) {
 /// One block in the signal chain: the model's own artwork above its name,
 /// tinted and outlined when it is the block being edited, greyed when bypassed.
 ///
-/// The artwork is what makes a chain readable at a glance — the same reason HX
+/// The artwork is what makes a chain readable at a glance - the same reason HX
 /// Edit draws it. Models without a picture fall back to the name alone rather
 /// than leaving a hole.
 /// Our own category icons: the category's name, and the SVG drawn for it.
 ///
 /// Bundled rather than read off disk. Names and knob ranges have no substitute
 /// but HX Edit's own data; an icon is art we can simply make, so it is one less
-/// thing borrowed — and it is there whether or not HX Edit is installed.
+/// thing borrowed - and it is there whether or not HX Edit is installed.
 macro_rules! category_icons {
     ($($name:literal => $file:literal),* $(,)?) => {
         &[$((
@@ -154,7 +164,7 @@ const CATEGORY_ICONS: &[(&str, &str, &[u8])] = category_icons! {
 /// These were hand-plotted polylines for a while, because there was no SVG
 /// loader when they were first needed. There is one now, and a set drawn by
 /// people who draw icons for a living is better than one plotted from
-/// coordinates by someone who does not — more consistent with itself, above
+/// coordinates by someone who does not - more consistent with itself, above
 /// all, which is what a row of them has to be.
 macro_rules! ui_icons {
     ($($variant:ident => $file:literal),* $(,)?) => {
@@ -296,7 +306,11 @@ pub fn block_button_tinted(
                 egui::Align2::CENTER_CENTER,
                 elide(category, 16),
                 egui::FontId::proportional(9.0),
-                if enabled { DIM } else { DIM.gamma_multiply(0.6) },
+                if enabled {
+                    DIM
+                } else {
+                    DIM.gamma_multiply(0.6)
+                },
             );
         }
     }
@@ -371,13 +385,12 @@ impl Icon {
             .map(|(_, uri, _)| *uri)
             .unwrap_or_default()
     }
-
 }
 
 /// One drawn action, as a frameless button.
 ///
 /// Dim at rest and bright under the pointer, so a row of them reads as one
-/// quiet group until you go looking — the header should show the preset, not
+/// quiet group until you go looking - the header should show the preset, not
 /// an inventory of the program.
 pub fn icon_button(ui: &mut Ui, icon: Icon, enabled: bool) -> Response {
     tinted_icon_button(ui, icon, enabled, None)
@@ -449,7 +462,7 @@ pub fn insert_marker(ui: &Ui, rect: egui::Rect) {
 }
 
 /// The dragged block, riding along under the pointer so the hand knows what
-/// it is holding. A plain tile — name and category colour — floating above
+/// it is holding. A plain tile - name and category colour - floating above
 /// everything on its own layer.
 ///
 /// Centred on the pointer, deliberately: the tile is what the eye aims with,
@@ -513,7 +526,7 @@ pub fn led_swatch(name: &str) -> Color32 {
 /// glyph for it where one is installed.
 ///
 /// The icons are monochrome silhouettes, so they are tinted to match the text
-/// rather than drawn as they come — which also means the chip still reads when
+/// rather than drawn as they come - which also means the chip still reads when
 /// it is filled and the text goes black.
 pub fn category_chip(
     ui: &mut Ui,
@@ -526,9 +539,9 @@ pub fn category_chip(
     const GAP: f32 = 5.0;
 
     let ink = if on { Color32::BLACK } else { colour };
-    let galley = ui
-        .painter()
-        .layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.0), ink);
+    let galley =
+        ui.painter()
+            .layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.0), ink);
     let art_width = icon.map_or(0.0, |_| ICON + GAP);
     let size = Vec2::new(galley.size().x + art_width + 16.0, 22.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
@@ -576,9 +589,9 @@ pub fn category_chip(
 /// row above it look like a sibling rather than a parent.
 pub fn shelf_pill(ui: &mut Ui, name: &str, on: bool) -> Response {
     let ink = if on { Color32::BLACK } else { DIM };
-    let galley = ui
-        .painter()
-        .layout_no_wrap(name.to_owned(), egui::FontId::proportional(11.0), ink);
+    let galley =
+        ui.painter()
+            .layout_no_wrap(name.to_owned(), egui::FontId::proportional(11.0), ink);
     let size = Vec2::new(galley.size().x + 14.0, 18.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     if !ui.is_rect_visible(rect) {
@@ -751,7 +764,7 @@ fn fit(ui: &Ui, uri: &str, area: egui::Rect, tint: Color32) {
 ///
 /// HX Edit's artwork is 128 to 256 pixels square. Asking for more than that
 /// stretches it, and a stretched pedal looks worse than a small sharp one, so
-/// this never scales past 1:1 — it only shrinks to fit `max`.
+/// this never scales past 1:1 - it only shrinks to fit `max`.
 pub fn pedal_image(ui: &mut Ui, art: &Art, max: f32) -> Response {
     let image = egui::Image::new(&art.uri).maintain_aspect_ratio(true);
     let mut natural = image
@@ -864,7 +877,11 @@ pub fn knob(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>) 
 /// the pedal, and the same amber dot therefore meant two opposite things
 /// depending on where you were standing.
 pub fn place(ui: &mut Ui, icon: Icon, state: Sync) -> Response {
-    let sense = if state == Sync::Unknown { Sense::hover() } else { Sense::click() };
+    let sense = if state == Sync::Unknown {
+        Sense::hover()
+    } else {
+        Sense::click()
+    };
     let (rect, response) = ui.allocate_exact_size(Vec2::new(18.0, 16.0), sense);
     if !ui.is_rect_visible(rect) {
         return response;
@@ -966,7 +983,11 @@ pub fn footswitch(ui: &mut Ui, engaged: bool, lit: Option<Color32>, carried: boo
     );
     // Nothing carries it: say so with a dashed feel rather than a full ring.
     if !carried {
-        painter.circle_stroke(centre, body + 3.0, Stroke::new(1.0_f32, DIM.gamma_multiply(0.35)));
+        painter.circle_stroke(
+            centre,
+            body + 3.0,
+            Stroke::new(1.0_f32, DIM.gamma_multiply(0.35)),
+        );
     }
     response
 }
@@ -1008,15 +1029,15 @@ pub fn switch(on: &mut bool) -> impl egui::Widget + '_ {
 /// Where the signal forks into a parallel branch, or comes back together.
 ///
 /// Drawn as the wiring itself rather than as a box in the line, which is what
-/// it is. The main line runs straight through — a branch is an addition below
-/// the line, not a detour of it — and a curve drops away to each branch lane.
+/// it is. The main line runs straight through - a branch is an addition below
+/// the line, not a detour of it - and a curve drops away to each branch lane.
 /// HX Edit draws it the same way, and it is what makes the moment the path
 /// divides legible at a glance. It stays clickable, since a split still has a
 /// mode and a join still has levels.
 ///
 /// `opening` curves out to the branches; the merge is the same figure
 /// mirrored. `below` is how many branch lanes hang under the main line.
-/// `tag` is worn under the dot — "A/B", "XO" — for split types that change
+/// `tag` is worn under the dot - "A/B", "XO" - for split types that change
 /// how the preset behaves; the default Y goes untagged.
 pub fn junction(
     ui: &mut Ui,
@@ -1047,7 +1068,7 @@ pub fn junction(
 
     // One curve per branch, horizontal at both ends so the wiring reads as
     // wiring: it leaves the line level and arrives at the lane level. Painted
-    // past the widget's own rect — the lanes below are still this figure's
+    // past the widget's own rect - the lanes below are still this figure's
     // to meet.
     for n in 1..=below {
         let ty = cy + LANE_HEIGHT * n as f32;
@@ -1088,7 +1109,7 @@ pub const GHOST_HEIGHT: f32 = 40.0;
 
 /// The offer of a parallel branch, dashed because it does not exist yet:
 /// where the line would fork, the lane the blocks would sit on, and where it
-/// would merge back — with a `+` where the first block goes.
+/// would merge back - with a `+` where the first block goes.
 ///
 /// This replaced a label reading "parallel branch" floating in the signal
 /// path, which looked like a thing in the chain rather than an action.
@@ -1203,11 +1224,11 @@ pub fn swap_marker(ui: &Ui, rect: egui::Rect) {
 ///
 /// Drawn as ordinary wire until the pointer is over it, when it offers a `+`.
 /// Adding a block was previously only possible by finding an empty slot and
-/// changing its model, which meant knowing the slot topology — this puts the
+/// changing its model, which meant knowing the slot topology - this puts the
 /// action where the thing goes.
 pub fn insert_point(ui: &mut Ui, height: f32) -> Response {
     // Click *and drag*: a click-only widget here never completed its click,
-    // while the blocks either side — which sense drags — always did. Sensing
+    // while the blocks either side - which sense drags - always did. Sensing
     // the drag makes this widget the one that owns the press.
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(WIRE_WIDTH, height), Sense::click_and_drag());

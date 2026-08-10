@@ -85,7 +85,7 @@ json.dump({'refresh_token': d['refresh_token']}, open('$STORE','w'))
 
 # Short-lived access tokens are minted per run; only the refresh token persists.
 access_token() {
-    [ -f "$STORE" ] || die "not logged in — run: $0 login"
+    [ -f "$STORE" ] || die "not logged in - run: $0 login"
     local refresh
     refresh=$(json "['refresh_token']" <"$STORE")
     curl -sS -X POST "$HA/auth/token" \

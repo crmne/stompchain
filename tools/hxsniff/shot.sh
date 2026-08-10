@@ -1,5 +1,5 @@
 #!/bin/bash
-# shot.sh <name> — capture the HX Edit window, downscaled to 1400px wide.
+# shot.sh <name> - capture the HX Edit window, downscaled to 1400px wide.
 set -euo pipefail
 name="${1:-shot}"
 out="$HOME/.cache/hxsniff/shots/$name.png"

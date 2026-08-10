@@ -1,4 +1,4 @@
-// usbprobe — enumerate a USB device's interfaces/endpoints and test whether an
+// usbprobe - enumerate a USB device's interfaces/endpoints and test whether an
 // interface can be claimed from userspace.
 //
 //   usbprobe                 enumerate the default target (Line 6, VID 0x0E41)
@@ -87,7 +87,7 @@ int main(int argc, char **argv) {
         libusb_device_handle *h = NULL;
         int open_rc = libusb_open(list[i], &h);
         if (open_rc != 0) {
-            printf("  (could not open device: %s — string descriptors unavailable)\n",
+            printf("  (could not open device: %s - string descriptors unavailable)\n",
                    libusb_error_name(open_rc));
         } else {
             print_string(h, dd.iManufacturer, "manufacturer");

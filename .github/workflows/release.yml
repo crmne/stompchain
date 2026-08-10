@@ -37,7 +37,7 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       # The repository pins its toolchain, and rustup resolves that pin the
-      # moment cargo runs inside the checkout — a toolchain the setup step
+      # moment cargo runs inside the checkout - a toolchain the setup step
       # above never added the cross-target's standard library to. Adding it
       # here, inside the checkout, lands it on the toolchain actually used.
       - run: rustup target add ${{ matrix.target }}

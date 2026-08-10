@@ -14,10 +14,10 @@ Nothing here is derived from Line 6 source code.
 
 ## Confidence key
 
-- **[confirmed]** — isolated to one marked UI action, or cross-checked against a
+- **[confirmed]** - isolated to one marked UI action, or cross-checked against a
   second independent source (the preset document, or HX Edit's own data files).
-- **[inferred]** — consistent with everything observed, not isolated.
-- **[open]** — explicitly undetermined. Read these as "do not guess".
+- **[inferred]** - consistent with everything observed, not isolated.
+- **[open]** - explicitly undetermined. Read these as "do not guess".
 
 ## How the attribution was done
 
@@ -40,9 +40,9 @@ tools/hxsniff/attribute.py captures/*.log --dict        # the inventory below
 "carries stream data"**, and it is set on `0x04` (data), `0x0c` (data + piggybacked
 acknowledgement) and `0x14` (data on a keep-alive slot). Reading only `0x04`
 silently dropped 26 messages in `03-feature-sweep` and 10 in `01-connect-and-sync`
-— including two thirds of every slider gesture, which made it look as though the
+- including two thirds of every slider gesture, which made it look as though the
 device were pushing unsolicited replies. Both scripts now match `typ & 0x04`.
-**[confirmed]** — after the fix every request in all three captures has a matching
+**[confirmed]** - after the fix every request in all three captures has a matching
 reply, every reply a matching request, and all three streams decode to the last byte
 with no MessagePack desynchronisation.
 
@@ -60,9 +60,9 @@ only. Every request gets exactly one reply. **[confirmed]**
 
 | 103 | meaning |
 |---|---|
-| `0` | complete — `104` holds the result |
-| `1` | accepted, asynchronous — `104` is nil and the real completion arrives later as **notification 20** carrying the same `102` |
-| `255` | refused — `104` is `{111: signed error code}` |
+| `0` | complete - `104` holds the result |
+| `1` | accepted, asynchronous - `104` is nil and the real completion arrives later as **notification 20** carrying the same `102` |
+| `255` | refused - `104` is `{111: signed error code}` |
 
 Both async cases in the captures are unambiguous:
 
@@ -84,8 +84,8 @@ table keyed on 102 so notification 20 can complete it.
 HX Edit's traffic contains only 0 and 1; status 255 surfaced once deliberately
 bad requests were sent (a parameter on an empty slot, snapshot 7, model 99999),
 answering `{111: -3}`, `{111: -46}` and `{111: -302}` respectively. Note that
-the asynchronous acceptances are **not validated up front** — selecting preset
-999 on a 126-preset device answers `103: 1` and then nothing happens — and that
+the asynchronous acceptances are **not validated up front** - selecting preset
+999 on a 126-preset device answers `103: 1` and then nothing happens - and that
 a no-op such as clearing an empty IR slot is an honest `103: 0`.
 
 ---
@@ -106,13 +106,13 @@ the channel hello.
 | 22 | `0x1080` | connect; after a preset load | nil | preset document (blob) | [confirmed] |
 | 23 | `0x1080` | connect; after a preset load | nil | `{107, 108, 109: name, 117: bool, 83: [int,int], 92: int}` | [confirmed] |
 | 24 | `0x1080` | connect; Global Settings gear | `{118: object id}` | `{118: id, 119: value}` | [confirmed] |
-| 30 | `0x1080` | any parameter edit | `{98, 29, 26, 28, 119}` — see §4 | echo of the args | [confirmed] |
+| 30 | `0x1080` | any parameter edit | `{98, 29, 26, 28, 119}` - see §4 | echo of the args | [confirmed] |
 | 40 | `0x1080` | pick a model in the browser; Redo | `{98: block, 100: {23: bool, 25: model, 26: model}}` | `{13: 1, 24: <slot object>}` | [confirmed] |
 | 42 | `0x1080` | click a routing choice on an Input or Output block | `{98: slot, 51: destination}` | nil | [confirmed] |
 | 41 | `0x1080` | click a block's bypass switch | `{98: block, 59: enabled bool}` | nil | [confirmed] |
-| 76 | `0x1080` | connect | `{}` | `{63: bool, 55: [11 floats]}` — Global EQ | [confirmed] |
+| 76 | `0x1080` | connect | `{}` | `{63: bool, 55: [11 floats]}` - Global EQ | [confirmed] |
 | 78 | `0x1080` | click a block in the signal chain | `{98: block, 26: 0}` | nil | [confirmed] |
-| 99 | `0x1080` | connect | `{}` (arguments ignored) | `{63: bool}` — is the tempo driven by external MIDI clock. HX Edit shows `[External]` instead of the BPM when true. | [confirmed] |
+| 99 | `0x1080` | connect | `{}` (arguments ignored) | `{63: bool}` - is the tempo driven by external MIDI clock. HX Edit shows `[External]` instead of the BPM when true. | [confirmed] |
 | 112 | `0x1001` | connect | nil | nil | [open] |
 | 254 | `0x1001` | connect | `{}` | nil | [open] |
 
@@ -124,7 +124,7 @@ and **do not appear in any of our captures**. They are not corroborated here.
 Each is quoted as the layer-3 body (after the 8-byte stream header), taken verbatim
 from the capture.
 
-**op78 — select block.** `BLOCK-select-EQ1`, transfer 2298:
+**op78 - select block.** `BLOCK-select-EQ1`, transfer 2298:
 
 ```
 83 66 cd 03 f2 64 4e 65 82 62 02 1a 00
@@ -133,11 +133,11 @@ from the capture.
 <-- {105: 39, 106: {82: 1, 68: 3, 121: 19, 106: {98: 2, 26: 0}}}
 ```
 
-Block 2 of `CT-Sad` is `HD2_CaliQMono` — the EQ block the operator clicked. The four
+Block 2 of `CT-Sad` is `HD2_CaliQMono` - the EQ block the operator clicked. The four
 `BLOCK-select-*` marks produced `98:` 1, 2, 3 and 6, matching preset slots 1
 (Scream 808), 2 (Cali Q), 3 (Cali Rectifire + cab) and 6 (LA Studio Comp) exactly.
 
-**op41 — bypass.** `BLOCK-bypass-toggle` then `BLOCK-bypass-restore`, transfers 5264
+**op41 - bypass.** `BLOCK-bypass-toggle` then `BLOCK-bypass-restore`, transfers 5264
 and 5322:
 
 ```
@@ -149,7 +149,7 @@ and 5322:
 The block was on before the click, so **59 = enabled** (`True` = active, `False` =
 bypassed), not "bypassed". **[confirmed]**
 
-**op40 — change a block's model.** `MODEL-change-pick-first`, transfer 7152:
+**op40 - change a block's model.** `MODEL-change-pick-first`, transfer 7152:
 
 ```
 83 66 cd 04 0f 64 28 65 82 62 01 64 83 17 c2 19 cd 01 84 1a ff
@@ -164,7 +164,7 @@ bypassed), not "bypassed". **[confirmed]**
 Note key `100` is reused *inside* `101` as the model descriptor. It is nested, so
 there is no ambiguity, but a naive "key 100 means opcode" reader will break.
 
-**op24 — read a device object.** `GLOBAL-settings-gear` opened the Global Settings
+**op24 - read a device object.** `GLOBAL-settings-gear` opened the Global Settings
 dialog and read five objects in a row, 52 ms apart:
 
 ```
@@ -176,7 +176,7 @@ dialog and read five objects in a row, 52 ms apart:
 ```
 
 The connect sequence reads ids 128, 14, 73, 136 and 27. **Which setting each id names
-is [open]** — the capture only shows values, and no click in the sweep changed one.
+is [open]** - the capture only shows values, and no click in the sweep changed one.
 Two ids are pinned from elsewhere: **16 = tempo in BPM** and **28 = current preset
 index** (see §3, notification 22).
 
@@ -186,7 +186,7 @@ is **[open]**.
 
 ### 1.2 The connect sequence
 
-Identical in content and order across all three captures — only `117` in the op23
+Identical in content and order across all three captures - only `117` in the op23
 reply differed (see §2.2) **[confirmed]**:
 
 ```
@@ -222,7 +222,7 @@ setlist**, not a bank number: the librarian's `05A` is `108: 12`, and 12/3+1 = 5
 | 100 | opcode (request) | int |
 | 101 | arguments (request) | map or nil |
 | 102 | transaction id | int, from 1000 per channel |
-| 103 | completion mode — 0 done, 1 async (see above) | int |
+| 103 | completion mode - 0 done, 1 async (see above) | int |
 | 104 | result (response) | any |
 | 105 | notification id | int |
 | 106 | notification payload; **also** the inner argument key one level down | map or nil |
@@ -238,34 +238,34 @@ setlist**, not a bank number: the librarian's `05A` is `108: 12`, and 12/3+1 = 5
 | 10 | block enabled | bool | [inferred] |
 | 11 | primary model's parameter group `{2, 3, 4}` | map | [confirmed] |
 | 12 | secondary (cab) model's parameter group | map | [confirmed] |
-| 13 | in an op40 result — always `1`; inside a split or join body it is the slot the branch attaches before | int | [confirmed for split/join, open elsewhere] |
+| 13 | in an op40 result - always `1`; inside a split or join body it is the slot the branch attaches before | int | [confirmed for split/join, open elsewhere] |
 | 16 | tempo, BPM (preset-level, key `5`) | float | [confirmed] |
 | 19 | slot kind: 0 input, 1 output, 2 split, 3 join, 6 block, 8 empty | int | [confirmed] |
 | 20 | slot contents | map or nil | [confirmed] |
 | 22 | array of 20 slots | array | [confirmed] |
 | 23 | model descriptor has a paired second model (amp+cab) | bool | [inferred] |
 | 24 | model descriptor `{23, 25, 26}`; in an op40 *result*, the whole slot object | map | [confirmed] |
-| 25 | primary model id — index into `Helix.sym` | int | [confirmed] |
+| 25 | primary model id - index into `Helix.sym` | int | [confirmed] |
 | 26 | in a model descriptor: secondary model id, `-1` = none | int | [confirmed] |
 | 26 | in op30 / op78 / preset key 6: block sub-address, always `0` here | int | [open] |
-| 28 | parameter index — see §4 | int | [confirmed] |
+| 28 | parameter index - see §4 | int | [confirmed] |
 | 29 | in op30, always `True` | bool | [open] |
 | 55 | Global EQ: 11 floats, three bands of freq/Q/gain plus low-cut and high-cut | array | [confirmed] |
 | 59 | block enabled (op41) | bool | [confirmed] |
 | 63 | an enable flag; Global EQ on/off in op76, something else in op99 | bool | [inferred] |
-| 68 | notification topic — see §3 | int | [inferred] |
-| 82 | notification flag, 0 or 1, tracks `68` — see §3 | int | [open] |
-| 83 | in op23: `[int, int]`, stable per preset, changes with the preset — most likely DSP usage in hundredths of a percent per core | array | [inferred] |
+| 68 | notification topic - see §3 | int | [inferred] |
+| 82 | notification flag, 0 or 1, tracks `68` - see §3 | int | [open] |
+| 83 | in op23: `[int, int]`, stable per preset, changes with the preset - most likely DSP usage in hundredths of a percent per core | array | [inferred] |
 | 92 | in op23, always 0 | int | [open] |
-| 98 | block index — index into the preset's slot array `0.22[]` | int | [confirmed] |
+| 98 | block index - index into the preset's slot array `0.22[]` | int | [confirmed] |
 | 107 | setlist index | int | [confirmed] |
 | 108 | linear zero-based preset index (0..125 on HX Stomp) | int | [confirmed] |
 | 109 | name | string (C string, NUL included in the msgpack length) | [confirmed] |
 | 110 | a whole preset document, as op21's argument | blob | [confirmed] |
-| 117 | in op23 — `True` in captures 01/02, `False` in 03 for the same preset; most likely "has unsaved edits" | bool | [inferred] |
+| 117 | in op23 - `True` in captures 01/02, `False` in 03 for the same preset; most likely "has unsaved edits" | bool | [inferred] |
 | 118 | device object id (op24, notification 22) | int | [confirmed] |
-| 119 | value — of an object (op24) or a parameter (op30) | float / bool / int | [confirmed] |
-| 121 | notification sub-type — see §3 | int | [inferred] |
+| 119 | value - of an object (op24) or a parameter (op30) | float / bool / int | [confirmed] |
+| 121 | notification sub-type - see §3 | int | [inferred] |
 | 123, 124, 125 | per-preset flags in the op1 listing; `False, False, 0` for all 126 presets | bool, bool, int | [open] |
 
 Key 101 is used both as the top-level "arguments" key and, inside op1 and op13's
@@ -289,10 +289,10 @@ perfectly stable across all three captures. **[confirmed]**
 
 | 105 | 82 | 68 | 121 | Args | Produced by | Conf |
 |---|---|---|---|---|---|---|
-| 4 | 1 | 1 | 6 | `{107, 108}` | preset load — the *last* event of the load | [inferred] |
-| 8 | 1 | 1 | 5 | `{107, 108}` | preset load — the *first* event of the load | [inferred] |
-| 20 | — | — | — | `{102, 103, 104}` | deferred completion of an earlier `103: 1` reply | [confirmed] |
-| 21 | — | — | — | nil | after every document-write completion — follows notification 20 in all fourteen captured undos | [confirmed pattern, meaning inferred: post-commit tick] |
+| 4 | 1 | 1 | 6 | `{107, 108}` | preset load - the *last* event of the load | [inferred] |
+| 8 | 1 | 1 | 5 | `{107, 108}` | preset load - the *first* event of the load | [inferred] |
+| 20 | - | - | - | `{102, 103, 104}` | deferred completion of an earlier `103: 1` reply | [confirmed] |
+| 21 | - | - | - | nil | after every document-write completion - follows notification 20 in all fourteen captured undos | [confirmed pattern, meaning inferred: post-commit tick] |
 | 22 | 0 | 9 | 25 | `{118: id, 119: value}` | a device object changed | [confirmed] |
 | 22 | 0 | 10 | 27 | nil | see below | [open] |
 | 30 | 0 | 6 | 20 | `{98, 29, 26, 28, 119}` | a parameter changed | [confirmed] |
@@ -313,7 +313,7 @@ broadcast it. A client that also renders the signal chain will see its own edits
 back and must not treat them as external changes without comparing values.
 **[confirmed]**
 
-### 3.2 Notification 22 / (0, 9, 25) — object changed
+### 3.2 Notification 22 / (0, 9, 25) - object changed
 
 Loading a preset produced three of these:
 
@@ -327,10 +327,10 @@ Object 28's value 12 is the preset index just selected. Object 16's value 120.0 
 the *newly loaded* preset's `5.16`; the preset being replaced had `5.16 =
 75.789474`, so the notification is reporting the change rather than echoing the old
 state. Both are **[confirmed]** by that cross-check. This is the same `118` id space
-opcode 24 reads, so `op24 {118: 16}` should read the tempo back — untested, because
+opcode 24 reads, so `op24 {118: 16}` should read the tempo back - untested, because
 the connect sequence never asks for it.
 
-### 3.3 Notification 22 / (0, 10, 27) — an argument-free tick
+### 3.3 Notification 22 / (0, 10, 27) - an argument-free tick
 
 479 of these across the captures, always with `106: None`, so they carry no
 information beyond "something happened". Every inter-arrival gap is an exact multiple
@@ -355,13 +355,13 @@ values, so a client does not need to re-read the preset after a model change.
 
 ---
 
-## 4. Parameter addressing — opcode 30
+## 4. Parameter addressing - opcode 30
 
 This is the load-bearing result. Six `PARAM-*` marks in the sweep each touched a
 different control on one block, and one more in capture 02 touched a different block.
 
 The block under edit was preset slot 6 of `CT-Sad`, model id **120 =
-`HD2_CompressorLAStudioCompMono`** — LA Studio Comp, whose parameters in
+`HD2_CompressorLAStudioCompMono`** - LA Studio Comp, whose parameters in
 `Helix.sym` are, in order:
 
 ```
@@ -379,7 +379,7 @@ What each mark sent:
 | `PARAM-Mix-slider` | `{98: 6, 29: True, 26: 0, 28: 4, 119: 1.0 → 0.78}` | 4 | Mix |
 | `PARAM-Level-spinner-up` | `{98: 6, 29: True, 26: 0, 28: 5, 119: 0.0 → -0.1}` | 5 | Level |
 
-Index 3 (Emphasis) was never touched, and no mark ever produced `28: 3` — the gap is
+Index 3 (Emphasis) was never touched, and no mark ever produced `28: 3` - the gap is
 exactly where it should be.
 
 **So: `98` is the block index and `28` is the parameter index. `26` is neither.
@@ -404,7 +404,7 @@ parameter list (or filter the `@`-prefixed entries out of `.models`). **[confirm
 | Mix | 1 (`percent`) | 0.0 | 1.0 | 1.0, 0.78 |
 | Level | 1 (`volume`) | **-120.0** | **12.0** | 0.0, **-0.099998** |
 
-Level moved by exactly one 0.1 dB spinner step to **-0.1 dB** — a raw decibel value,
+Level moved by exactly one 0.1 dB spinner step to **-0.1 dB** - a raw decibel value,
 impossible under a 0..1 normalisation. (The mark is named `-spinner-up` but the value
 went *down*; the click landed on the down arrow. The step size is what matters.) The
 same holds elsewhere in the preset: slot 3's cab stores `LowCut 80.0` (Hz),
@@ -419,7 +419,7 @@ are bools. There is no single scaling. [confirmed]**
 Booleans are MessagePack `true`/`false` (`0xc3`/`0xc2`), not floats. For LA Studio
 Comp's Type, `False` = Compress and `True` = Limit, from the marks. **[confirmed]**
 
-Floats are float32, so values round-trip inexactly — `-0.1` arrives as `-0.099998`.
+Floats are float32, so values round-trip inexactly - `-0.1` arrives as `-0.099998`.
 Compare with a tolerance.
 
 ### 4.3 One gesture is three requests
@@ -440,7 +440,7 @@ The first request always re-sends the value the preset already held (verified ag
 the preset document for all seven parameter marks), the second carries the new value,
 the third repeats it. Only the value-changing request produces notification 30.
 This looks like HX Edit's mouse-down / move / mouse-up handling rather than anything
-the protocol requires; **a client can send one op30 [inferred]** — nothing in the
+the protocol requires; **a client can send one op30 [inferred]** - nothing in the
 capture suggests the first and third are needed.
 
 The wire form of the middle request and the resulting notification, verbatim:
@@ -450,18 +450,18 @@ The wire form of the middle request and the resulting notification, verbatim:
 <-- 82 69 1e 6a 84 52 00 44 06 79 14 6a 85 62 06 1d c3 1a 00 1c 00 77 ca 3d 4c cc cd
 ```
 
-### 4.4 What keys 26 and 29 are — not determined
+### 4.4 What keys 26 and 29 are - not determined
 
 `26` was `0` and `29` was `True` in all 21 op30 calls across all three captures, so
 neither can be pinned. **[open].** Two readings of `26` fit everything seen, and the
 capture cannot separate them:
 
-1. **Which of the slot's two models** — a slot carries a primary parameter group
+1. **Which of the slot's two models** - a slot carries a primary parameter group
    (key `11`) and a secondary one (key `12`) for the cab half of an Amp+Cab. `26`
    would select between them, and would have stayed 0 because no cab parameter was
    ever edited. This is supported by `26` naming the *secondary model id* inside a
    model descriptor, and by op78 `{98, 26}` addressing the same pair.
-2. **Path index** — HX Stomp has one signal path, so it would always be 0.
+2. **Path index** - HX Stomp has one signal path, so it would always be 0.
 
 The experiment that settles it: select the Amp+Cab block, edit a cab parameter
 (Low Cut), and see whether `26` becomes 1 or `28` continues past the amp's 12
@@ -495,18 +495,18 @@ everywhere it appears.
 | 11..18 | path B block slots |
 | 19 | join (`19: 3`) |
 
-The 1..8 / 11..18 split is **[inferred]** — preset `FX:5th Then 7th` has processing
+The 1..8 / 11..18 split is **[inferred]** - preset `FX:5th Then 7th` has processing
 blocks at 1, 3, 4, 5, 6 and at 12, with a split at 10 and a join at 19, which is
 exactly one parallel path.
 
-### 5.1 Model identity on the wire — resolved
+### 5.1 Model identity on the wire - resolved
 
 **The numeric model id in keys 25 and 26 is the zero-based index into
 `Helix.sym`. [confirmed]** This closes the "numeric model id ↔ symbolic name"
-gap that has since been closed — see `PROTOCOL.md` on the section table and
+gap that has since been closed - see `PROTOCOL.md` on the section table and
 `Preset::computed_sections`.
 
-Validated on ten independent models — both the symbolic name and the *parameter
+Validated on ten independent models - both the symbolic name and the *parameter
 count* match what the preset serialises:
 
 | id | `Helix.sym` symbol | params in `.sym` | params in preset | where |
@@ -527,7 +527,7 @@ count* match what the preset serialises:
 The cab case is the strongest single check: model 64's stored
 `[3.0, 80.0, 8000.0, 0.0, 0.0]` lines up with `Helix.sym`'s
 `['Distance', 'LowCut', 'HighCut', 'EarlyReflections', 'Level']` and with
-`cab.models`' `HD2_Cab4X12CaliV30` defaults of exactly 3.0 in, 80 Hz and 8000 Hz —
+`cab.models`' `HD2_Cab4X12CaliV30` defaults of exactly 3.0 in, 80 Hz and 8000 Hz -
 five values, five names, five defaults, all in order. Model 62 in capture 03 has the
 same shape with the user's own values, and its high cut of 10200 Hz sits inside the
 declared 500–20100 Hz range.
@@ -542,7 +542,7 @@ user's own installation at runtime; do not vendor it. See the [model catalog](ht
 ```
 
 For an ordinary block: `{23: False, 25: n, 26: -1}`. For CT-Sad's Amp+Cab slot:
-`{23: True, 25: 18, 26: 62}` — amp `HD2_AmpCaliRectifire` plus cab
+`{23: True, 25: 18, 26: 62}` - amp `HD2_AmpCaliRectifire` plus cab
 `HD2_Cab4x121960T75`, with parameter group `11` holding the amp's 12 values and group
 `12` the cab's 5. **[confirmed]** that this is the layout; **[inferred]** that `23`
 means "paired".
@@ -560,7 +560,7 @@ Split and join slots put the model id in key `8` instead
 
 The device supplies the new model's default parameters in the reply. Setting an
 Amp+Cab pair presumably means sending `{23: True, 25: amp, 26: cab}`, but that was
-never captured — **[inferred]**.
+never captured - **[inferred]**.
 
 **The device never enumerates models.** All fifteen `CAT-*` marks and `CAT-Distortion-open`
 produced **zero USB traffic**: HX Edit's model browser is
@@ -572,13 +572,13 @@ installation, or ship its own table. **[confirmed]**
 
 ## 6. Presets, setlists, snapshots, tempo, globals, undo/redo, copy
 
-### 6.1 Setlists and preset lists — [confirmed]
+### 6.1 Setlists and preset lists - [confirmed]
 
 `op0` returns `[{0: 'PRESETS'}]`: one setlist, index 0, named `PRESETS`. `op1
 {107: 0, 101: 2}` returns 126 entries `{index: {109: name, 123: False, 124: False,
 125: 0}}`. Flags 123/124/125 never varied → **[open]**.
 
-### 6.2 Loading a preset — [confirmed]
+### 6.2 Loading a preset - [confirmed]
 
 Selecting a preset in the librarian list sends nothing; the three
 `SELECT-PRESET-*` marks in `02-ui-actions` produced zero traffic. Only opening it
@@ -599,10 +599,10 @@ op22 nil -> the preset document
 The name is not in the preset document; it comes from op23. HX Edit re-reads both
 after the load rather than trusting a cached copy.
 
-### 6.3 Undo and redo — [confirmed], and they are client-side
+### 6.3 Undo and redo - [confirmed], and they are client-side
 
 `UNDO` after two model changes sent **opcode 21 with a complete 2643-byte preset
-document** in key 110 — HX Edit pushed the previous state wholesale rather than
+document** in key 110 - HX Edit pushed the previous state wholesale rather than
 asking the device to undo:
 
 ```
@@ -613,22 +613,22 @@ asking the device to undo:
 <-- {105: 21, 106: None}
 ```
 
-`REDO` did **not** use opcode 21 — it re-issued the original `op40 {98: 1, 100:
+`REDO` did **not** use opcode 21 - it re-issued the original `op40 {98: 1, 100:
 {23: False, 25: 510, 26: -1}}`. So the undo stack lives in the editor, and opcode 21
-is really **"write this preset document into the edit buffer"** — which is also the
+is really **"write this preset document into the edit buffer"** - which is also the
 opcode a third-party tool would use to upload a preset. **[inferred]** that it is a
 general write rather than an undo-specific call; nothing observed contradicts it, but
 it was only ever seen carrying a previously-read document.
 
-Notification 21 follows the completion of every document write — fourteen
+Notification 21 follows the completion of every document write - fourteen
 consecutive captured undos all show `20` then `21`. It reads as a post-commit
 tick; nothing acts on it. [confirmed pattern]
 
-### 6.4 Snapshots — no traffic, no conclusion
+### 6.4 Snapshots - no traffic, no conclusion
 
 `SNAPSHOT-selector-open` and `SNAPSHOT-pick` both produced **zero USB traffic**.
 Either the picker is local until a different snapshot is chosen, or the click landed
-on the snapshot already active. **No opcode for switching snapshots was captured here**, but it is opcode 88 —
+on the snapshot already active. **No opcode for switching snapshots was captured here**, but it is opcode 88 -
 found later by driving the snapshots from the keyboard rather than the mouse,
 since HX Edit sends nothing when a click lands on the already-active snapshot.
 See PROTOCOL.md. [confirmed]
@@ -641,7 +641,7 @@ active snapshot index [inferred]**.
 
 ### 6.5 Tempo
 
-`TEMPO-click` produced **zero traffic** — the click opened a local control.
+`TEMPO-click` produced **zero traffic** - the click opened a local control.
 Tempo itself is reachable: it is device object **id 16**, reported as
 `{118: 16, 119: 120.0}` and stored in the preset as `5.16`. **[confirmed]** for the
 identity of the object; the opcode that *writes* it is **[open]** (op24 is a read;
@@ -650,13 +650,13 @@ no write was captured).
 ### 6.6 Global settings
 
 `GLOBAL-settings-gear` read objects 95–99 via op24. The three `GLOBAL-tab-*` marks
-and `GLOBAL-close` produced **zero traffic** — the dialog's tabs are local and
+and `GLOBAL-close` produced **zero traffic** - the dialog's tabs are local and
 nothing was changed, so no write opcode was exercised. **[open].**
 
 ### 6.7 Preset copy
 
 `PRESET-copy` and `PRESET-select-target` both produced **zero traffic** (keep-alives
-only) — so copy in the librarian is a client-side clipboard operation, which is an
+only) - so copy in the librarian is a client-side clipboard operation, which is an
 answer rather than a gap. Paste is a document write (op21): this project implements
 copy, paste, import and export that way, and the round trip is verified byte-exact
 against hardware. [confirmed]
@@ -665,15 +665,15 @@ against hardware. [confirmed]
 
 ## 7. Marks that produced no traffic
 
-Reported honestly rather than guessed at. 31 of the 49 marks are here — only 18
+Reported honestly rather than guessed at. 31 of the 49 marks are here - only 18
 marks in the sweep produced any application traffic at all.
 
 | Mark(s) | Reading |
 |---|---|
-| `BLOCK-select-Dist` | The block was already selected — the earlier `TEST-MARK` click had selected slot 1, and re-clicking the selected block sends nothing. The later `BLOCK-select-Dist-again` did send `op78 {98: 1, 26: 0}`. |
+| `BLOCK-select-Dist` | The block was already selected - the earlier `TEST-MARK` click had selected slot 1, and re-clicking the selected block sends nothing. The later `BLOCK-select-Dist-again` did send `op78 {98: 1, 26: 0}`. |
 | `CAT-*` (15 marks), `CAT-Distortion-open` | The model browser is local; the device is not consulted. |
 | `TAB-*` (5 marks) | Editor tabs are local. |
-| `SNAPSHOT-selector-open`, `SNAPSHOT-pick` | See §6.4 — cannot distinguish "local UI" from "click missed". |
+| `SNAPSHOT-selector-open`, `SNAPSHOT-pick` | See §6.4 - cannot distinguish "local UI" from "click missed". |
 | `TEMPO-click` | Local control. |
 | `GLOBAL-tab-*` (3), `GLOBAL-close` | Local; nothing was changed. |
 | `PRESET-copy`, `PRESET-select-target` | Client-side clipboard; librarian selection is local. |
@@ -686,12 +686,12 @@ acknowledgements, so the silence is real and not a decoding failure.
 
 ## 8. Open questions worth one more capture
 
-1. **What key 26 selects in op30** — edit a cab parameter on an Amp+Cab block (§4.4).
-2. **The write side of op24** — change a value in Global Settings while capturing.
-3. **Snapshot switching** — switch to a genuinely different snapshot.
-4. **Real error codes** — send a malformed request (e.g. a block index of 99) and see
+1. **What key 26 selects in op30** - edit a cab parameter on an Amp+Cab block (§4.4).
+2. **The write side of op24** - change a value in Global Settings while capturing.
+3. **Snapshot switching** - switch to a genuinely different snapshot.
+4. **Real error codes** - send a malformed request (e.g. a block index of 99) and see
    what `103` comes back.
-5. **Key 29 in op30** — no idea how to vary it from the UI.
-6. **Whether op21 accepts an arbitrary preset document** — the only way to know
+5. **Key 29 in op30** - no idea how to vary it from the UI.
+6. **Whether op21 accepts an arbitrary preset document** - the only way to know
    whether a third-party tool can upload presets with it.
-7. **Notification 22/(0,10,27)** — 479 argument-free ticks on a 75 ms grid.
+7. **Notification 22/(0,10,27)** - 479 argument-free ticks on a 75 ms grid.

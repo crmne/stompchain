@@ -2,7 +2,7 @@
 //!
 //! Every captured preset is turned into a `.hlx` and then written back into an
 //! empty document. If the converter is right, what comes out is the preset that
-//! went in — the same models in the same slots, engaged the same way, with the
+//! went in - the same models in the same slots, engaged the same way, with the
 //! same values. Byte-for-byte where the whole document survives the trip.
 //!
 //! Skips when HX Edit's catalog is not installed (e.g. CI), rather than failing
@@ -48,8 +48,14 @@ fn a_chain_written_from_json_is_the_chain_it_described() {
         let mut rebuilt = Preset::parse(&bytes).expect("parses again");
         for position in 0..rebuilt.slots.len() {
             let empty = hx_proto::msgpack::Value::Map(vec![
-                (hx_proto::msgpack::Key::Int(19), hx_proto::msgpack::Value::Int(8)),
-                (hx_proto::msgpack::Key::Int(20), hx_proto::msgpack::Value::Nil),
+                (
+                    hx_proto::msgpack::Key::Int(19),
+                    hx_proto::msgpack::Value::Int(8),
+                ),
+                (
+                    hx_proto::msgpack::Key::Int(20),
+                    hx_proto::msgpack::Value::Nil,
+                ),
             ]);
             let _ = rebuilt.paste_slot(position, &empty);
         }
@@ -68,14 +74,22 @@ fn a_chain_written_from_json_is_the_chain_it_described() {
             wanted.len(),
             built.skipped
         );
-        assert!(built.skipped.is_empty(), "{name}: skipped {:?}", built.skipped);
+        assert!(
+            built.skipped.is_empty(),
+            "{name}: skipped {:?}",
+            built.skipped
+        );
 
-        for (index, (before, after)) in original.slots.iter().zip(rebuilt.slots.iter()).enumerate() {
+        for (index, (before, after)) in original.slots.iter().zip(rebuilt.slots.iter()).enumerate()
+        {
             if before.kind != hx_proto::preset::Kind::Block || before.model.is_none() {
                 continue;
             }
             assert_eq!(before.model, after.model, "{name} slot {index}: model");
-            assert_eq!(before.enabled, after.enabled, "{name} slot {index}: engaged");
+            assert_eq!(
+                before.enabled, after.enabled,
+                "{name} slot {index}: engaged"
+            );
             assert_eq!(
                 before.type_tag, after.type_tag,
                 "{name} slot {index}: engine class"
@@ -98,7 +112,7 @@ fn a_chain_written_from_json_is_the_chain_it_described() {
 /// A rebuilt document survives the trip to bytes and back.
 ///
 /// Not byte-exactness: a `.hlx` does not record how the device encoded each
-/// number — the same 1.0 may be an integer in one preset and a float in
+/// number - the same 1.0 may be an integer in one preset and a float in
 /// another, and the widths matter because a preset carries a table of byte
 /// offsets into itself. What is recomputed on encode is that table, so the
 /// document the device receives is coherent; what cannot be reproduced from
@@ -133,7 +147,10 @@ fn a_rebuilt_document_survives_encoding_and_parsing_back() {
         {
             assert_eq!(before.kind, after.kind, "{name} slot {index}: kind");
             assert_eq!(before.model, after.model, "{name} slot {index}: model");
-            assert_eq!(before.enabled, after.enabled, "{name} slot {index}: engaged");
+            assert_eq!(
+                before.enabled, after.enabled,
+                "{name} slot {index}: engaged"
+            );
             assert_eq!(
                 before.values.len(),
                 after.values.len(),
@@ -220,7 +237,11 @@ fn a_bundle_written_from_presets_rebuilds_into_the_same_chains() {
         else {
             panic!("{name}: not in the rebuilt bundle");
         };
-        assert!(built.skipped.is_empty(), "{name}: skipped {:?}", built.skipped);
+        assert!(
+            built.skipped.is_empty(),
+            "{name}: skipped {:?}",
+            built.skipped
+        );
 
         let got: Vec<_> = document
             .slots

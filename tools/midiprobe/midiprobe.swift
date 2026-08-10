@@ -1,4 +1,4 @@
-// midiprobe — a small CoreMIDI probe for reverse-engineering device protocols.
+// midiprobe - a small CoreMIDI probe for reverse-engineering device protocols.
 //
 //   midiprobe list
 //   midiprobe listen <src-substring> [ms]
@@ -226,7 +226,7 @@ case "listen":
     let collector = Collector()
     let (_, inPort) = makeClientAndInput(collector)
     MIDIPortConnectSource(inPort, src, nil)
-    print("Listening on '\(name)' for \(ms) ms — interact with the device/app now...")
+    print("Listening on '\(name)' for \(ms) ms - interact with the device/app now...")
     RunLoop.current.run(until: Date().addingTimeInterval(Double(ms) / 1000))
     if collector.isEmpty { print("\nNothing received.") }
     summarize(collector)

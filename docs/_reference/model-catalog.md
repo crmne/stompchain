@@ -13,7 +13,7 @@ Reference copy examined:
 
 HX Edit **3.82** (`CFBundleVersion` 3.8.2) for macOS, files dated 2024-11-27,
 universal (x86_64 + arm64). All files were opened read-only; none were modified.
-Counts and field inventories below are specific to this build — re-run the
+Counts and field inventories below are specific to this build - re-run the
 snippets against a different version rather than assuming they carry over.
 
 ## Licensing
@@ -35,10 +35,10 @@ down field layout, and are reproduced here for interoperability documentation on
 
 Statements below are tagged:
 
-- **[C]** confirmed — directly observed in the files, reproducible by re-running
+- **[C]** confirmed - directly observed in the files, reproducible by re-running
   the snippets in this document.
-- **[I]** inferred — consistent with everything observed, but not directly proven.
-- **[U]** undetermined — stated explicitly as unknown.
+- **[I]** inferred - consistent with everything observed, but not directly proven.
+- **[U]** undetermined - stated explicitly as unknown.
 
 ---
 
@@ -49,24 +49,24 @@ Statements below are tagged:
 | `HX_ModelCatalog.json` | 527 KB | JSON | Editor-facing browse tree: categories → subcategories → models, with display names, icons, parameter display order |
 | `HX_ModelCatalog.bin` | 154 KB | MessagePack | Decodes to a structure exactly equal to `HX_ModelCatalog.json` **[C]** |
 | `HelixModelDefs.bin` | 847 KB | MessagePack | Concatenation of all 19 `*.models` files, 681 records **[C]** |
-| `*.models` (19 files) | — | JSON | Model definitions: parameter ranges, defaults, types, DSP load, device availability |
+| `*.models` (19 files) | - | JSON | Model definitions: parameter ranges, defaults, types, DSP load, device availability |
 | `Helix.sym` | 121 KB | JSON | 833 firmware DSP symbols → **ordered** parameter-name list |
 | `HelixControls.json` | 133 KB | JSON | 301 display/formatting/step definitions referenced by `displayType` |
-| `default_preset.hlx`, `default_preset_hxs.hlx`, `default_preset_hfx.hlx`, `empty_preset.hlx` | — | JSON | Preset templates |
+| `default_preset.hlx`, `default_preset_hxs.hlx`, `default_preset_hfx.hlx`, `empty_preset.hlx` | - | JSON | Preset templates |
 | `appStrings_eng.json` | 26 KB | JSON | UI string table (24 top-level keys, nested). Not model data. |
-| `prefsDialog.xml` and friends | — | XML | Widget layouts. Occasionally useful — `prefsDialog.xml` carries device IDs as menu item IDs. |
+| `prefsDialog.xml` and friends | - | XML | Widget layouts. Occasionally useful - `prefsDialog.xml` carries device IDs as menu item IDs. |
 
 The 19 `.models` files: `amp`, `cab`, `cabmicirs`, `cabmicirswithpan`,
 `compressor`, `delay`, `distortion`, `eq`, `filter`, `fixed`, `gate`, `io`,
 `modulation`, `pitch-synth`, `preamp`, `reverb`, `sendreturn`, `volumepan`, `wah`.
 
-### 1.1 The `.bin` files are MessagePack — with one quirk
+### 1.1 The `.bin` files are MessagePack - with one quirk
 
 Both `.bin` files are standard MessagePack, and both parse to completion with zero
 trailing bytes **[C]**. The quirk: **every string carries a trailing NUL byte
 inside the msgpack length**. `0xAB "categories\0"` is a `fixstr` of length 11
 holding a 10-character name plus a NUL. Verified over all 14 307 strings in
-`HX_ModelCatalog.bin` and all 82 473 strings in `HelixModelDefs.bin` — zero
+`HX_ModelCatalog.bin` and all 82 473 strings in `HelixModelDefs.bin` - zero
 exceptions, and no zero-length strings **[C]**. A reader must strip one trailing
 byte from every decoded string.
 
@@ -78,7 +78,7 @@ Type codes actually used **[C]**:
 | `HelixModelDefs.bin` | the above plus `uint8/16/32`, `int8`, negative `fixint` |
 
 No `map32`, `array32`, `str32`, `bin*`, `ext*` or `float64` appear. `float64` is
-absent, so **all real numbers in `HelixModelDefs.bin` are IEEE float32** — decoding
+absent, so **all real numbers in `HelixModelDefs.bin` are IEEE float32** - decoding
 `load: 28.27` from the `.bin` yields `28.270000457763672`, whereas the `.models`
 JSON has the exact decimal. Prefer the JSON when precision matters; otherwise
 compare with a tolerance **[C]**.
@@ -133,10 +133,10 @@ Single top-level key `categories`, a list of 23 category objects **[C]**.
 }
 ```
 
-- `id` — small integer, **not** contiguous: the observed set is
+- `id` - small integer, **not** contiguous: the observed set is
   0–9, 11–23 (10 is absent) **[C]**.
-- `color` — `0xRRGGBB` as a *string* **[C]**.
-- `image` — filename resolved under `icons_category/` **[C]**: 22 of the 23
+- `color` - `0xRRGGBB` as a *string* **[C]**.
+- `image` - filename resolved under `icons_category/` **[C]**: 22 of the 23
   category `image` values exist verbatim in that directory.
 - A category has **either** `models` **or** `subcategories`, never both. Category
   23 (`Favorites`) has neither **[C]**.
@@ -145,7 +145,7 @@ Full category table **[C]**:
 
 | id | name | shape | subcategories |
 |---|---|---|---|
-| 0 | None | models (1) | — |
+| 0 | None | models (1) | - |
 | 1 | Distortion | subcats | Mono, Stereo, Legacy |
 | 2 | Dynamics | subcats | Mono, Stereo, Legacy |
 | 3 | EQ | subcats | Mono, Stereo |
@@ -162,12 +162,12 @@ Full category table **[C]**:
 | 15 | Volume/Pan | subcats | Mono, Stereo |
 | 16 | Send/Return | subcats | Mono, Stereo |
 | 17 | Looper | subcats | Mono, Stereo |
-| 18 | Input | models (4) | — |
-| 19 | Output | models (4) | — |
-| 20 | Split | models (4) | — |
-| 21 | Merge | models (1) | — |
-| 22 | Connected Devices | models (3) | — |
-| 23 | Favorites | *empty* | — |
+| 18 | Input | models (4) | - |
+| 19 | Output | models (4) | - |
+| 20 | Split | models (4) | - |
+| 21 | Merge | models (1) | - |
+| 22 | Connected Devices | models (3) | - |
+| 23 | Favorites | *empty* | - |
 
 ### 2.2 Subcategory
 
@@ -178,13 +178,13 @@ Exactly two keys plus the model list **[C]**:
 ```
 
 Subcategory `id` is **globally unique across the whole catalog**, not per-category
-— Distortion's Mono/Stereo/Legacy are 4/5/6 **[C]**. This matters because
+- Distortion's Mono/Stereo/Legacy are 4/5/6 **[C]**. This matters because
 `use_subcategory` (below) references it by that global id.
 
 ### 2.3 Model entry
 
 872 model entries exist across all categories, but only **679 distinct `id`
-values** — 193 ids appear more than once **[C]**. The duplicates are cross-listings
+values** - 193 ids appear more than once **[C]**. The duplicates are cross-listings
 (a model that is both Mono and Stereo appears in both subcategories).
 
 **Full entry** (the canonical listing):
@@ -202,15 +202,15 @@ values** — 193 ids appear more than once **[C]**. The duplicates are cross-lis
 }
 ```
 
-**Cross-reference entry** — the same model as listed under `Stereo` (subcategory 5):
+**Cross-reference entry** - the same model as listed under `Stereo` (subcategory 5):
 
 ```json
 { "id": "HD2_DistKinkyBoost", "use_subcategory": 4 }
 ```
 
 `use_subcategory: 4` means "the full record lives in subcategory 4". A reader must
-resolve these — 146 entries carry `use_subcategory` **[C]**. 726 of 872 entries
-carry `name`, and the 146 without it are **exactly** the 146 cross-references —
+resolve these - 146 entries carry `use_subcategory` **[C]**. 726 of 872 entries
+carry `name`, and the 146 without it are **exactly** the 146 cross-references -
 verified as an identity, not just a count match **[C]**. So the rule is simply:
 *an entry with `use_subcategory` has no other content; an entry without it is
 complete.*
@@ -263,21 +263,21 @@ purposes since ranges live in `.models`, not here.
 |---|---|---|---|
 | `id` | 872 | string | Symbolic model id, e.g. `HD2_DistKinkyBoost`. **This is the model's identity.** |
 | `name` | 726 | string | Display name |
-| `image` | 726 | string | Icon filename resolved under `icons_models/` **[C]** — 725 of 726 exist verbatim there (the exception, `icon-input-category.png`, lives elsewhere) |
-| `params` | 725 | array | Display *order* + display-name overrides — see below |
+| `image` | 726 | string | Icon filename resolved under `icons_models/` **[C]** - 725 of 726 exist verbatim there (the exception, `icon-input-category.png`, lives elsewhere) |
+| `params` | 725 | array | Display *order* + display-name overrides - see below |
 | `use_subcategory` | 146 | int | Cross-reference to the subcategory holding the full record |
 | `stereo` | 49 | bool | Marks the entry as the stereo listing |
 | `bass` | 24 | bool | Bass-oriented model (used to filter Bass subcategories) **[I]** |
 | `hidden` | 22 | bool | Not shown in the browser **[I]** |
 | `meterInterval` | 17 | float | Metering refresh/scale hint; co-occurs with `meterChannels`/`meterMin`/`meterMax` in `.models` **[I]** |
 | `image_native` | 8 | string | Alternate icon for Helix Native **[I]** |
-| `page_count`, `page_names`, `param_pages` | 1 each | — | Multi-page parameter UI |
+| `page_count`, `page_names`, `param_pages` | 1 each | - | Multi-page parameter UI |
 
 #### The catalog `params` array is presentation, not definition
 
 Each element is **either**:
 
-- an object `{ "<paramSymbolicID>": <displayNameOverride|null> }` — `null` means
+- an object `{ "<paramSymbolicID>": <displayNameOverride|null> }` - `null` means
   "use the name from the `.models` definition"; a string overrides it
   (e.g. `{"Bass": "Bass Cut"}` on `HD2_DistTeemah`) **[C]**; or
 - a **list** of such objects, meaning "these parameters share one UI cell / knob
@@ -291,7 +291,7 @@ Each element is **either**:
 ]
 ```
 
-Ranges, defaults and types are **not** here — they are in the `.models` files.
+Ranges, defaults and types are **not** here - they are in the `.models` files.
 
 ---
 
@@ -300,10 +300,10 @@ Ranges, defaults and types are **not** here — they are in the `.models` files.
 This is the part a third-party editor actually needs.
 
 Each `.models` file is a JSON **array** of model records. 681 records total,
-keyed by `symbolicID` — the same string used as `id` in the catalog and as
+keyed by `symbolicID` - the same string used as `id` in the catalog and as
 `@model` in `.hlx` presets **[C]**.
 
-### 3.1 Verbatim example — a small, complete record
+### 3.1 Verbatim example - a small, complete record
 
 From `volumepan.models`:
 
@@ -383,17 +383,17 @@ From `gate.models`, showing metering fields and a discrete-ish control:
 | `symbolicID` | 681 | string | Model identity |
 | `params` | 681 | array | Parameter definitions (below) |
 | `name` | 677 | string | Display name |
-| `category` | 662 | int | Category taxonomy — **different numbering from the catalog's category ids**, see §3.6 |
+| `category` | 662 | int | Category taxonomy - **different numbering from the catalog's category ids**, see §3.6 |
 | `load` | 645 | float | DSP cost, mono. Used for the "DSP usage" bar **[I]** |
 | `load_stereo` | 186 | float | DSP cost when the block is stereo **[I]** |
 | `load_320` | 2 | float | DSP cost override for firmware ≥ 3.20 **[I]** |
-| `devices` | 391 | array | Device availability + minimum firmware — see §5 |
+| `devices` | 391 | array | Device availability + minimum firmware - see §5 |
 | `exclude_devices` | 1 | array | Negative availability list (one model excludes `0x210006`) |
 | `mono` | 210 | bool | Model can run mono |
 | `stereo` | 210 | bool | Model can run stereo |
 | `cablink` | 111 | string | Default cab model paired with this amp |
 | `ircablink` | 111 | string | Default cab+mic-IR model paired with this amp |
-| `capEdge` | 92 | float | Amp-model-specific tone constant, values ~0.16–0.32 **[U]** — meaning not determined |
+| `capEdge` | 92 | float | Amp-model-specific tone constant, values ~0.16–0.32 **[U]** - meaning not determined |
 | `meterChannels` / `meterMin` / `meterMax` | 17 each | int/float | Metering geometry and dB range |
 | `name_stereo` | 1 | string | Alternate name in stereo |
 
@@ -403,11 +403,11 @@ From `gate.models`, showing metering fields and a discrete-ish control:
 |---|---|---|---|
 | `symbolicID` | 6861 | yes | Parameter key. Names beginning with `@` are **block-structural** (`@enabled`, `@stereo`, `@trails`, `@bypassvolume`) rather than DSP parameters **[C]** |
 | `name` | 6861 | yes | Display name |
-| `valueType` | 6861 | yes | 0/1/2/3 — see §3.4 |
+| `valueType` | 6861 | yes | 0/1/2/3 - see §3.4 |
 | `min` | 6861 | yes | Inclusive minimum, typed per `valueType` |
 | `max` | 6861 | yes | Inclusive maximum, typed per `valueType` |
 | `default` | 6861 | yes | Default value, typed per `valueType` |
-| `displayType` | 6028 | no | Key into `HelixControls.json` — formatting, units, step, enum labels |
+| `displayType` | 6028 | no | Key into `HelixControls.json` - formatting, units, step, enum labels |
 | `assign` | 1611 | no | Integer 1–9, see §3.5 |
 | `stereo-only` | 72 | no | Parameter exists only when the block is stereo |
 | `default_stereo` | 37 | no | Default override when stereo |
@@ -445,7 +445,7 @@ Verbatim examples of each override form **[C]**:
 ### 3.4 `valueType` **[C]**
 
 Determined by checking the Python type of `min`/`max`/`default` across all 6 861
-parameters — the correlation is exact, with no exceptions:
+parameters - the correlation is exact, with no exceptions:
 
 | `valueType` | n | `min`/`max`/`default` type | Interpretation |
 |---|---|---|---|
@@ -455,7 +455,7 @@ parameters — the correlation is exact, with no exceptions:
 | 3 | 3 | string | **String.** Only on `@global_params`: `@topology0`, `@topology1`, `@cursor_group`. `min`/`max`/`default` are all `""` |
 
 Four `valueType: 1` parameters have an integer-typed `default` alongside float
-`min`/`max` — treat `default` as a float **[C]**.
+`min`/`max` - treat `default` as a float **[C]**.
 
 Note that `valueType: 1` with an `isDiscrete` display type never occurs, but
 `valueType: 2` with `isDiscrete` occurs 395 times (booleans rendered as a two-item
@@ -464,7 +464,7 @@ segmented control, e.g. `off_on`) **[C]**.
 ### 3.5 `assign`
 
 Integer 1–9, present on 1 611 parameters, unique within a model for all but 3 of
-the 681 models **[C]**. It is stable across models for equivalent controls —
+the 681 models **[C]**. It is stable across models for equivalent controls -
 across amps, `Drive`=1, `Bass`=3, `Mid`=4, `Treble`=5, `Presence`/`HighMid`=6,
 `Master`=7, `ChVol`=8 **[C]**. It is **not** the display order (that is the
 catalog `params` array) and **not** the DSP parameter index (that is `Helix.sym`).
@@ -493,8 +493,8 @@ Two different numberings; do not conflate them **[C]**:
 | 12 | sendreturn.models |
 | 13 | preamp.models (111) |
 | 14 | eq.models |
-| 15 | fixed.models — loopers |
-| 16 | fixed.models — impulse responses |
+| 15 | fixed.models - loopers |
+| 16 | fixed.models - impulse responses |
 | 17 | volumepan.models |
 | 19 | cabmicirs.models, cabmicirswithpan.models |
 
@@ -503,7 +503,7 @@ internal tag **[I]**.
 
 ---
 
-## 4. `HelixControls.json` — display, units, step, enum labels
+## 4. `HelixControls.json` - display, units, step, enum labels
 
 301 entries **[C]**. `displayType` on a parameter is a key into this map. Keys
 observed on the control objects, with counts:
@@ -513,7 +513,7 @@ observed on the control objects, with counts:
 | `format` | 239 | Either a printf format string, an **array of labels** (enum), or an array of range-scoped format objects |
 | `isDiscrete` | 193 | Value snaps to integers |
 | `controlType` | 105 | Always `"segmented"` where present **[C]** |
-| `alias` | 58 | Delegate to another control definition (`{"alias": "eq_low_cut"}`) — resolve recursively |
+| `alias` | 58 | Delegate to another control definition (`{"alias": "eq_low_cut"}`) - resolve recursively |
 | `step` | 53 | `{fine, coarse}` or an array of range-scoped `{lowerBound, upperBound, fine, coarse}` |
 | `displayToWidgetScale` | 39 | Display-value → widget-position scale |
 | `dspToDisplayScale` | 29 | **DSP value → display value multiplier** |
@@ -566,7 +566,7 @@ Verbatim examples covering each shape **[C]**:
 ```
 
 **Rendering algorithm** (reconstructed from field names and consistency with the
-observed data — **[I]**, not proven):
+observed data - **[I]**, not proven):
 
 1. Resolve `alias` chains.
 2. `display = dsp * (dspToDisplayScale ?? 1) + (dspToDisplayIntegerOffset ?? 0)`.
@@ -593,7 +593,7 @@ Device ids appear in three places: `data.device` in `.hlx` presets, the `devices
 arrays in `.models`, and `menu_item id` attributes in `prefsDialog.xml` **[C]**.
 
 The encoding is `(family << 16) | member` over the Line 6 SysEx device family
-identifiers already documented in `PROTOCOL.md` — family `0x0021`, so all HX ids
+identifiers already documented in `PROTOCOL.md` - family `0x0021`, so all HX ids
 have the form `0x0021_XXXX` **[C]**. This is corroborated by `HX Edit.prefs`, which
 keys per-device UI settings under the string `"0x00210006"` for a connected
 HX Stomp.
@@ -612,14 +612,14 @@ Exactly eight ids appear anywhere in the resources **[C]**:
 | 2162945 | `0x210101` | **Helix Native**, compatibility off | **[C]** `<menu_item id="2162945"><label>Off</label>` in the same menu |
 
 `0x210003` is absent from every resource. **[I]** it is Helix Control, the
-foot-controller accessory — HX Edit knows the strings `"Helix Control"` /
+foot-controller accessory - HX Edit knows the strings `"Helix Control"` /
 `"HELIX CONTROL"` and has an `L6Device::isDeviceHelixControl()`, but the device has
 no DSP so no model lists it.
 
 Notes on the 391 models that carry an explicit `devices` list **[C]**:
 
 - The two Helix Native ids reference an identical model set (386 each), a strict
-  superset of the Helix Floor set (384) — the extra two are
+  superset of the Helix Floor set (384) - the extra two are
   `HelixPlugin_AppDSPFlow1Input` and `HelixPlugin_AppDSPFlowOutput`.
 - The Helix Rack set is identical to the Helix Floor set (384).
 - Helix LT, HX Stomp and HX Stomp XL are 375 each; HX Effects is the smallest at
@@ -642,7 +642,7 @@ Notes on the 391 models that carry an explicit `devices` list **[C]**:
 
 Presence of an `{id}` object = the model is available on that device. The optional
 `version` is the **minimum firmware** on which the model exists, formatted
-`0xMMmmpprr` where `0x03190100` reads as 3.19 **[I]** — the same encoding family as
+`0xMMmmpprr` where `0x03190100` reads as 3.19 **[I]** - the same encoding family as
 the `03 50` bytes in the SysEx identity reply documented in `PROTOCOL.md`, and
 consistent with the `min_370` / `max_315` parameter suffixes.
 
@@ -651,7 +651,7 @@ consistent with the `min_370` / `max_315` parameter suffixes.
 `PROTOCOL.md`, this needs a device at a known version.
 
 **290 of 681 models have no `devices` key at all** **[C]**. The key appears only on
-models that post-date the original shipping set **[I]** — which is why a list often
+models that post-date the original shipping set **[I]** - which is why a list often
 mixes versioned and unversioned entries:
 
 ```json
@@ -668,7 +668,7 @@ Floor it requires firmware ≥ 2.79 **[I]**.
 **Do not treat `devices` as "this model is selectable on this device."** Two facts
 block that reading **[C]**:
 
-- Genuine hardware filtering does occur — `HD2_FXLoopMono3` lists only
+- Genuine hardware filtering does occur - `HD2_FXLoopMono3` lists only
   `{0x210001, 0x210002, 0x210100, 0x210101}`, i.e. only the units with four FX
   loops, and 9 send/return models do the same.
 - But 38 of the 111 amp models list HX Effects (`0x210005`), and HX Effects has no
@@ -707,7 +707,7 @@ Plain UTF-8 JSON, no wrapper. Top level **[C]**:
 
 `empty_preset.hlx` carries only `{"name": "New Preset"}`, so every field except
 `name` is optional **[C]**. `modifieddate` is a Unix timestamp (1478293021 =
-2016-11-04) **[C]**. `appversion` 327680 = `0x050000` **[I]** — presumably a
+2016-11-04) **[C]**. `appversion` 327680 = `0x050000` **[I]** - presumably a
 packed editor version.
 
 ### 6.2 `data.device`
@@ -721,7 +721,7 @@ Keys observed in the templates **[C]**: `dsp0`, `dsp1`, `global`,
 `snapshot0`…`snapshot7`.
 
 Note `default_preset.hlx` has `snapshot1`…`snapshot6` only, while
-`empty_preset.hlx` has `snapshot0`…`snapshot7` — so the snapshot set is sparse and
+`empty_preset.hlx` has `snapshot0`…`snapshot7` - so the snapshot set is sparse and
 a reader must not assume all eight are present **[C]**. There are 8 snapshots
 maximum **[I]** (`snapshot%d` format string, `SNAPSHOT %d` default name, and the
 templates never exceed index 7).
@@ -743,7 +743,7 @@ The `blockN` naming is **[C]** from the app binary, which contains the literals
 `block%d`, `block0`, `block1`, `blocks.dsp%d.block%d`, `blocks.dsp%d.%s` and
 `blocks.dsp%.split` (their typo). None of the four shipped templates contains a
 populated block, so the block object's exact key set could not be observed
-directly — but the same string region enumerates the preset key vocabulary:
+directly - but the same string region enumerates the preset key vocabulary:
 
 ```
 @model  @position  @path  @enabled  bypass  @input  @output
@@ -797,7 +797,7 @@ Observations **[C]**:
   `.models` record, with a raw DSP-domain value. Compare `inputA`'s `threshold:
   -48` against `HD2_AppDSPFlow1Input`'s `threshold` definition, and `join`'s
   `"A Pan": 0.5` against the `pan` display type.
-- Parameter keys **may contain spaces** (`"A Level"`, `"B Polarity"`) — they are
+- Parameter keys **may contain spaces** (`"A Level"`, `"B Polarity"`) - they are
   the literal `symbolicID` values, not identifiers.
 - `@position` is the column index along the signal path; `split` sits at 0 and
   `join` at 8 in the stock templates. **[I]** the block grid is 0–8 wide per DSP
@@ -811,7 +811,7 @@ Observations **[C]**:
   labels come from `HelixControls.json` `input_type` / `input_type_lt` /
   `input_type_native` (which is why those three exist) **[I]**.
 
-The device-specific input/output models are chosen by `data.device` **[C]** — the
+The device-specific input/output models are chosen by `data.device` **[C]** - the
 selection logic is visible verbatim in the disassembly at `0x100003b08`:
 `0x210005` → `HelixFx_AppDSPFlowInput`, `0x210006` and `0x21000B` →
 `HelixStomp_AppDSPFlowInput`, everything else → `HD2_AppDSPFlow1Input`.
@@ -849,18 +849,18 @@ Verbatim from `default_preset.hlx` **[C]**:
 ```
 
 `@model: "@global_params"` points at the `@global_params` pseudo-model in
-`fixed.models`, which defines every one of these keys with a type and range —
+`fixed.models`, which defines every one of these keys with a type and range -
 so the global block is validated the same way as any other block **[C]**. This is
 also where the three `valueType: 3` (string) parameters live.
 
 `@topology0` / `@topology1` are the per-DSP routing topology **[C]**. Observed
 value `"A"`; the app binary contains the complete alphabet of topology strings
-`"A"`, `"AB"`, `"ABJ"`, `"SAB"`, `"SABJ"` **[C]** — read as S=split, A=path A,
+`"A"`, `"AB"`, `"ABJ"`, `"SAB"`, `"SABJ"` **[C]** - read as S=split, A=path A,
 B=path B, J=join **[I]**.
 
 `fixed.models` also defines the pseudo-models `@dt`, `@powercab` and `@variax`,
 matching the binary's `dt0`/`dt1`/`dtdual`, `powercab0`/`powercab1`/`powercabdual`
-and `variax` preset keys — external L6 Link device state **[I]**.
+and `variax` preset keys - external L6 Link device state **[I]**.
 
 ### 6.6 `data.tone.snapshotN`
 
@@ -870,7 +870,7 @@ and `variax` preset keys — external L6 Link device state **[I]**.
 
 The binary additionally references `@valid` in the snapshot key group **[C]**, so a
 real snapshot may carry it. **[U]** How per-snapshot *parameter* values are stored
-could not be determined — no shipped template has a modified snapshot. The binary's
+could not be determined - no shipped template has a modified snapshot. The binary's
 `@snapshot_disable` and `@no_snapshot_bypass` keys indicate per-parameter and
 per-block snapshot opt-outs exist **[C]**.
 
@@ -879,14 +879,14 @@ per-block snapshot opt-outs exist **[C]**.
 The app binary enumerates three more preset sections that none of the four
 templates exercises **[C]**:
 
-- **`@assignments`** — controller assignments, with keys `@param`, `@min`, `@max`,
+- **`@assignments`** - controller assignments, with keys `@param`, `@min`, `@max`,
   `@controller`, `@globaldsp`, `@globalblock`, `@snapshot_disable`, and address
   paths `controllers.%s.%s.` / `controllers.dsp%d.%s.%s.`
-- **`footswitch`** — `@fs_index`, `@fs_label`, `@fs_enabled`, `@fs_momentary`,
+- **`footswitch`** - `@fs_index`, `@fs_label`, `@fs_enabled`, `@fs_momentary`,
   `@fs_ledcolor`, `@fs_customcolor`, `@fs_customlabel`
-- **`commands.%s.`** — Command Center: `@command`, `@cc`, `@overthresh`, `@wait`,
+- **`commands.%s.`** - Command Center: `@command`, `@cc`, `@overthresh`, `@wait`,
   `@behavior`, `@value`
-- **`irUuidTable`** — maps preset-local IR slots to IR UUIDs **[I]**, related to
+- **`irUuidTable`** - maps preset-local IR slots to IR UUIDs **[I]**, related to
   the `@uuid` / `@uuid2` block keys
 
 **[U]** Their exact JSON shape is undetermined. Obtaining a real user preset that
@@ -899,7 +899,7 @@ The format strings `blocks.dsp%d.block%d`, `blocks.dsp%d.%s`,
 `controllers.dsp%d.%s.%s.`, `commands.%s.`, `dsp%d.%s.%s`, `%s.%d.` and
 `global_device` **[C]** show that HX Edit addresses individual parameters by a
 dotted string path, e.g. `blocks.dsp0.block2.Drive`. This is likely the same
-addressing used on the wire for parameter edits — worth checking against
+addressing used on the wire for parameter edits - worth checking against
 `tools/hxsniff` captures.
 
 ---
@@ -919,7 +919,7 @@ addressing used on the wire for parameter edits — worth checking against
 All 872 catalog `id` values are strings; not one is numeric **[C]**. The only
 numeric ids in these files are **category** ids, **subcategory** ids and **device**
 ids. If the USB/MIDI wire protocol uses a numeric model index, that mapping is not
-in these resource files **[U]** — the only implicit index available is a model's
+in these resource files **[U]** - the only implicit index available is a model's
 position in `HelixModelDefs.bin` (0–680), and there is no evidence it is the wire
 value.
 
@@ -927,14 +927,14 @@ Coverage between the two tables **[C]**:
 
 - catalog ids not in `.models`: exactly one, the sentinel `"None"` (the empty
   block, category 0);
-- `.models` symbols not in the catalog: three — `@global_params`,
+- `.models` symbols not in the catalog: three - `@global_params`,
   `HelixPlugin_AppDSPFlow1Input`, `HelixPlugin_AppDSPFlowOutput`.
 
 So the useful mapping is **symbolicID → display name**, and it exists in two
 places: the catalog (which also gives you the browse tree) and the `.models` files
 (which also give you the parameters).
 
-### 7.2 `Helix.sym` — the parameter *index* table
+### 7.2 `Helix.sym` - the parameter *index* table
 
 833 entries **[C]**:
 
@@ -953,7 +953,7 @@ merges them:
 HD2_DelaySimpleDelay   mono:true stereo:true
   params: Time, Feedback, Mix, Level, Scale, SyncSelect1, TempoSync1,
           @enabled, @trails, @stereo
-  ("Scale" carries "stereo-only": true — exactly the parameter the Mono
+  ("Scale" carries "stereo-only": true - exactly the parameter the Mono
    symbol lacks)
 ```
 
@@ -961,7 +961,7 @@ The two tables therefore reconcile **[C]**. Relationship counts: 348 `Helix.sym`
 symbols have no `.models` record (they are the `…Mono` / `…Stereo` split forms),
 and 196 `.models` symbols have no `Helix.sym` entry (they are the merged forms)
 **[C]**. Comparing the 485 that share a name, 376 have an identical parameter
-order and 109 differ **[C]** — the differences are either stereo-only parameters
+order and 109 differ **[C]** - the differences are either stereo-only parameters
 or, as with `HD2_AppDSPFlow1Input`, `Helix.sym` listing device-specific extras
 (`select`, `gain`, `guitarSense`, `auxSense`, `micLowCut`) that the `.models`
 record omits.
@@ -1083,7 +1083,7 @@ reproduction of the catalog) **[C]**:
 
 | category | subcategory | symbolic id | display name |
 |---|---|---|---|
-| None | — | `None` | (empty block) |
+| None | - | `None` | (empty block) |
 | Distortion | Mono | `HD2_DistKinkyBoost` | Kinky Boost |
 | Distortion | Mono | `HD2_DistDerangedMaster` | Deranged Master |
 | Distortion | Mono | `HD2_DistMinotaur` | Minotaur |
@@ -1111,16 +1111,16 @@ I/O blocks, `@`-prefixed = pseudo-models for global/external state.
 
 | Question | Status |
 |---|---|
-| Exact JSON shape of a populated `blockN` object | **[U]** — key vocabulary known from the binary, but no shipped template contains a block. Needs a real user preset. |
-| How snapshots store per-parameter values | **[U]** — needs a real preset with edited snapshots |
-| Shape of `@assignments`, `footswitch`, `commands`, `irUuidTable` | **[U]** — key names known, structure not |
-| Meaning of `assign` (1–9) | **[U]** — behaviour characterised, semantics unproven |
+| Exact JSON shape of a populated `blockN` object | **[U]** - key vocabulary known from the binary, but no shipped template contains a block. Needs a real user preset. |
+| How snapshots store per-parameter values | **[U]** - needs a real preset with edited snapshots |
+| Shape of `@assignments`, `footswitch`, `commands`, `irUuidTable` | **[U]** - key names known, structure not |
+| Meaning of `assign` (1–9) | **[U]** - behaviour characterised, semantics unproven |
 | Meaning of `capEdge` (92 amp/preamp models, ~0.16–0.32) | **[U]** |
-| Whether firmware `version` fields are BCD or plain hex | **[U]** — same open question as the SysEx revision bytes in `PROTOCOL.md` |
-| Whether a numeric model id exists on the wire | **[U]** — absent from all resource files |
+| Whether firmware `version` fields are BCD or plain hex | **[U]** - same open question as the SysEx revision bytes in `PROTOCOL.md` |
+| Whether a numeric model id exists on the wire | **[U]** - absent from all resource files |
 | Difference between `@enabled` and `bypass` | **[U]** |
-| Exact semantics of `devices` (firmware presence vs. user-visible availability) | **[U]** — see §5.1 |
-| `0x210003` = Helix Control | **[I]** — never appears in the resources |
+| Exact semantics of `devices` (firmware presence vs. user-visible availability) | **[U]** - see §5.1 |
+| `0x210003` = Helix Control | **[I]** - never appears in the resources |
 
 ## 9. Reproducing this analysis
 
@@ -1134,6 +1134,6 @@ otool -arch arm64 -tV "/Applications/Line6/HX Edit.app/Contents/MacOS/HX Edit"
 then locating `L6Device::isDeviceHelixFX` / `isDeviceHelixRack` / `isDeviceHelixLT`
 and reading the `movk w23, #0x21, lsl #16` immediates alongside the display-name
 globals. The binary is a universal x86_64 + arm64 fat file, so the arm64 slice
-starts at file offset 22 740 992 and `__TEXT` has `vmaddr 0x100000000` — a raw
+starts at file offset 22 740 992 and `__TEXT` has `vmaddr 0x100000000` - a raw
 byte offset into the fat file must have both subtracted and added respectively
 before it can be matched against disassembly addresses.

@@ -128,7 +128,7 @@ def main():
     args = ap.parse_args()
 
     # A mark lands on whatever line follows it, which is usually one of the
-    # poll-bookkeeping entries we drop — so carry it forward to the next
+    # poll-bookkeeping entries we drop - so carry it forward to the next
     # message we actually keep, or it would vanish.
     msgs, carried = [], None
     for m in parse(args.log):

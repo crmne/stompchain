@@ -1,6 +1,6 @@
 //! The preset document: what is actually in the signal chain.
 //!
-//! A preset arrives as a blob whose contents are themselves MessagePack — the
+//! A preset arrives as a blob whose contents are themselves MessagePack - the
 //! magic string `l6-helix`, a table of section offsets, and the tone. The tone
 //! is a fixed array of slots, most of them empty on a small device.
 //!
@@ -60,7 +60,7 @@ pub struct Layout {
 }
 
 impl Lane {
-    /// Positions in this lane with nothing in them, in order — where a new
+    /// Positions in this lane with nothing in them, in order - where a new
     /// block can go.
     pub fn free(&self, preset: &Preset) -> Vec<usize> {
         self.span
@@ -141,7 +141,7 @@ impl Layout {
 
 /// One signal path: an input, whatever the signal passes through, an output.
 ///
-/// A split does not divide the whole path — it divides a *stretch* of it. The
+/// A split does not divide the whole path - it divides a *stretch* of it. The
 /// blocks before the split and after the join are common to both branches, and
 /// the split records where it attaches, so a preset reads:
 ///
@@ -153,7 +153,7 @@ pub struct Path {
     pub input: Option<usize>,
     pub output: Option<usize>,
     /// The slot holding the split, when the path divides. It is not a block in
-    /// the line — it is where the wiring parts — so it is kept out of the lanes.
+    /// the line - it is where the wiring parts - so it is kept out of the lanes.
     pub split: Option<usize>,
     pub join: Option<usize>,
     /// Blocks before the split, carrying the undivided signal.
@@ -195,8 +195,8 @@ pub struct Slot {
     pub paired_values: Vec<f32>,
     /// Key 9: the slot's engine class.
     ///
-    /// It was first misread as a branch index — the branch is implied by slot
-    /// position, which is what [`Preset::layout`] uses — and then as a function
+    /// It was first misread as a branch index - the branch is implied by slot
+    /// position, which is what [`Preset::layout`] uses - and then as a function
     /// of the model alone, which it is not: an amp carries 17 on its own and 18
     /// with a cab riding along, so 30 of 217 models seen carry two values.
     /// Keyed by the model's *category* and whether it is paired, nothing is
@@ -204,7 +204,7 @@ pub struct Slot {
     /// and `hx-catalog/tests/type_tags.rs` pins the derivation against every
     /// fixture.
     ///
-    /// Editing a preset still carries it through byte-exact — the device
+    /// Editing a preset still carries it through byte-exact - the device
     /// maintains it on model changes, so there is nothing to gain by
     /// recomputing. Deriving it is for *building* a document from a symbolic
     /// tone, where there is nothing to carry through.
@@ -410,7 +410,7 @@ impl Preset {
     /// perform them is to change the document and write the whole thing back.
     pub fn encode(&self) -> Vec<u8> {
         // The section table is a directory of byte offsets into this very
-        // document, so any edit that changes a length invalidates it — and the
+        // document, so any edit that changes a length invalidates it - and the
         // device answers a stale table by reading the preset as empty. It is
         // recomputed rather than carried through; on an unmodified document
         // the result is identical to what the device sent, which the
@@ -427,7 +427,7 @@ impl Preset {
 
     /// Exchange two slots, moving a block along the chain.
     ///
-    /// Returns false if either position does not exist — or is not a position
+    /// Returns false if either position does not exist - or is not a position
     /// blocks live in. The input, output, split and join are fixtures of the
     /// topology: swapping a pedal into one produces a document the device
     /// cannot make sense of.
@@ -493,7 +493,7 @@ impl Preset {
     /// there reads: the block leaves its slot and the others close ranks.
     ///
     /// Within a lane this is [`move_slot`](Self::move_slot) with the index
-    /// adjusted — landing in the gap before `before` means landing *at*
+    /// adjusted - landing in the gap before `before` means landing *at*
     /// `before - 1` when the block comes from the left, because everything
     /// between shifts back one. Into another lane, the gap's own slot is
     /// freed first and the block trades into it.
@@ -502,7 +502,7 @@ impl Preset {
             return false;
         }
         // The gap before an endpoint or junction means "the end of the lane
-        // that finishes here" — the same convention as inserting a new block.
+        // that finishes here" - the same convention as inserting a new block.
         let anchor = if self.holds_blocks(before) {
             before
         } else {
@@ -545,7 +545,7 @@ impl Preset {
     /// Put every empty branch's bookkeeping back the way the device keeps it:
     /// attach points at zero.
     ///
-    /// The device stores whatever attach points a document carries — but a
+    /// The device stores whatever attach points a document carries - but a
     /// document that says "the fork is at slot 1" over a branch with nothing
     /// on it is a contradiction it settles, eventually, by wiping the whole
     /// edit buffer. Its own operations always zero the attach points when a
@@ -598,7 +598,7 @@ impl Preset {
     ///
     /// There is no dedicated opcode for this, so the caller writes the whole
     /// document back afterwards. That is only safe because re-encoding is
-    /// byte-exact — see `tests/roundtrip.rs`.
+    /// byte-exact - see `tests/roundtrip.rs`.
     pub fn set_tempo(&mut self, bpm: f32) -> bool {
         match self.tone.at_mut(&[key::SETTINGS, key::TEMPO]) {
             Some(slot) => {
@@ -651,7 +651,9 @@ impl Preset {
         };
         let mut found = Vec::new();
         for (ordinal, entries) in by_source.iter().enumerate() {
-            let Value::Array(entries) = entries else { continue };
+            let Value::Array(entries) = entries else {
+                continue;
+            };
             // Slot 0 is the "nothing" ordinal and holds nothing to draw.
             let Some(source) = crate::rpc::Source::from_ordinal(ordinal as i64) else {
                 continue;
@@ -688,8 +690,14 @@ impl Preset {
                     block,
                     source,
                     target,
-                    min: what.get(key::ASSIGNED_MIN).and_then(Value::as_f32).unwrap_or(0.0),
-                    max: what.get(key::ASSIGNED_MAX).and_then(Value::as_f32).unwrap_or(1.0),
+                    min: what
+                        .get(key::ASSIGNED_MIN)
+                        .and_then(Value::as_f32)
+                        .unwrap_or(0.0),
+                    max: what
+                        .get(key::ASSIGNED_MAX)
+                        .and_then(Value::as_f32)
+                        .unwrap_or(1.0),
                 });
             }
         }
@@ -819,7 +827,8 @@ impl Preset {
     /// document has to ask.
     pub fn junction_switchable(&self, position: usize) -> bool {
         matches!(
-            self.slot_body(position).and_then(|b| b.get(key::JUNCTION_SNAPSHOTS)),
+            self.slot_body(position)
+                .and_then(|b| b.get(key::JUNCTION_SNAPSHOTS)),
             Some(Value::Bool(true))
         )
     }
@@ -828,7 +837,7 @@ impl Preset {
         let mut paths: Vec<Path> = Vec::new();
         // Blocks are gathered per path first and assigned to head, lanes and
         // tail afterwards, because where they belong depends on the split's
-        // attachment point — which is stored on the split, not on them.
+        // attachment point - which is stored on the split, not on them.
         let mut main: Vec<Vec<usize>> = Vec::new();
         let mut lower: Vec<Vec<usize>> = Vec::new();
         let mut past_split = false;
@@ -879,7 +888,7 @@ impl Preset {
             let straight = main.get(n).cloned().unwrap_or_default();
             let branch = lower.get(n).cloned().unwrap_or_default();
 
-            // Without a split — or with nothing on the lower branch — the path
+            // Without a split - or with nothing on the lower branch - the path
             // is one undivided line and an empty second lane would be noise.
             let divides = path.split.is_some() && !branch.is_empty();
             if !divides {
@@ -925,7 +934,7 @@ impl Preset {
     /// or which output it feeds.
     ///
     /// HX Edit shows this as the first control on Input and Main L/R, but the
-    /// device does not send it among the parameter values — it lives beside
+    /// device does not send it among the parameter values - it lives beside
     /// them under its own key, so it has to be read and written separately.
     /// The number indexes the model's `@input`/`@output` menu.
     pub fn routing(&self, position: usize) -> Option<i64> {
@@ -984,13 +993,13 @@ impl Preset {
     ///
     /// The table is a directory of the tone's top-level sections: the offset
     /// of the tone map itself, then the offsets of keys 0, 1, 3, 4, 2, 5, 6,
-    /// 7 and 10 in that fixed slot order — each pointing at the key byte —
+    /// 7 and 10 in that fixed slot order - each pointing at the key byte -
     /// then the blob's total length twice: twelve little-endian u32s.
     /// Confirmed against two captured presets, and by the test that rebuilds
     /// the fixture's table byte for byte.
     ///
     /// [`encode`](Self::encode) uses this, which is what makes an edit that
-    /// changes the document's length — pasting a block, clearing one — safe to
+    /// changes the document's length - pasting a block, clearing one - safe to
     /// write back at all.
     pub fn computed_sections(&self) -> Option<Vec<u8>> {
         const SLOT_ORDER: [i64; 9] = [0, 1, 3, 4, 2, 5, 6, 7, 10];
@@ -1036,8 +1045,8 @@ impl Preset {
 
     /// Lift a slot out of the document, for pasting elsewhere.
     ///
-    /// The whole slot is taken verbatim — model, values, paired cab, the
-    /// engine tag, everything — because a block is more than this type models
+    /// The whole slot is taken verbatim - model, values, paired cab, the
+    /// engine tag, everything - because a block is more than this type models
     /// and rebuilding one from the parts we understand would quietly drop the
     /// rest. HX Edit's block copy is a client-side clipboard too.
     pub fn copy_slot(&self, position: usize) -> Option<Value> {
@@ -1075,8 +1084,8 @@ impl Preset {
 
     /// Free up `at` by sliding the blocks after it one place along.
     ///
-    /// Returns false when the lane is full — there is no empty slot after `at`
-    /// to slide into — rather than dropping whatever fell off the end.
+    /// Returns false when the lane is full - there is no empty slot after `at`
+    /// to slide into - rather than dropping whatever fell off the end.
     ///
     /// `within` bounds the search so a block never slides out of its lane and
     /// into the other branch of a split, which would silently rewire the
@@ -1238,8 +1247,8 @@ fn read_slot(raw: &Value) -> Slot {
 
 /// Read a `{2: count, 3: count, 4: [...]}` value array.
 ///
-/// Booleans appear inline among the floats — a switch parameter sits in the
-/// same array as the knobs — so they are folded to 0.0 and 1.0 rather than
+/// Booleans appear inline among the floats - a switch parameter sits in the
+/// same array as the knobs - so they are folded to 0.0 and 1.0 rather than
 /// dropped, which keeps positions aligned with the parameter list.
 fn read_values(array: &Value) -> Vec<f32> {
     match array.get(key::ARRAY_VALUES) {
@@ -1273,8 +1282,16 @@ mod tests {
                 join: Some(19),
                 head: vec![1],
                 lanes: vec![
-                    Lane { branch: 0, blocks: vec![6], span: 2..7 },
-                    Lane { branch: 1, blocks: vec![12, 13, 14, 15], span: 11..19 },
+                    Lane {
+                        branch: 0,
+                        blocks: vec![6],
+                        span: 2..7,
+                    },
+                    Lane {
+                        branch: 1,
+                        blocks: vec![12, 13, 14, 15],
+                        span: 11..19,
+                    },
                 ],
                 tail: vec![],
             }],
@@ -1284,10 +1301,26 @@ mod tests {
     #[test]
     fn a_row_index_becomes_the_slot_it_names() {
         let layout = relief();
-        assert_eq!(layout.slot_of(0, 0, 0), Some(1), "the amp, before the split");
-        assert_eq!(layout.slot_of(0, 0, 5), Some(6), "the plate, on the upper branch");
-        assert_eq!(layout.slot_of(0, 1, 1), Some(12), "first of the lower branch");
-        assert_eq!(layout.slot_of(0, 1, 4), Some(15), "last of the lower branch");
+        assert_eq!(
+            layout.slot_of(0, 0, 0),
+            Some(1),
+            "the amp, before the split"
+        );
+        assert_eq!(
+            layout.slot_of(0, 0, 5),
+            Some(6),
+            "the plate, on the upper branch"
+        );
+        assert_eq!(
+            layout.slot_of(0, 1, 1),
+            Some(12),
+            "first of the lower branch"
+        );
+        assert_eq!(
+            layout.slot_of(0, 1, 4),
+            Some(15),
+            "last of the lower branch"
+        );
         // A junction's number means "before this cell", which is the same sum.
         assert_eq!(layout.slot_of(0, 0, 1), Some(2), "where the split attaches");
         assert_eq!(layout.slot_of(0, 0, 6), Some(7), "where the join attaches");
@@ -1455,7 +1488,7 @@ mod tests {
     }
 
     /// The endpoints and junctions are fixtures of the topology. Swapping a
-    /// pedal into one — which the GUI's drag could once ask for — produced a
+    /// pedal into one - which the GUI's drag could once ask for - produced a
     /// document with an amp where the input should be.
     #[test]
     fn a_block_cannot_trade_places_with_a_fixture() {
@@ -1468,7 +1501,7 @@ mod tests {
     }
 
     /// Within a lane a move shifts the blocks in between along, the way HX
-    /// Edit reorders — a swap would trade two pedals when the hand asked to
+    /// Edit reorders - a swap would trade two pedals when the hand asked to
     /// slide one.
     #[test]
     fn moving_within_a_lane_shifts_the_blocks_between() {
@@ -1482,8 +1515,8 @@ mod tests {
         assert_eq!(again.slots, preset.slots);
     }
 
-    /// Across lanes the slot array is not contiguous — the other branch lives
-    /// past the output and the split — so a move is a trade of positions.
+    /// Across lanes the slot array is not contiguous - the other branch lives
+    /// past the output and the split - so a move is a trade of positions.
     #[test]
     fn moving_across_lanes_trades_positions() {
         let mut preset = shaped_at(&[IN, BLOCK, OUT, SPLIT, EMPTY, JOIN], 1, 2);
@@ -1540,7 +1573,7 @@ mod tests {
         assert_eq!(preset.slots[5].kind, Kind::Block, "the occupant slid along");
     }
 
-    /// An emptied branch goes back to the device's own bookkeeping — attach
+    /// An emptied branch goes back to the device's own bookkeeping - attach
     /// points at zero. Leaving them said "the fork is at slot 1" over
     /// nothing, and the device wipes the edit buffer over exactly that.
     #[test]
@@ -1618,7 +1651,7 @@ mod tests {
     }
 
     /// Build a preset from a bare list of slot kinds. Blocks are given a model
-    /// so they count as occupied — a slot with no model is a free position.
+    /// so they count as occupied - a slot with no model is a free position.
     fn shaped(kinds: &[i64]) -> Preset {
         shaped_at(kinds, 0, usize::MAX)
     }
@@ -1744,7 +1777,7 @@ mod tests {
     }
 
     /// The real thing. This preset's lower branch is empty, so it draws as one
-    /// lane — but its split slot still sits *after* the output in the array,
+    /// lane - but its split slot still sits *after* the output in the array,
     /// which is exactly the trap: read as a running order it puts the split and
     /// join on the end of the chain, which is where they were being drawn.
     #[test]
@@ -1773,7 +1806,7 @@ mod tests {
     }
 
     /// The routing selector is the first thing HX Edit shows on Input and
-    /// Main L/R, and it is not among the parameter values — it sits beside them
+    /// Main L/R, and it is not among the parameter values - it sits beside them
     /// under its own key, which is why it was missing from the editor.
     #[test]
     fn endpoint_routing_reads_and_writes() {
@@ -1830,7 +1863,7 @@ mod tests {
             preset.slots[empty].model, source_model,
             "the pasted slot does not hold the copied model"
         );
-        // The original is untouched — this is a copy, not a move.
+        // The original is untouched - this is a copy, not a move.
         assert_eq!(preset.slots[from].model, source_model);
     }
 
@@ -1916,7 +1949,9 @@ mod snapshot_tests {
     #[test]
     fn snapshots_carry_more_than_their_names() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-        let Ok(entries) = std::fs::read_dir(&dir) else { return };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return;
+        };
         let mut checked = 0;
         for entry in entries.flatten() {
             let path = entry.path();
@@ -1924,7 +1959,9 @@ mod snapshot_tests {
                 continue;
             }
             let bytes = std::fs::read(&path).unwrap();
-            let Some(preset) = Preset::parse(&bytes) else { continue };
+            let Some(preset) = Preset::parse(&bytes) else {
+                continue;
+            };
             let details = preset.snapshot_details();
             if details.is_empty() {
                 continue;

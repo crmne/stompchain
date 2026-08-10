@@ -201,7 +201,9 @@ impl Container {
         let count = u64le(bytes, 16) as usize;
 
         if table_off > bytes.len() || table_off + count * ENTRY_LEN > bytes.len() {
-            return Err(Error::Backup("backup block table runs past the file".into()));
+            return Err(Error::Backup(
+                "backup block table runs past the file".into(),
+            ));
         }
         let mut blocks = Vec::with_capacity(count);
         for i in 0..count {
@@ -290,9 +292,24 @@ mod tests {
                 // IDXH: 24 bytes on a real bundle (device id + timestamp); its
                 // exact contents do not matter to the reader, only that it round
                 // trips.
-                Block { tag: *b"IDXH", compressed: false, raw_len: 24, stored: vec![0u8; 24] },
-                Block { tag: *b"GLOB", compressed: true, raw_len: glob_raw, stored: glob },
-                Block { tag: *b"SL00", compressed: true, raw_len: sl_raw, stored: sl },
+                Block {
+                    tag: *b"IDXH",
+                    compressed: false,
+                    raw_len: 24,
+                    stored: vec![0u8; 24],
+                },
+                Block {
+                    tag: *b"GLOB",
+                    compressed: true,
+                    raw_len: glob_raw,
+                    stored: glob,
+                },
+                Block {
+                    tag: *b"SL00",
+                    compressed: true,
+                    raw_len: sl_raw,
+                    stored: sl,
+                },
             ],
         }
         .encode()
@@ -363,7 +380,12 @@ mod tests {
             }
             let bytes = std::fs::read(&path).unwrap();
             let round = Container::parse(&bytes).expect("parses").encode();
-            assert_eq!(bytes, round, "{} did not round-trip byte-for-byte", path.display());
+            assert_eq!(
+                bytes,
+                round,
+                "{} did not round-trip byte-for-byte",
+                path.display()
+            );
             // And the presets still lift out.
             let backup = read_backup(&bytes).expect("reads presets");
             assert!(backup.presets.len() >= 100, "expected a full setlist");
@@ -400,7 +422,9 @@ pub fn read_setlist_file(bytes: &[u8]) -> Result<Backup, Error> {
         .read_to_end(&mut raw)
         .map_err(|e| Error::Backup(format!("the setlist file would not inflate: {e}")))?;
 
-    if let Some(expected) = wrapper.pointer("/compression/decompressed_size").and_then(Value::as_u64)
+    if let Some(expected) = wrapper
+        .pointer("/compression/decompressed_size")
+        .and_then(Value::as_u64)
     {
         if expected != raw.len() as u64 {
             return Err(Error::Backup(format!(
@@ -409,7 +433,10 @@ pub fn read_setlist_file(bytes: &[u8]) -> Result<Backup, Error> {
             )));
         }
     }
-    if let Some(expected) = wrapper.pointer("/compression/crc32").and_then(Value::as_u64) {
+    if let Some(expected) = wrapper
+        .pointer("/compression/crc32")
+        .and_then(Value::as_u64)
+    {
         let got = crc32(&raw);
         if expected as u32 != got {
             return Err(Error::Backup(
@@ -513,11 +540,16 @@ mod editor_file_tests {
     /// A `.hls` setlist file lifts apart the same way a backup does.
     #[test]
     fn a_setlist_file_reads_as_a_backup() {
-        let Some(bytes) = capture("HX Stomp.hls") else { return };
+        let Some(bytes) = capture("HX Stomp.hls") else {
+            return;
+        };
         let setlist = read_setlist_file(&bytes).expect("reads");
         assert_eq!(setlist.name, "HX Stomp");
         assert_eq!(setlist.presets.len(), 126, "a full setlist");
-        assert!(setlist.occupied().count() > 50, "and most of them hold a tone");
+        assert!(
+            setlist.occupied().count() > 50,
+            "and most of them hold a tone"
+        );
 
         // The first slot lifts out as a `.hlx` with a tone in it.
         let first = &setlist.presets[0];
@@ -529,7 +561,9 @@ mod editor_file_tests {
     /// disagrees with itself is refused rather than half-read.
     #[test]
     fn a_truncated_setlist_file_is_refused() {
-        let Some(bytes) = capture("HX Stomp.hls") else { return };
+        let Some(bytes) = capture("HX Stomp.hls") else {
+            return;
+        };
         let text = String::from_utf8(bytes).expect("json");
         // Drop a chunk out of the middle of the payload.
         let cut = text.replacen("eNrs", "eNr", 1);
@@ -539,7 +573,9 @@ mod editor_file_tests {
     /// A `.fav` holds one block, and an amp brings its cab.
     #[test]
     fn a_favourite_file_reads_its_block() {
-        let Some(bytes) = capture("favtest.fav") else { return };
+        let Some(bytes) = capture("favtest.fav") else {
+            return;
+        };
         let favourite = read_favourite_file(&bytes).expect("reads");
         assert_eq!(favourite.name, "favtest");
         assert_eq!(favourite.slots.len(), 2, "the amp and its cab");
@@ -633,7 +669,12 @@ pub fn write_backup(new: &NewBackup) -> Vec<u8> {
     Container {
         version: 1,
         blocks: vec![
-            Block { tag: *b"IDXH", compressed: false, raw_len: 24, stored: index },
+            Block {
+                tag: *b"IDXH",
+                compressed: false,
+                raw_len: 24,
+                stored: index,
+            },
             deflated(*b"BOLG", &new.globals),
             Block {
                 tag: *b"MNLS",
@@ -695,7 +736,10 @@ mod writing_tests {
             "the empty slot stays empty and the named ones survive"
         );
         assert_eq!(
-            back.presets[0].hlx.pointer("/data/tone/dsp0/block0/@model").and_then(Value::as_str),
+            back.presets[0]
+                .hlx
+                .pointer("/data/tone/dsp0/block0/@model")
+                .and_then(Value::as_str),
             Some("HD2_DistScream808")
         );
 

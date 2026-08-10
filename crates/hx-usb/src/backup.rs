@@ -58,9 +58,16 @@ pub struct Manifest {
 
 /// How far along a capture or a restore is, for a progress bar or a log line.
 pub enum Step<'a> {
-    Presets { done: usize, total: usize, name: &'a str },
+    Presets {
+        done: usize,
+        total: usize,
+        name: &'a str,
+    },
     Globals,
-    Irs { done: usize, total: usize },
+    Irs {
+        done: usize,
+        total: usize,
+    },
     Done,
 }
 
@@ -78,7 +85,11 @@ pub struct Parts {
 
 impl Default for Parts {
     fn default() -> Self {
-        Parts { presets: true, globals: true, irs: true }
+        Parts {
+            presets: true,
+            globals: true,
+            irs: true,
+        }
     }
 }
 
@@ -103,7 +114,11 @@ pub fn capture(
     // no file, which is what tells a restore to blank it rather than skip it.
     let total = names.len();
     for (index, name) in names.iter().enumerate() {
-        progress(Step::Presets { done: index, total, name });
+        progress(Step::Presets {
+            done: index,
+            total,
+            name,
+        });
         if let Some(preset) = session.read_preset_at(0, index as i64)? {
             let path = dir.join("presets").join(preset_file(index, name));
             std::fs::write(&path, preset.encode()).map_err(io("writing a preset"))?;
@@ -135,13 +150,18 @@ pub fn capture(
         std::fs::create_dir_all(dir.join("irs")).map_err(io("creating the IR folder"))?;
     }
     for (done, (slot, _)) in slots.iter().enumerate() {
-        progress(Step::Irs { done, total: slots.len() });
+        progress(Step::Irs {
+            done,
+            total: slots.len(),
+        });
         if let Some((name, samples)) = session.read_ir(*slot)? {
             let mut bytes = Vec::with_capacity(samples.len() * 4);
             for s in &samples {
                 bytes.extend_from_slice(&s.to_le_bytes());
             }
-            let path = dir.join("irs").join(format!("{slot:02} {}.f32", sanitise(&name)));
+            let path = dir
+                .join("irs")
+                .join(format!("{slot:02} {}.f32", sanitise(&name)));
             std::fs::write(&path, bytes).map_err(io("writing an impulse response"))?;
             irs.insert(slot.to_string(), name);
         }
@@ -189,7 +209,11 @@ pub fn restore(
     if parts.presets {
         let total = manifest.presets.len();
         for (index, name) in manifest.presets.iter().enumerate() {
-            progress(Step::Presets { done: index, total, name });
+            progress(Step::Presets {
+                done: index,
+                total,
+                name,
+            });
             let path = dir.join("presets").join(preset_file(index, name));
             match std::fs::read(&path) {
                 Ok(bytes) => {
@@ -215,7 +239,9 @@ pub fn restore(
             let Ok(id) = id.parse::<i64>() else { continue };
             // The device refuses a value of the wrong type, so each one goes
             // back shaped like what the device currently holds.
-            let Ok(current) = session.object(id) else { continue };
+            let Ok(current) = session.object(id) else {
+                continue;
+            };
             if let Some(value) = from_json(want, &current) {
                 let _ = session.set_object(id, value);
             }
@@ -226,9 +252,15 @@ pub fn restore(
         let total = manifest.irs.len();
         for (done, (slot, name)) in manifest.irs.iter().enumerate() {
             progress(Step::Irs { done, total });
-            let Ok(slot) = slot.parse::<i64>() else { continue };
-            let path = dir.join("irs").join(format!("{slot:02} {}.f32", sanitise(name)));
-            let Ok(bytes) = std::fs::read(&path) else { continue };
+            let Ok(slot) = slot.parse::<i64>() else {
+                continue;
+            };
+            let path = dir
+                .join("irs")
+                .join(format!("{slot:02} {}.f32", sanitise(name)));
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
             let samples: Vec<f32> = bytes
                 .chunks_exact(4)
                 .map(|w| f32::from_le_bytes([w[0], w[1], w[2], w[3]]))
@@ -343,7 +375,13 @@ fn sanitise(name: &str) -> String {
     let cleaned: String = name
         .trim()
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == ' ' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let cleaned = cleaned.trim().to_owned();
     if cleaned.is_empty() {
@@ -417,7 +455,7 @@ pub fn default_dir() -> Option<PathBuf> {
 /// there has only ever been one copy of the pedal on disk and it is always the
 /// pedal as it is *now*. That is the wrong shape for the failure it exists to
 /// survive: unpaced flash writes can corrupt a setlist past a power cycle, and
-/// noticing takes longer than reconnecting — by which time the only copy is the
+/// noticing takes longer than reconnecting - by which time the only copy is the
 /// corrupted one.
 ///
 /// So the current bundle is copied aside under its date before it is refreshed.
@@ -444,18 +482,24 @@ pub fn snapshot(dir: &Path, stamp: &str, keep: usize) -> Result<Option<PathBuf>>
     Ok(Some(target))
 }
 
-/// Copy a bundle directory. Bundles are one level deep — files, plus a
-/// `presets` and an `irs` directory — so this does not need to recurse further
+/// Copy a bundle directory. Bundles are one level deep - files, plus a
+/// `presets` and an `irs` directory - so this does not need to recurse further
 /// than that, and refusing to is what keeps it from ever walking somewhere
 /// surprising.
 fn copy_tree(from: &Path, to: &Path) -> Result<()> {
     std::fs::create_dir_all(to).map_err(io("making a snapshot"))?;
-    for entry in std::fs::read_dir(from).map_err(io("reading the bundle"))?.flatten() {
+    for entry in std::fs::read_dir(from)
+        .map_err(io("reading the bundle"))?
+        .flatten()
+    {
         let source = entry.path();
         let target = to.join(entry.file_name());
         if source.is_dir() {
             std::fs::create_dir_all(&target).map_err(io("making a snapshot"))?;
-            for inner in std::fs::read_dir(&source).map_err(io("reading the bundle"))?.flatten() {
+            for inner in std::fs::read_dir(&source)
+                .map_err(io("reading the bundle"))?
+                .flatten()
+            {
                 if inner.path().is_file() {
                     std::fs::copy(inner.path(), target.join(inner.file_name()))
                         .map_err(io("copying a snapshot"))?;
@@ -529,7 +573,11 @@ mod tests {
     fn older_snapshots_survive_newer_ones_until_the_limit() {
         let dir = scratch("prune");
         let bundle = dir.join("bundle.hxbundle");
-        for stamp in ["2026-08-01 100000", "2026-08-02 100000", "2026-08-03 100000"] {
+        for stamp in [
+            "2026-08-01 100000",
+            "2026-08-02 100000",
+            "2026-08-03 100000",
+        ] {
             snapshot(&bundle, stamp, 3).unwrap();
         }
         let history = dir.join("history");
@@ -545,20 +593,25 @@ mod tests {
         left.sort();
         assert_eq!(left.len(), 3);
         assert!(!left[0].contains("2026-08-01"), "the oldest went: {left:?}");
-        assert!(left[2].contains("2026-08-04"), "the newest stayed: {left:?}");
+        assert!(
+            left[2].contains("2026-08-04"),
+            "the newest stayed: {left:?}"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Nothing to copy before the first backup exists, and saying so is not an
-    /// error — it is the first run.
+    /// error - it is the first run.
     #[test]
     fn there_is_nothing_to_snapshot_before_the_first_backup() {
         let dir = std::env::temp_dir().join(format!("tonepush-snap-{}-empty", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bundle.hxbundle")).unwrap();
-        assert!(snapshot(&dir.join("bundle.hxbundle"), "2026-08-10 000000", 3)
-            .unwrap()
-            .is_none());
+        assert!(
+            snapshot(&dir.join("bundle.hxbundle"), "2026-08-10 000000", 3)
+                .unwrap()
+                .is_none()
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

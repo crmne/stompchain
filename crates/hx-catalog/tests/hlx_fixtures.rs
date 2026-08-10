@@ -17,8 +17,7 @@ use hx_proto::Preset;
 
 fn fixtures() -> Vec<(String, Vec<u8>)> {
     // The fixtures live with the byte-codec tests; share them rather than copy.
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../hx-proto/tests/fixtures");
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../hx-proto/tests/fixtures");
     let mut out: Vec<(String, Vec<u8>)> = fs::read_dir(&dir)
         .unwrap_or_else(|e| panic!("reading {dir:?}: {e}"))
         .flatten()

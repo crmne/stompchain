@@ -4,13 +4,13 @@
 //! that a capture, a live device and a test can all be driven through the same
 //! code:
 //!
-//! 1. [`frame`] — bulk transfers on endpoint `0x01`/`0x81`, length-prefixed and
+//! 1. [`frame`] - bulk transfers on endpoint `0x01`/`0x81`, length-prefixed and
 //!    padded to four bytes.
-//! 2. [`frame::ChannelHeader`] — several independent channels multiplexed over
+//! 2. [`frame::ChannelHeader`] - several independent channels multiplexed over
 //!    those frames, each a reliable byte stream with cumulative acknowledgement.
-//! 3. [`rpc::StreamReader`] — length-prefixed messages carved out of a channel's
+//! 3. [`rpc::StreamReader`] - length-prefixed messages carved out of a channel's
 //!    byte stream.
-//! 4. [`rpc::Message`] — MessagePack request/response/notification.
+//! 4. [`rpc::Message`] - MessagePack request/response/notification.
 //!
 //! Nothing here performs I/O; see `hx-usb` for a transport.
 //!
@@ -64,7 +64,7 @@ pub struct DeviceProfile {
     /// the sides that a Stomp does not have and a Helix does.
     pub switches: u8,
     /// Family and member ids, as reported by a MIDI identity request and stored
-    /// in `.hlx` files — HX Stomp is `0x00210006`.
+    /// in `.hlx` files - HX Stomp is `0x00210006`.
     pub device_id: u32,
 }
 

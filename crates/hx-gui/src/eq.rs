@@ -1,7 +1,7 @@
 //! What the device's global EQ actually does to a signal, as a curve.
 //!
-//! The pedal hands back eleven numbers — two cut frequencies and three bands of
-//! frequency, Q and gain — and a list of eleven sliders tells you nothing about
+//! The pedal hands back eleven numbers - two cut frequencies and three bands of
+//! frequency, Q and gain - and a list of eleven sliders tells you nothing about
 //! the sound. The shape does. So the numbers are run through the textbook
 //! analog prototypes for the filters they describe and drawn as one response.
 //!
@@ -17,8 +17,8 @@ pub const MAX_HZ: f32 = 20_000.0;
 /// A colour per band, so a handle on the curve and the numbers underneath it
 /// are plainly the same control.
 ///
-/// They run across the spectrum the way the bands do — warm at the bottom,
-/// green through the middle, cool at the top — because that ordering is one
+/// They run across the spectrum the way the bands do - warm at the bottom,
+/// green through the middle, cool at the top - because that ordering is one
 /// fewer thing to learn. The two cuts share a neutral: they take away rather
 /// than shape, and they sit on the unity line rather than in the field.
 pub const LOW_CUT_COLOUR: (u8, u8, u8) = (0x8c, 0x93, 0xa1);
@@ -32,8 +32,8 @@ pub const HIGH_CUT_COLOUR: (u8, u8, u8) = (0xa8, 0x7c, 0xd8);
 const LOW_CUT_OFF: f32 = 20.0;
 const HIGH_CUT_OFF: f32 = 20_000.0;
 
-/// How steep the two cuts are taken to be. Second-order Butterworth — 12 dB per
-/// octave, no peak at the corner — which is what the pedal's own display looks
+/// How steep the two cuts are taken to be. Second-order Butterworth - 12 dB per
+/// octave, no peak at the corner - which is what the pedal's own display looks
 /// like and what these filters almost always are.
 const CUT_Q: f32 = std::f32::consts::FRAC_1_SQRT_2;
 
@@ -76,7 +76,7 @@ impl Curve {
 
     /// The curve sampled evenly across the drawing, left to right.
     ///
-    /// Evenly in *position*, which is evenly in log frequency — the only
+    /// Evenly in *position*, which is evenly in log frequency - the only
     /// spacing that gives the bottom two octaves as much room as the top two.
     pub fn sampled(&self, points: usize) -> Vec<(f32, f32)> {
         (0..points)
@@ -148,9 +148,21 @@ mod tests {
     fn flat() -> Curve {
         Curve {
             low_cut: LOW_CUT_OFF,
-            low: Band { freq: 100.0, q: 0.7, gain_db: 0.0 },
-            mid: Band { freq: 1000.0, q: 0.7, gain_db: 0.0 },
-            high: Band { freq: 5000.0, q: 0.7, gain_db: 0.0 },
+            low: Band {
+                freq: 100.0,
+                q: 0.7,
+                gain_db: 0.0,
+            },
+            mid: Band {
+                freq: 1000.0,
+                q: 0.7,
+                gain_db: 0.0,
+            },
+            high: Band {
+                freq: 5000.0,
+                q: 0.7,
+                gain_db: 0.0,
+            },
             high_cut: HIGH_CUT_OFF,
         }
     }
@@ -170,7 +182,11 @@ mod tests {
     #[test]
     fn a_band_gives_its_full_gain_at_its_centre() {
         let mut curve = flat();
-        curve.mid = Band { freq: 1000.0, q: 1.0, gain_db: 6.0 };
+        curve.mid = Band {
+            freq: 1000.0,
+            q: 1.0,
+            gain_db: 6.0,
+        };
         assert!((curve.gain_db(1000.0) - 6.0).abs() < 0.01);
 
         curve.mid.gain_db = -9.0;
@@ -181,7 +197,11 @@ mod tests {
     #[test]
     fn a_band_is_local_to_itself() {
         let mut curve = flat();
-        curve.mid = Band { freq: 1000.0, q: 2.0, gain_db: 12.0 };
+        curve.mid = Band {
+            freq: 1000.0,
+            q: 2.0,
+            gain_db: 12.0,
+        };
         assert!(curve.gain_db(20.0).abs() < 0.2, "{}", curve.gain_db(20.0));
         assert!(curve.gain_db(20000.0).abs() < 0.2);
     }
@@ -190,8 +210,22 @@ mod tests {
     /// octave away.
     #[test]
     fn a_higher_q_is_a_narrower_band() {
-        let wide = Curve { mid: Band { freq: 1000.0, q: 0.5, gain_db: 12.0 }, ..flat() };
-        let narrow = Curve { mid: Band { freq: 1000.0, q: 6.0, gain_db: 12.0 }, ..flat() };
+        let wide = Curve {
+            mid: Band {
+                freq: 1000.0,
+                q: 0.5,
+                gain_db: 12.0,
+            },
+            ..flat()
+        };
+        let narrow = Curve {
+            mid: Band {
+                freq: 1000.0,
+                q: 6.0,
+                gain_db: 12.0,
+            },
+            ..flat()
+        };
         assert!((wide.gain_db(1000.0) - narrow.gain_db(1000.0)).abs() < 0.01);
         assert!(wide.gain_db(2000.0) > narrow.gain_db(2000.0) + 3.0);
     }
@@ -200,8 +234,15 @@ mod tests {
     /// octave means two octaves under the corner is roughly 24 dB down.
     #[test]
     fn a_low_cut_is_three_db_down_at_its_corner() {
-        let curve = Curve { low_cut: 100.0, ..flat() };
-        assert!((curve.gain_db(100.0) + 3.0).abs() < 0.1, "{}", curve.gain_db(100.0));
+        let curve = Curve {
+            low_cut: 100.0,
+            ..flat()
+        };
+        assert!(
+            (curve.gain_db(100.0) + 3.0).abs() < 0.1,
+            "{}",
+            curve.gain_db(100.0)
+        );
         let two_octaves_down = curve.gain_db(25.0);
         assert!(
             (-27.0..-21.0).contains(&two_octaves_down),
@@ -213,18 +254,25 @@ mod tests {
 
     #[test]
     fn a_high_cut_is_three_db_down_at_its_corner() {
-        let curve = Curve { high_cut: 5000.0, ..flat() };
+        let curve = Curve {
+            high_cut: 5000.0,
+            ..flat()
+        };
         assert!((curve.gain_db(5000.0) + 3.0).abs() < 0.1);
         assert!(curve.gain_db(200.0).abs() < 0.1);
         assert!(curve.gain_db(20000.0) < -20.0);
     }
 
     /// The device parks its cuts at the edge of the band to mean "off". Parked
-    /// there they must not bend the curve at all — otherwise an EQ that is
+    /// there they must not bend the curve at all - otherwise an EQ that is
     /// doing nothing draws as one that is rolling off.
     #[test]
     fn a_parked_cut_does_nothing() {
-        let parked = Curve { low_cut: 19.9, high_cut: 20100.0, ..flat() };
+        let parked = Curve {
+            low_cut: 19.9,
+            high_cut: 20100.0,
+            ..flat()
+        };
         for (_, db) in parked.sampled(64) {
             assert!(db.abs() < 1e-4, "a parked cut bent the curve to {db} dB");
         }
@@ -249,8 +297,16 @@ mod tests {
     #[test]
     fn the_bands_combine() {
         let curve = Curve {
-            low: Band { freq: 1000.0, q: 1.0, gain_db: 6.0 },
-            mid: Band { freq: 1000.0, q: 1.0, gain_db: 6.0 },
+            low: Band {
+                freq: 1000.0,
+                q: 1.0,
+                gain_db: 6.0,
+            },
+            mid: Band {
+                freq: 1000.0,
+                q: 1.0,
+                gain_db: 6.0,
+            },
             ..flat()
         };
         assert!((curve.gain_db(1000.0) - 12.0).abs() < 0.01);

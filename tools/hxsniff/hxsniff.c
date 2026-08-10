@@ -1,11 +1,11 @@
 /*
- * hxsniff — libusb interposer for capturing HX Edit's USB traffic.
+ * hxsniff - libusb interposer for capturing HX Edit's USB traffic.
  *
  * HX Edit links a bundled copy of libusb (@executable_path/../MacOS/
  * libusb-1.0.0.dylib), so every byte it exchanges with the device passes
  * through a handful of libusb entry points. Interposing those gives us the
- * protocol at API level — complete buffers, correct boundaries, no reassembly
- * — which is strictly better than a packet capture.
+ * protocol at API level - complete buffers, correct boundaries, no reassembly
+ * - which is strictly better than a packet capture.
  *
  * Build and use: see run.sh in this directory.
  */

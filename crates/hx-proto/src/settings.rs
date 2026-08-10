@@ -60,7 +60,11 @@ pub const SETTINGS: &[Setting] = &[
         id: 16,
         name: "Tempo",
         group: "Tempo",
-        kind: Kind::Number { min: 40.0, max: 240.0, unit: " BPM" },
+        kind: Kind::Number {
+            min: 40.0,
+            max: 240.0,
+            unit: " BPM",
+        },
     },
     Setting {
         id: 14,
@@ -86,9 +90,24 @@ pub const SETTINGS: &[Setting] = &[
         group: "Pedal jacks",
         kind: Kind::Switch("EXP 2", "FS5"),
     },
-    Setting { id: 97, name: "FS3", group: "Footswitches", kind: Kind::Choice(FOOTSWITCH) },
-    Setting { id: 98, name: "FS4", group: "Footswitches", kind: Kind::Choice(FOOTSWITCH) },
-    Setting { id: 99, name: "FS5", group: "Footswitches", kind: Kind::Choice(FOOTSWITCH) },
+    Setting {
+        id: 97,
+        name: "FS3",
+        group: "Footswitches",
+        kind: Kind::Choice(FOOTSWITCH),
+    },
+    Setting {
+        id: 98,
+        name: "FS4",
+        group: "Footswitches",
+        kind: Kind::Choice(FOOTSWITCH),
+    },
+    Setting {
+        id: 99,
+        name: "FS5",
+        group: "Footswitches",
+        kind: Kind::Choice(FOOTSWITCH),
+    },
     Setting {
         id: 203,
         name: "Global EQ",
@@ -101,68 +120,112 @@ pub const SETTINGS: &[Setting] = &[
         // 19.9 is the device's "off" - below the band rather than in it, which
         // is why the range starts under 20 Hz rather than at it.
         group: "Global EQ",
-        kind: Kind::Number { min: 19.9, max: 500.0, unit: " Hz" },
+        kind: Kind::Number {
+            min: 19.9,
+            max: 500.0,
+            unit: " Hz",
+        },
     },
     Setting {
         id: 190,
         name: "Low Freq",
         group: "Global EQ",
-        kind: Kind::Number { min: 20.0, max: 500.0, unit: " Hz" },
+        kind: Kind::Number {
+            min: 20.0,
+            max: 500.0,
+            unit: " Hz",
+        },
     },
     Setting {
         id: 191,
         name: "Low Q",
         group: "Global EQ",
-        kind: Kind::Number { min: 0.1, max: 10.0, unit: "" },
+        kind: Kind::Number {
+            min: 0.1,
+            max: 10.0,
+            unit: "",
+        },
     },
     Setting {
         id: 192,
         name: "Low Gain",
         group: "Global EQ",
-        kind: Kind::Number { min: -12.0, max: 12.0, unit: " dB" },
+        kind: Kind::Number {
+            min: -12.0,
+            max: 12.0,
+            unit: " dB",
+        },
     },
     Setting {
         id: 193,
         name: "Mid Freq",
         group: "Global EQ",
-        kind: Kind::Number { min: 200.0, max: 5000.0, unit: " Hz" },
+        kind: Kind::Number {
+            min: 200.0,
+            max: 5000.0,
+            unit: " Hz",
+        },
     },
     Setting {
         id: 194,
         name: "Mid Q",
         group: "Global EQ",
-        kind: Kind::Number { min: 0.1, max: 10.0, unit: "" },
+        kind: Kind::Number {
+            min: 0.1,
+            max: 10.0,
+            unit: "",
+        },
     },
     Setting {
         id: 195,
         name: "Mid Gain",
         group: "Global EQ",
-        kind: Kind::Number { min: -12.0, max: 12.0, unit: " dB" },
+        kind: Kind::Number {
+            min: -12.0,
+            max: 12.0,
+            unit: " dB",
+        },
     },
     Setting {
         id: 196,
         name: "High Freq",
         group: "Global EQ",
-        kind: Kind::Number { min: 1000.0, max: 20000.0, unit: " Hz" },
+        kind: Kind::Number {
+            min: 1000.0,
+            max: 20000.0,
+            unit: " Hz",
+        },
     },
     Setting {
         id: 197,
         name: "High Q",
         group: "Global EQ",
-        kind: Kind::Number { min: 0.1, max: 10.0, unit: "" },
+        kind: Kind::Number {
+            min: 0.1,
+            max: 10.0,
+            unit: "",
+        },
     },
     Setting {
         id: 198,
         name: "High Gain",
         group: "Global EQ",
-        kind: Kind::Number { min: -12.0, max: 12.0, unit: " dB" },
+        kind: Kind::Number {
+            min: -12.0,
+            max: 12.0,
+            unit: " dB",
+        },
     },
     Setting {
         id: 200,
         name: "High Cut",
         // 20100 is the device's "off", just above the audible top.
         group: "Global EQ",
-        kind: Kind::Number { min: 1000.0, max: 20100.0, unit: " Hz" },
+        kind: Kind::Number {
+            min: 1000.0,
+            max: 20100.0,
+            unit: " Hz",
+        },
     },
 ];
 

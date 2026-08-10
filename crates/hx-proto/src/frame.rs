@@ -132,7 +132,7 @@ pub const MSG_KEEPALIVE: u16 = 0x10;
 ///
 /// `ack` paces bulk transfers: it advances by exactly 256 per data chunk, and
 /// the device stops feeding a large transfer if it stops moving. It is *not* a
-/// bare byte count — the host adds a fixed base, and sending the count alone
+/// bare byte count - the host adds a fixed base, and sending the count alone
 /// makes the device go quiet. See `Channel::ACK_BASE` in `hx-usb`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChannelHeader {

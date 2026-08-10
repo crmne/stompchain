@@ -8,7 +8,7 @@
 #
 # Those files are Line 6's and are not redistributable, which is exactly why
 # this exists: you supply your own copy and it stays on your machine. Nothing is
-# downloaded — Line 6 require an account, so fetching on your behalf is not
+# downloaded - Line 6 require an account, so fetching on your behalf is not
 # something this can honestly do.
 set -euo pipefail
 
@@ -45,7 +45,7 @@ copy_from() {
         copied=$((copied + 1))
     done
 
-    [ "$copied" -gt 0 ] || die "found nothing to copy in $src — is that an HX Edit Resources folder?"
+    [ "$copied" -gt 0 ] || die "found nothing to copy in $src - is that an HX Edit Resources folder?"
     say "copied $copied items to $DEST"
 }
 

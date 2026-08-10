@@ -114,7 +114,9 @@ fn a_symbolic_tone_loads_into_the_edit_buffer_and_undo_restores() {
     // And going home shows the original preset untouched by all of it.
     tx.send(Cmd::SelectPreset(index)).unwrap();
     let home = wait_for(&rx, "the original preset", 90, |evt| match evt {
-        Evt::Loaded { index: at, chain, .. } => (at == index).then_some(chain),
+        Evt::Loaded {
+            index: at, chain, ..
+        } => (at == index).then_some(chain),
         _ => None,
     });
     assert_eq!(

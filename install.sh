@@ -106,7 +106,7 @@ install_udev_rule() {
     elif command -v sudo >/dev/null; then
         say "USB access needs a udev rule; asking for sudo"
         printf '%s\n' "$rule" | sudo tee "$UDEV_RULE" >/dev/null || {
-            warn "could not write $UDEV_RULE — run the installer as root, or create it by hand:"
+            warn "could not write $UDEV_RULE - run the installer as root, or create it by hand:"
             printf '      %s\n' "$rule" >&2
             return
         }
@@ -195,7 +195,7 @@ main() {
         else
             warn "no HX Edit found, so models will show as numbers without names or pictures.
       Fix it with: tools/hxresources/extract.sh /path/to/HX_Edit.dmg
-      (or .exe — download from https://line6.com/software/)"
+      (or .exe - download from https://line6.com/software/)"
         fi
     fi
 
@@ -206,7 +206,7 @@ main() {
     esac
 
     echo
-    say "ready. Quit HX Edit first — it holds the device exclusively — then:"
+    say "ready. Quit HX Edit first - it holds the device exclusively - then:"
     echo "      tonepush list      find your device"
     echo "      tonepush chain     show the loaded preset"
     if [ "$cli_only" = 0 ]; then

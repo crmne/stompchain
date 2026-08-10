@@ -1,11 +1,11 @@
 //! Reading Line 6's `.hlx` preset files.
 //!
-//! An `.hlx` is plain JSON keyed by symbolic names — `"@model": "HD2_AmpCaliRectifire"`,
+//! An `.hlx` is plain JSON keyed by symbolic names - `"@model": "HD2_AmpCaliRectifire"`,
 //! `"Drive": 0.68`. The device speaks numbers, so applying one means translating
 //! through the catalog: symbol to model number, parameter name to position.
 //!
-//! Applying happens as a list of ordinary edits — set the model, then each
-//! parameter, then the bypass state — rather than by synthesising a whole
+//! Applying happens as a list of ordinary edits - set the model, then each
+//! parameter, then the bypass state - rather than by synthesising a whole
 //! preset document and writing it back. Those edits are individually verified
 //! against hardware, whereas a synthesised document is not, and a rejected
 //! document loses the whole preset rather than one parameter.
@@ -46,6 +46,7 @@ pub struct Plan {
     pub skipped: Vec<String>,
 }
 
+#[cfg(test)]
 pub fn read(path: &Path, catalog: &Catalog) -> Result<Plan> {
     read_for(path, catalog, None)
 }
@@ -62,6 +63,7 @@ pub fn read_for(
     plan_for(&json, catalog, layout)
 }
 
+#[cfg(test)]
 pub fn plan(json: &serde_json::Value, catalog: &Catalog) -> Result<Plan> {
     plan_for(json, catalog, None)
 }
@@ -71,8 +73,8 @@ pub fn plan(json: &serde_json::Value, catalog: &Catalog) -> Result<Plan> {
 /// A `.hlx` says where a block sits as `@path` and `@position`: the branch, and
 /// the place along that branch's drawn row. That is only the device's own slot
 /// number on a chain that does not split, so translating it needs the target's
-/// layout. Without one the file is read the way it always was — the `blockN`
-/// number as the slot — which is right for a straight chain and wrong the
+/// layout. Without one the file is read the way it always was - the `blockN`
+/// number as the slot - which is right for a straight chain and wrong the
 /// moment there is a split.
 pub fn plan_for(
     json: &serde_json::Value,
@@ -104,7 +106,9 @@ pub fn plan_for(
         for (key, node) in blocks {
             // split, join, inputs and outputs are the wiring, not the tone, and
             // they are not addressable as a block.
-            let Some(numbered) = key.strip_prefix("block").and_then(|n| n.parse::<i64>().ok())
+            let Some(numbered) = key
+                .strip_prefix("block")
+                .and_then(|n| n.parse::<i64>().ok())
             else {
                 continue;
             };
@@ -162,7 +166,7 @@ fn read_block(plan: &mut Plan, position: i64, block: &serde_json::Value, catalog
         return;
     };
     // The same resolution the document builder uses. HX Edit writes the *shared*
-    // model id — `HD2_ReverbPlate` — where the firmware has a mono symbol and a
+    // model id - `HD2_ReverbPlate` - where the firmware has a mono symbol and a
     // stereo one, each with its own wire number. An exact match on the symbol
     // found neither, so importing a genuine HX Edit file skipped most of its
     // chain and said only "unknown model".
@@ -183,7 +187,7 @@ fn read_block(plan: &mut Plan, position: i64, block: &serde_json::Value, catalog
     });
 
     for (key, value) in block.as_object().into_iter().flatten() {
-        // `@`-prefixed keys are structural — model, position, stereo — and are
+        // `@`-prefixed keys are structural - model, position, stereo - and are
         // not parameters.
         if key.starts_with('@') {
             if key == "@enabled" {
@@ -206,7 +210,7 @@ fn read_block(plan: &mut Plan, position: i64, block: &serde_json::Value, catalog
         };
 
         // .hlx stores values in the same native units the wire uses, so no
-        // conversion — but a switch is written as a bool.
+        // conversion - but a switch is written as a bool.
         let native = match value {
             serde_json::Value::Bool(b) => *b as u8 as f32,
             serde_json::Value::Number(n) => n.as_f64().unwrap_or(0.0) as f32,
@@ -347,8 +351,16 @@ mod tests {
                 join: Some(19),
                 head: vec![1],
                 lanes: vec![
-                    Lane { branch: 0, blocks: vec![6], span: 2..7 },
-                    Lane { branch: 1, blocks: vec![12], span: 11..19 },
+                    Lane {
+                        branch: 0,
+                        blocks: vec![6],
+                        span: 2..7,
+                    },
+                    Lane {
+                        branch: 1,
+                        blocks: vec![12],
+                        span: 11..19,
+                    },
                 ],
                 tail: vec![],
             }],
@@ -387,10 +399,10 @@ mod tests {
 
         let plan = plan(&json, &catalog).unwrap();
         assert!(plan.skipped.is_empty(), "{:?}", plan.skipped);
-        assert!(plan.steps.iter().any(|s| matches!(
-            s,
-            Step::Model { block: 12, .. }
-        )));
+        assert!(plan
+            .steps
+            .iter()
+            .any(|s| matches!(s, Step::Model { block: 12, .. })));
     }
 
     #[test]

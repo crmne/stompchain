@@ -64,7 +64,10 @@ fn every_captured_slot_gets_its_own_engine_class_back() {
     }
     assert!(checked > 0, "no slots were checked");
     if !unknown.is_empty() {
-        eprintln!("{} slots held models the catalog cannot name", unknown.len());
+        eprintln!(
+            "{} slots held models the catalog cannot name",
+            unknown.len()
+        );
     }
 }
 
@@ -84,7 +87,9 @@ fn every_captured_value_array_gets_its_second_count_back() {
             continue;
         };
         for (index, item) in items.iter().enumerate() {
-            let Some(slot) = preset.slots.get(index) else { continue };
+            let Some(slot) = preset.slots.get(index) else {
+                continue;
+            };
             let Some(model) = slot.model else { continue };
             let Some(array) = item.get(20).and_then(|body| body.get(11)) else {
                 continue;

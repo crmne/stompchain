@@ -1,7 +1,7 @@
 //! Integration tests against real hardware.
 //!
-//! These exist because the device can be wedged — left in a state where it
-//! refuses every new session until its power is pulled — and every occurrence
+//! These exist because the device can be wedged - left in a state where it
+//! refuses every new session until its power is pulled - and every occurrence
 //! so far was caused by this client rather than the hardware. Unit tests cannot
 //! catch that: the bytes were well formed each time. Only doing the thing and
 //! then asking the device whether it is still there can.
@@ -39,7 +39,7 @@ fn device() -> Option<Session> {
     match found.open() {
         Ok(session) => Some(session),
         // A device that enumerates but will not open is either held by HX Edit
-        // or wedged — and a wedged device is exactly what this suite exists to
+        // or wedged - and a wedged device is exactly what this suite exists to
         // catch. Skipping quietly would turn that into a green run, so it
         // fails instead. Genuinely having no device is handled above.
         Err(e) => panic!(
@@ -53,11 +53,11 @@ fn device() -> Option<Session> {
 ///
 /// The data channel is always checked. The control channel is checked only if
 /// this session has already used it, because a channel nothing has spoken to
-/// does not answer its first request — it wants the opening sequence HX Edit
+/// does not answer its first request - it wants the opening sequence HX Edit
 /// sends first, which `Session` performs lazily when an IR operation needs it.
 /// Demanding an answer from a cold control channel reports a wedge that is not
-/// there, and the natural-looking fix — bootstrapping it inside every health
-/// check — measurably destabilises the device instead. So: check what the test
+/// there, and the natural-looking fix - bootstrapping it inside every health
+/// check - measurably destabilises the device instead. So: check what the test
 /// actually used, and let `assert_control_healthy` cover the rest.
 fn assert_healthy(session: &mut Session, after: &str) {
     session
@@ -144,7 +144,10 @@ fn reading_a_slot_does_not_load_it() {
     };
     let (fast_slots, fast_tempo, fast_snaps) = chain(&fast);
     let (slow_slots, slow_tempo, slow_snaps) = chain(&slow);
-    assert_eq!(fast_slots, slow_slots, "same blocks, models, values and bypass");
+    assert_eq!(
+        fast_slots, slow_slots,
+        "same blocks, models, values and bypass"
+    );
     assert_eq!(fast_tempo, slow_tempo, "same tempo");
     assert_eq!(fast_snaps, slow_snaps, "same snapshots");
     eprintln!(
@@ -208,9 +211,7 @@ fn writing_a_slot_lands_and_clearing_it_empties_it() {
 
     // A slot the device reports as holding nothing at all.
     let names = s.presets(setlist).expect("preset names");
-    let spare = (0..names.len() as i64).find(|i| {
-        matches!(s.read_preset_at(setlist, *i), Ok(None))
-    });
+    let spare = (0..names.len() as i64).find(|i| matches!(s.read_preset_at(setlist, *i), Ok(None)));
     let Some(spare) = spare else {
         eprintln!("SKIPPED: every slot holds a preset, so there is nowhere safe to write");
         return;
@@ -244,7 +245,8 @@ fn writing_a_slot_lands_and_clearing_it_empties_it() {
     );
 
     // Put the slot back the way it was found.
-    s.clear_preset_at(setlist, spare).expect("clearing the slot");
+    s.clear_preset_at(setlist, spare)
+        .expect("clearing the slot");
     assert!(
         matches!(s.read_preset_at(setlist, spare), Ok(None)),
         "clearing a slot must leave it empty again"
@@ -357,7 +359,7 @@ fn sweeping_a_parameter_is_safe() {
 }
 
 /// A hand riding the preset list: two dozen selects back to back, no reads
-/// between. Four polite switches never caught what this does — racing
+/// between. Four polite switches never caught what this does - racing
 /// deferred commits jammed a real unit's transfer state machine after
 /// roughly a dozen, hard enough to need its power pulled. The fix serialises
 /// each select on the device reporting the requested preset as loaded; this
@@ -462,7 +464,7 @@ fn writing_a_preset_back_unchanged_preserves_it() {
     assert_healthy(&mut session, "an unmodified document write");
 }
 
-/// Everything in sequence, then a fresh connection — the shape of a real
+/// Everything in sequence, then a fresh connection - the shape of a real
 /// editing session, and the case where damage tends to surface only afterwards.
 #[test]
 #[ignore = "needs an HX device"]
@@ -559,7 +561,7 @@ fn a_preset_survives_a_backup_and_restore() {
 
 /// Routing an endpoint uses opcode 42, captured from HX Edit's own clicks.
 /// A document write is accepted but ignored for this field, which is why the
-/// opcode matters — and why this test also asserts the document write still
+/// opcode matters - and why this test also asserts the document write still
 /// does not apply it, so we notice if a firmware update changes the rules.
 #[test]
 #[ignore = "needs an HX device"]
@@ -594,8 +596,8 @@ fn routing_an_input_round_trips() {
 /// Writing the preset document must complete before the next write begins.
 ///
 /// The wait is on notification 20: the device answers a write with "accepted"
-/// and announces the commit afterwards. HX Edit paces on that announcement —
-/// fourteen consecutive captured undos all wait for it — and once our client
+/// and announces the commit afterwards. HX Edit paces on that announcement -
+/// fourteen consecutive captured undos all wait for it - and once our client
 /// did the same, the write-degradation that used to appear after a dozen
 /// back-to-back writes disappeared. Twenty in a row here to prove it.
 #[test]
@@ -626,21 +628,21 @@ fn preset_writes_in_a_row_all_complete() {
 ///
 /// This is what identified opcode 99. Patching its reply to `true` in flight
 /// made HX Edit swap its BPM readout for "[External]", and sending the device
-/// actual MIDI clock flips it for as long as the clock runs — so the flag
+/// actual MIDI clock flips it for as long as the clock runs - so the flag
 /// means "the tempo is not mine to set".
 ///
 /// **Destructive, so it is opt-in.** Feeding the device MIDI beat clock while
 /// an editor session is open kills that session: when the clock stops the
 /// device stops answering over USB and does not come back, needing its 9V
 /// adapter pulled. That is the device's behaviour, not this client's, and it
-/// is worth knowing — but it must not run in an ordinary sweep, so it needs
+/// is worth knowing - but it must not run in an ordinary sweep, so it needs
 /// `TONEPUSH_DESTRUCTIVE=1` as well as `tools/midiclock`.
 #[test]
 #[ignore = "needs an HX device"]
 fn the_external_clock_flag_follows_midi_clock() {
     if std::env::var_os("TONEPUSH_DESTRUCTIVE").is_none() {
         eprintln!(
-            "SKIPPED: this test kills the editor session — set \
+            "SKIPPED: this test kills the editor session - set \
              TONEPUSH_DESTRUCTIVE=1 to run it, and expect to power-cycle after"
         );
         return;
@@ -677,7 +679,7 @@ fn the_external_clock_flag_follows_midi_clock() {
         }
     }
     // Losing the clock puts the device to work resynchronising, and while it
-    // does it stops answering — the same way it goes quiet with the tuner
+    // does it stops answering - the same way it goes quiet with the tuner
     // engaged. That is the device's behaviour, not a fault, so wait for it to
     // come back rather than calling the first timeout a wedge.
     let patient = Instant::now() + Duration::from_secs(20);
@@ -699,7 +701,7 @@ fn the_external_clock_flag_follows_midi_clock() {
 /// Saving is what makes an edit outlive the edit buffer, and it is the one
 /// operation that writes flash on purpose. This changes a parameter, saves,
 /// reloads from storage to prove it stuck, then puts the original back and
-/// saves again — so the preset ends exactly as it started.
+/// saves again - so the preset ends exactly as it started.
 #[test]
 #[ignore = "needs an HX device"]
 fn saving_a_preset_makes_an_edit_survive_a_reload() {
@@ -770,8 +772,8 @@ fn saving_a_preset_makes_an_edit_survive_a_reload() {
 
 /// Global settings are a flat numbered namespace, read with opcode 24.
 ///
-/// Reading only. Writing them with opcode 25 works — the value takes and reads
-/// back — but leaves the device unable to accept a *later* session, several
+/// Reading only. Writing them with opcode 25 works - the value takes and reads
+/// back - but leaves the device unable to accept a *later* session, several
 /// operations afterwards, with no error at the time. Removing this one write
 /// took the suite from two passing tests to twelve, which is how it was found.
 /// See PROTOCOL.md; until that is understood, this client does not write them.
@@ -804,7 +806,7 @@ fn device_settings_can_be_read() {
 ///
 /// This was believed unsafe for a while. The test that condemned it also
 /// called `irs()` on a control channel nothing had opened, which times out and
-/// leaves the session unhealthy — so the write was carrying the blame for its
+/// leaves the session unhealthy - so the write was carrying the blame for its
 /// neighbour. With the health check fixed, it is exercised again.
 #[test]
 #[ignore = "needs an HX device"]
@@ -842,7 +844,7 @@ fn a_device_setting_round_trips() {
 
 /// Assigning a block's bypass to a footswitch, and taking it off again.
 ///
-/// Opcodes 56 and 57, captured from HX Edit by scrolling its source menu —
+/// Opcodes 56 and 57, captured from HX Edit by scrolling its source menu -
 /// those custom-drawn dropdowns ignore synthetic clicks, but they respond to
 /// the wheel, which is how the whole source list was mapped.
 #[test]
@@ -868,7 +870,7 @@ fn a_bypass_can_be_put_on_a_footswitch() {
     assert_healthy(&mut session, "a footswitch assignment");
 }
 
-/// Putting a parameter under an expression pedal — opcode 37, in the shape HX
+/// Putting a parameter under an expression pedal - opcode 37, in the shape HX
 /// Edit sends for a continuous control rather than a bypass.
 #[test]
 #[ignore = "needs an HX device"]
@@ -922,7 +924,9 @@ fn favourites_can_be_listed_kept_and_forgotten() {
         .expect("keeping a favourite");
     let after = s.favourites().expect("listing again");
     assert!(
-        after.iter().any(|(i, n)| *i == slot && n == "TONEPUSH TEST"),
+        after
+            .iter()
+            .any(|(i, n)| *i == slot && n == "TONEPUSH TEST"),
         "the favourite should be listed: {after:?}"
     );
 
