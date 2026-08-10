@@ -649,6 +649,11 @@ impl App {
             Kind::Output => "Output".into(),
             Kind::Split => named("Split"),
             Kind::Join => named("Join"),
+            // An Amp+Cab is one block holding two models, and showing only the
+            // amp's name made it look like a bare amp - the difference between
+            // a rig you can plug into a desk and one that still needs a
+            // speaker. The cab rides along, so the name says so.
+            _ if block.paired.is_some() => format!("{} + Cab", self.model_name(block.model)),
             _ => self.model_name(block.model),
         }
     }
