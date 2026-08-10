@@ -51,7 +51,12 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - run: cargo build --release --target ${{ matrix.target }}
+      # The two binaries, and not the whole workspace: hx-ruby is a Ruby
+      # extension that links against libruby, which a release runner has no
+      # reason to have. Building it here fails on Windows, where rb-sys cannot
+      # generate bindings, and on macOS, where the cross-target link finds no
+      # Ruby symbols. Nothing shipped in a release comes from it.
+      - run: cargo build --release -p hx-cli -p hx-gui --target ${{ matrix.target }}
 
       - name: Package
         shell: bash
@@ -111,8 +116,8 @@ jobs:
 
       - name: Build both architectures
         run: |
-          cargo build --release --target aarch64-apple-darwin
-          cargo build --release --target x86_64-apple-darwin
+          cargo build --release -p hx-cli -p hx-gui --target aarch64-apple-darwin
+          cargo build --release -p hx-cli -p hx-gui --target x86_64-apple-darwin
 
       - name: Universal binaries
         run: |
