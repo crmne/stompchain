@@ -78,7 +78,7 @@ pub fn to_hlx(preset: &Preset, catalog: &Catalog, name: &str) -> Written {
     let mut path = 0usize;
     let mut opened = false;
 
-    for slot in &preset.slots {
+    for (index, slot) in preset.slots.iter().enumerate() {
         match slot.kind {
             SlotKind::Input => {
                 if opened {
@@ -93,6 +93,7 @@ pub fn to_hlx(preset: &Preset, catalog: &Catalog, name: &str) -> Written {
                 emit(
                     &mut dsps[path],
                     &mut next_block[path],
+                    index,
                     slot.model,
                     &slot.values,
                     slot.enabled,
@@ -109,6 +110,7 @@ pub fn to_hlx(preset: &Preset, catalog: &Catalog, name: &str) -> Written {
                     emit_named(
                         &mut dsps[path],
                         format!("cab{}", next_cab[path]),
+                        index,
                         slot.paired,
                         &slot.paired_values,
                         slot.enabled,
@@ -253,6 +255,7 @@ fn junction(model: &str, attach: Option<usize>) -> Value {
 fn emit(
     dsp: &mut Map<String, Value>,
     next_block: &mut i64,
+    slot: usize,
     model: Option<u32>,
     values: &[f32],
     enabled: bool,
@@ -273,6 +276,20 @@ fn emit(
     let written_name = symbol.model.clone().unwrap_or_else(|| symbol.symbol.clone());
     block.insert("@model".into(), Value::String(written_name));
     block.insert("@enabled".into(), Value::Bool(enabled));
+    // Which slot of the chain this came out of. HX Edit numbers its blocks
+    // densely and lets position speak for order, which is enough to *read* a
+    // tone and not enough to rebuild one: a chain can leave gaps, and the split
+    // and join carry the slot index they attach before. Repacking blocks
+    // densely moved every one of those. A file without this still loads - the
+    // blocks simply pack from the front, which is what HX Edit's own files
+    // mean.
+    block.insert("@slot".into(), json!(slot));
+    // Mono and stereo are two firmware symbols sharing one model name, and the
+    // name is what gets written - so without this the two are the same block on
+    // paper and a stereo delay comes back mono. HX Edit carries the same flag.
+    if symbol.symbol.ends_with("Stereo") {
+        block.insert("@stereo".into(), Value::Bool(true));
+    }
 
     // Values come in the order the device indexes them; each resolves to a
     // parameter whose symbolic id keys it in the file. A switch is written as a
@@ -314,6 +331,7 @@ fn emit(
 fn emit_named(
     dsp: &mut Map<String, Value>,
     node: String,
+    slot: usize,
     model: Option<u32>,
     values: &[f32],
     enabled: bool,
@@ -322,7 +340,11 @@ fn emit_named(
 ) {
     let mut scratch = 0i64;
     let mut one = Map::new();
-    emit(&mut one, &mut scratch, model, values, enabled, catalog, skipped);
+    // A cab rides in its amp's slot rather than holding one of its own, so it
+    // carries the amp's index - which is what says whose cab it is. Positional
+    // pairing guessed wrong whenever a preset held a standalone amp as well as
+    // a paired one.
+    emit(&mut one, &mut scratch, slot, model, values, enabled, catalog, skipped);
     if let Some((_, body)) = one.into_iter().next() {
         dsp.insert(node, body);
     }

@@ -20,6 +20,20 @@
 //! and that second count `n'` — which is what [`Catalog::type_tag`] and
 //! [`Catalog::value_count_2`] exist for. See PROTOCOL.md.
 //!
+//! **The pedal will not take what this produces.** Checked on hardware: a
+//! document rebuilt from its own symbolic form, with a chain identical to the
+//! original block for block and value for value, is written and read back
+//! empty. A `.hlx` does not record how each number was encoded — the same 1.0
+//! is an integer in one preset and a float in another — and the document
+//! carries a table of byte offsets into itself, so the wrong tag width is fatal
+//! rather than cosmetic. This is the same failure the parser's own notes
+//! describe: re-encode a wide tag narrow and "the device reads the result as
+//! empty".
+//!
+//! So this is for reading a `.hxb` into something inspectable, and for building
+//! tones offline — not for restoring onto a pedal. Restoring goes through
+//! `.hxbundle`, which keeps the device's own bytes and cannot lose their shape.
+//!
 //! This writes slots into an existing document rather than inventing one from
 //! nothing. A preset carries a great deal besides its chain — a section table
 //! of byte offsets into itself, snapshot state, footswitch assignments — and
@@ -81,44 +95,76 @@ pub fn slots_from_hlx(preset: &mut Preset, document: &Json, catalog: &Catalog) -
     // Where a path's blocks may go: everything between its input and its
     // output, and between its split and its join. Read off the template rather
     // than assumed, so a device with a different slot count still works.
+    // One run of free slots per signal path: the main line between its input
+    // and output, and the branch between its split and join. Both belong to the
+    // same path and the same `dspN` in the file - a second `dsp` is a second
+    // *path*, which only hardware with two DSPs has. Reading the branch as its
+    // own dsp dropped every block on it.
     let layout = preset.layout();
     let mut runs: Vec<Vec<usize>> = Vec::new();
     for path in &layout.paths {
+        let mut run: Vec<usize> = Vec::new();
         if let (Some(input), Some(output)) = (path.input, path.output) {
-            runs.push(((input + 1)..output).collect());
+            run.extend((input + 1)..output);
         }
         if let (Some(split), Some(join)) = (path.split, path.join) {
-            runs.push(((split + 1)..join).collect());
+            run.extend((split + 1)..join);
         }
+        runs.push(run);
     }
 
     let tone = document.get("data").and_then(|d| d.get("tone"));
     for (dsp_index, run) in runs.iter().enumerate() {
-        // dsp0 holds the main line and the branch alike; a second DSP is a
-        // second path on hardware that has one.
-        let name = format!("dsp{}", dsp_index.min(1));
+        let name = format!("dsp{dsp_index}");
         let Some(dsp) = tone.and_then(|t| t.get(&name)).and_then(Json::as_object) else {
             continue;
         };
 
-        // block0, block1, … in numeric order, and the cabs that ride with them.
-        let mut named: Vec<(usize, &str)> = dsp
-            .keys()
-            .filter_map(|k| {
-                let digits = k.strip_prefix("block")?;
-                Some((digits.parse::<usize>().ok()?, k.as_str()))
-            })
-            .collect();
-        named.sort_unstable();
+        let numbered = |prefix: &str| {
+            let mut found: Vec<(usize, String)> = dsp
+                .keys()
+                .filter_map(|k| {
+                    let digits = k.strip_prefix(prefix)?;
+                    Some((digits.parse::<usize>().ok()?, k.clone()))
+                })
+                .collect();
+            found.sort_unstable();
+            found
+        };
+        let named = numbered("block");
+        // An Amp+Cab is one slot on the wire and two nodes in the file: the amp
+        // as a block, its cab as `cab0`, `cab1`, … HX Edit's own convention,
+        // and positional - the k-th cab belongs to the k-th block that can take
+        // one. Ignoring them put the cab in a slot of its own, which changes
+        // the chain and leaves the amp carrying the engine class of an amp with
+        // no cab.
+        // A cab names the slot of the amp it rides in, so whose cab it is is
+        // said rather than guessed.
+        let cab_nodes = numbered("cab");
 
         let mut free = run.iter().copied();
         for (_, block_key) in named {
-            let Some(node) = dsp.get(block_key) else { continue };
-            let Some(position) = free.next() else {
+            let Some(node) = dsp.get(&block_key) else { continue };
+            // A file that records where a block sat is put back there; one that
+            // does not - HX Edit's own - packs from the front, which is what
+            // dense numbering means.
+            let recorded = node
+                .get("@slot")
+                .and_then(Json::as_u64)
+                .map(|n| n as usize)
+                .filter(|n| run.contains(n));
+            let Some(position) = recorded.or_else(|| free.next()) else {
                 skipped.push(format!("{block_key}: the chain has no room left"));
                 continue;
             };
-            match build_slot(node, catalog) {
+            let cab = recorded.and_then(|slot| {
+                cab_nodes
+                    .iter()
+                    .filter_map(|(_, key)| dsp.get(key))
+                    .find(|c| c.get("@slot").and_then(Json::as_u64) == Some(slot as u64))
+            });
+
+            match build_slot(node, cab, catalog) {
                 Ok(slot) => {
                     if preset.paste_slot(position, &slot) {
                         blocks += 1;
@@ -189,7 +235,7 @@ pub fn empty_the_chain(preset: &mut Preset) {
 }
 
 /// One `.hlx` block node as the slot the device expects.
-fn build_slot(node: &Json, catalog: &Catalog) -> Result<Value, String> {
+fn build_slot(node: &Json, cab: Option<&Json>, catalog: &Catalog) -> Result<Value, String> {
     let symbol_name = node
         .get("@model")
         .and_then(Json::as_str)
@@ -202,25 +248,25 @@ fn build_slot(node: &Json, catalog: &Catalog) -> Result<Value, String> {
     // that order. A parameter the document does not mention keeps the value the
     // catalog gives as its default rather than becoming zero, which for a knob
     // like Master is the difference between a preset and a silent one.
-    let mut values = Vec::with_capacity(symbol.parameters.len());
-    for id in &symbol.parameters {
-        let found = node.get(id).and_then(number_of);
-        values.push(found.unwrap_or_else(|| default_of(catalog, model, id)));
-    }
-    // The values the symbol table does not name, which some models carry after
-    // the named ones. `to_hlx` keeps them under `@unnamed`; a file from HX Edit
-    // will not have them, and those models then take a zero, which is what the
-    // device itself writes into a slot it has just been given.
-    if let Some(extra) = node.get("@unnamed").and_then(Json::as_array) {
-        values.extend(extra.iter().filter_map(number_of));
-    }
+    let values = values_for(symbol, node, catalog);
+
+    // The cab that rides along, with its own values in its own order.
+    let paired = match cab {
+        Some(cab) => {
+            let name = cab.get("@model").and_then(Json::as_str).unwrap_or_default();
+            let symbol = resolve(catalog, name, cab)
+                .ok_or_else(|| format!("the catalog does not know the cab {name}"))?;
+            Some((symbol.number, values_for(symbol, cab, catalog)))
+        }
+        None => None,
+    };
 
     let enabled = node
         .get("@enabled")
         .and_then(Json::as_bool)
         .unwrap_or(true);
     let type_tag = catalog
-        .type_tag(model, false)
+        .type_tag(model, paired.is_some())
         .ok_or_else(|| format!("no engine class for {symbol_name}"))?;
     let count_2 = catalog
         .value_count_2(model, values.len())
@@ -234,20 +280,50 @@ fn build_slot(node: &Json, catalog: &Catalog) -> Result<Value, String> {
                 (
                     Key::Int(key::MODEL_REF),
                     Value::Map(vec![
-                        (Key::Int(key::HAS_PAIRED), Value::Bool(false)),
+                        (Key::Int(key::HAS_PAIRED), Value::Bool(paired.is_some())),
                         (Key::Int(key::MODEL), Value::Int(model as i64)),
-                        (Key::Int(key::PAIRED_MODEL), Value::Int(-1)),
+                        (
+                            Key::Int(key::PAIRED_MODEL),
+                            // Absent is written as -1, not omitted.
+                            Value::Int(paired.as_ref().map_or(-1, |(n, _)| *n as i64)),
+                        ),
                     ]),
                 ),
                 (Key::Int(key::TYPE_TAG), Value::Int(type_tag)),
                 (Key::Int(key::ENABLED), Value::Bool(enabled)),
                 (Key::Int(key::VALUES), counted(&values, count_2)),
-                // No cab rides along: `to_hlx` splits a paired cab into its own
-                // block, so a document never asks for one here.
-                (Key::Int(key::PAIRED_VALUES), counted(&[], 0)),
+                (
+                    Key::Int(key::PAIRED_VALUES),
+                    match &paired {
+                        Some((number, values)) => counted(
+                            values,
+                            catalog.value_count_2(*number, values.len()).unwrap_or(0),
+                        ),
+                        None => counted(&[], 0),
+                    },
+                ),
             ]),
         ),
     ]))
+}
+
+/// A block node's values, in the order the device indexes them.
+///
+/// A parameter the document does not mention keeps the catalog's default rather
+/// than becoming zero — for a knob like Master that is the difference between a
+/// preset and a silent one. The values the symbol table does not name follow the
+/// named ones; `to_hlx` keeps them under `@unnamed`, and a file from HX Edit
+/// will not have them.
+fn values_for(symbol: &crate::Symbol, node: &Json, catalog: &Catalog) -> Vec<f32> {
+    let mut values = Vec::with_capacity(symbol.parameters.len());
+    for id in &symbol.parameters {
+        let found = node.get(id).and_then(number_of);
+        values.push(found.unwrap_or_else(|| default_of(catalog, symbol.number, id)));
+    }
+    if let Some(extra) = node.get("@unnamed").and_then(Json::as_array) {
+        values.extend(extra.iter().filter_map(number_of));
+    }
+    values
 }
 
 /// Which firmware symbol a `@model` names.
@@ -269,6 +345,15 @@ fn resolve<'a>(catalog: &'a Catalog, name: &str, node: &Json) -> Option<&'a crat
         .collect();
     if candidates.len() <= 1 {
         return candidates.into_iter().next();
+    }
+    // A file that says which it is settles it outright.
+    let wants_stereo = node.get("@stereo").and_then(Json::as_bool).unwrap_or(false);
+    if let Some(exact) = candidates
+        .iter()
+        .find(|s| s.symbol.ends_with("Stereo") == wants_stereo)
+        .filter(|_| candidates.iter().any(|s| s.symbol.ends_with("Stereo")))
+    {
+        return Some(exact);
     }
     let present = |s: &crate::Symbol| -> (usize, usize) {
         let hit = s
