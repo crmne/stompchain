@@ -498,6 +498,21 @@ pub fn category_swatch(ui: &mut Ui, colour: Color32) -> Response {
     response
 }
 
+/// The colour a footswitch lights, drawn as the light rather than as a chip.
+///
+/// A bar does for a category, which is a label. This stands for an LED under
+/// your foot, so it is round and it glows - and beside a single value a bar
+/// reads as a divider between two controls rather than as a colour.
+pub fn led_dot(ui: &mut Ui, colour: Color32) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(14.0, 22.0), Sense::hover());
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        painter.circle_filled(rect.center(), 4.0, colour);
+        painter.circle_filled(rect.center(), 6.5, colour.gamma_multiply(0.22));
+    }
+    response
+}
+
 /// What a footswitch LED colour name looks like, for the swatch beside it.
 ///
 /// Matched by name rather than by index so the list can be whatever order HX
@@ -794,6 +809,10 @@ fn elide(text: &str, max: usize) -> String {
     text.chars().take(max - 1).collect::<String>() + "…"
 }
 
+/// How much room a knob takes, across and down. Public because anything
+/// centring a knob against something else has to know what it costs.
+pub const KNOB: f32 = 44.0;
+
 /// A rotary knob, the way a pedal has them.
 ///
 /// Sliders are fine for a mixer but wrong for a stompbox: the whole point of the
@@ -801,7 +820,7 @@ fn elide(text: &str, max: usize) -> String {
 /// has knobs. Dragging vertically turns it, which is what every audio
 /// application does and what the hand expects.
 pub fn knob(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>) -> Response {
-    let size = Vec2::splat(44.0);
+    let size = Vec2::splat(KNOB);
     let (rect, mut response) = ui.allocate_exact_size(size, Sense::click_and_drag());
 
     let (min, max) = (*range.start(), *range.end());
@@ -914,23 +933,48 @@ pub fn place(ui: &mut Ui, icon: Icon, state: Sync) -> Response {
     response
 }
 
+/// How far a tag's text sits from its edges.
+const TAG_PAD: Vec2 = Vec2::new(4.0, 1.0);
+
 /// A small tag in a block's corner, saying what reaches it.
 ///
 /// In the corner rather than in the block's face, because the face is the
 /// model's artwork and its name, and those are what a person is reading when
 /// they scan a chain. This is for the second look.
 pub fn block_tag(ui: &Ui, block: egui::Rect, text: &str, colour: Color32) {
-    let painter = ui.painter();
-    let font = egui::FontId::proportional(9.0);
-    let galley = painter.layout_no_wrap(text.to_owned(), font, BACKGROUND);
-    let pad = Vec2::new(4.0, 1.0);
-    let size = galley.size() + pad * 2.0;
+    let galley = tag_text(ui, text);
+    let size = galley.size() + TAG_PAD * 2.0;
     let rect = egui::Rect::from_min_size(
         egui::Pos2::new(block.right() - size.x - 3.0, block.top() + 3.0),
         size,
     );
+    paint_tag(ui, rect, galley, colour);
+}
+
+/// The same tag, in the run of a line rather than in a corner.
+///
+/// FS1 is written one way wherever it appears - on the block in the chain,
+/// beside the on/off switch, in the assignments table - so that seeing it in
+/// three places is seeing one thing three times, and not three spellings of it.
+/// It carries the block's colour for the same reason.
+pub fn tag(ui: &mut Ui, text: &str, colour: Color32) -> Response {
+    let galley = tag_text(ui, text);
+    let (rect, response) = ui.allocate_exact_size(galley.size() + TAG_PAD * 2.0, Sense::click());
+    if ui.is_rect_visible(rect) {
+        paint_tag(ui, rect, galley, colour);
+    }
+    response
+}
+
+fn tag_text(ui: &Ui, text: &str) -> std::sync::Arc<egui::Galley> {
+    ui.painter()
+        .layout_no_wrap(text.to_owned(), egui::FontId::proportional(9.0), BACKGROUND)
+}
+
+fn paint_tag(ui: &Ui, rect: egui::Rect, galley: std::sync::Arc<egui::Galley>, colour: Color32) {
+    let painter = ui.painter();
     painter.rect_filled(rect, Rounding::same(3.0), colour);
-    painter.galley(rect.min + pad, galley, BACKGROUND);
+    painter.galley(rect.min + TAG_PAD, galley, BACKGROUND);
 }
 
 /// A footswitch, drawn as one.

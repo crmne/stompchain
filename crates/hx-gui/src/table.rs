@@ -49,6 +49,13 @@ pub enum Cell {
     Dim(String),
     /// Where a tone is: one icon per place, each its own button.
     Places(Vec<(theme::Icon, theme::Sync, &'static str)>),
+    /// The same small chip the chain paints on a block: FS1, EXP2, MIDI. The
+    /// long name is on hover, because the short one is the one you learn.
+    Tag {
+        text: String,
+        colour: egui::Color32,
+        hover: String,
+    },
     /// A number, drawn as the pedal draws one. Same widget, same gestures:
     /// drag to turn, click the reading to type it. A row of these needs a
     /// taller row than a row of words, which is what `Grid::row_height` is for.
@@ -58,6 +65,22 @@ pub enum Cell {
         /// The reading, formatted the way that parameter is formatted
         /// everywhere else.
         text: String,
+        /// What this end is, in the row's own words. A column header can only
+        /// say one thing for every row under it, and what these two ends are
+        /// called depends on what moves them.
+        hover: String,
+    },
+    /// A whole number that is an address rather than a quantity: a MIDI CC.
+    ///
+    /// Drag it or click to type it, like a knob, but written to the device
+    /// once at the end rather than streamed as it moves. A knob's value is a
+    /// sound you are listening to while you turn it; every number a CC passes
+    /// through on the way to 42 is meaningless, and each one costs a document
+    /// read.
+    Number {
+        value: i64,
+        range: std::ops::RangeInclusive<i64>,
+        hover: &'static str,
     },
 }
 
@@ -66,9 +89,10 @@ impl Cell {
     /// header gathers everything that needs doing.
     pub fn key(&self) -> String {
         match self {
-            Cell::Text(t) | Cell::Dim(t) => t.to_lowercase(),
+            Cell::Text(t) | Cell::Dim(t) | Cell::Tag { text: t, .. } => t.to_lowercase(),
             // Padded so 9 sorts before 10, which a plain string does not.
             Cell::Knob { value, .. } => format!("{value:020.6}"),
+            Cell::Number { value, .. } => format!("{value:020}"),
             // Sorted so everything with something to do gathers at the top.
             Cell::Places(places) => places
                 .iter()
@@ -86,7 +110,11 @@ impl Cell {
 /// A column: what it is called, how wide, and whether its cells can be typed
 /// into.
 pub struct Column {
-    pub title: &'static str,
+    /// Owned rather than static: a header can depend on what is in the column.
+    /// The two ends of an assignment are a Min and a Max under an expression
+    /// pedal and an Off and an On under a footswitch, and they are the same
+    /// column.
+    pub title: String,
     pub width: f32,
     pub editable: bool,
     /// Fills whatever is left. At most one column should say yes.
@@ -94,9 +122,9 @@ pub struct Column {
 }
 
 impl Column {
-    pub fn new(title: &'static str, width: f32) -> Column {
+    pub fn new(title: impl Into<String>, width: f32) -> Column {
         Column {
-            title,
+            title: title.into(),
             width,
             editable: false,
             fills: false,
@@ -161,6 +189,11 @@ pub struct Did {
     pub chose: Option<(usize, usize)>,
     /// A knob cell was turned: which cell, and what it now reads.
     pub turned: Option<(usize, usize, f32)>,
+    /// A number cell was changed: which cell, what it now reads, and whether
+    /// the person has finished with it - let go of the drag, or left the field.
+    /// Every step is reported so the cell can be redrawn where it has been
+    /// dragged to; only a finished one is worth sending anywhere.
+    pub numbered: Option<(usize, usize, i64, bool)>,
 }
 
 /// Draw it, and answer with what happened.
@@ -215,6 +248,9 @@ pub fn show(ui: &mut Ui, id: &str, grid: &mut Grid) -> Did {
     let mut delegate = Delegate {
         grid,
         did: Did::default(),
+        // Taken from the table's own name, so it is the same id next frame.
+        // See `Delegate::id`.
+        id: ui.id().with(id),
         ctrl,
         shift,
     };
@@ -267,7 +303,7 @@ fn draw_headers(ui: &mut Ui, grid: &Grid) {
                 ui.painter().text(
                     rect.left_center() + egui::vec2(PADDING, 0.0),
                     egui::Align2::LEFT_CENTER,
-                    column.title,
+                    &column.title,
                     egui::TextStyle::Body.resolve(ui.style()),
                     if i == grid.sort.0 {
                         theme::ACCENT
@@ -284,6 +320,17 @@ fn draw_headers(ui: &mut Ui, grid: &Grid) {
 struct Delegate<'a> {
     grid: &'a mut Grid,
     did: Did,
+    /// The table's own id, for anything inside a cell that has to be the *same*
+    /// widget from one frame to the next.
+    ///
+    /// Keyboard focus is held by id, and an id egui makes up for a widget
+    /// counts the widgets built before it in that ui. `egui_table` builds a
+    /// cell's ui more than once and not always the same way, so a field left to
+    /// name itself can come out with a different id and lose the focus it just
+    /// asked for - which is a cell drawn as an empty box that ignores
+    /// everything typed at it. Named from the table, it is the same field every
+    /// time.
+    id: egui::Id,
     ctrl: bool,
     shift: bool,
 }
@@ -355,13 +402,41 @@ impl egui_table::TableDelegate for Delegate<'_> {
         ui.add_space(PADDING);
         let editing = self.grid.editing == Some((row, col));
         if editing {
-            let field = ui.add(
-                egui::TextEdit::singleline(&mut self.grid.draft)
-                    .desired_width(f32::INFINITY)
-                    .frame(false),
-            );
+            // Only the copy you can see gets a field.
+            //
+            // `egui_table` builds every cell twice - once among the sticky
+            // columns and once among the scrolling ones - and clips whichever
+            // copy does not belong down to nothing. Both are real widgets all
+            // the same, so a field built in both holds the keyboard twice and
+            // takes every keystroke twice: one Z typed arrived as ZZ. The
+            // clipped copy is laid out for its width and left inert. Same for a
+            // sizing pass, which is measuring rather than showing.
+            if ui.is_sizing_pass() || !ui.clip_rect().intersect(ui.max_rect()).is_positive() {
+                ui.label(self.grid.draft.clone());
+                return;
+            }
+            // No cell-wide click target while a cell is a field: the field is
+            // the cell, and a second widget over it takes the keyboard focus it
+            // is asking for.
+            let mut shown = egui::TextEdit::singleline(&mut self.grid.draft)
+                .id(self.id.with(("editing", row, col)))
+                .desired_width(f32::INFINITY)
+                .frame(false)
+                .show(ui);
+            let field = shown.response;
             if !field.has_focus() && !field.lost_focus() {
                 field.request_focus();
+                // With everything selected, so the first thing typed replaces
+                // what was there. A cell opens on the value it already holds,
+                // and typing 35 into one reading "0 %" left "0 %35" - which is
+                // not what anybody meant and is not what a rename does anywhere
+                // else either.
+                let all = egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(self.grid.draft.chars().count()),
+                );
+                shown.state.cursor.set_char_range(Some(all));
+                shown.state.store(ui.ctx(), field.id);
             }
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.did.cancelled = true;
@@ -371,9 +446,27 @@ impl egui_table::TableDelegate for Delegate<'_> {
             return;
         }
 
+        // The whole cell answers, not just the words in it. Without this a
+        // right-click landed only on the text, which in a row tall enough to
+        // hold a knob is a sliver of it, and the row's menu looked broken.
+        //
+        // Claimed *before* the contents are drawn, which is the whole trick.
+        // egui gives a tie to whichever widget was added last, so a target laid
+        // over the cell afterwards quietly takes the clicks meant for what is
+        // inside it: it is why pressing Push in the library only ever selected
+        // the row, and why a CC could be dragged but never clicked to type.
+        let whole = ui.interact(
+            ui.max_rect(),
+            ui.id().with(("cell", row, col)),
+            egui::Sense::click(),
+        );
+
         let Some(content) = self.grid.rows.get(row).and_then(|r| r.get(col)) else {
             return;
         };
+        // Whether something inside the cell answered the click itself, so the
+        // cell does not answer it a second time.
+        let mut claimed = false;
         let response = match content {
             Cell::Places(places) => {
                 let places = places.clone();
@@ -384,37 +477,89 @@ impl egui_table::TableDelegate for Delegate<'_> {
                         let hit = theme::place(ui, *icon, *state);
                         if *state != theme::Sync::Unknown && hit.on_hover_text(*hover).clicked() {
                             self.did.place = Some((row, n));
+                            claimed = true;
                         }
                     }
                 })
                 .response
             }
-            Cell::Knob { value, range, text } => {
+            Cell::Knob {
+                value,
+                range,
+                text,
+                hover,
+            } => {
                 // The pedal's own knob, with the pedal's own gestures: drag to
                 // turn, click the reading to type it. A number that behaves one
                 // way under the knobs and another way in a table is two things
                 // to learn for one job.
-                let (mut turned, range, text) = (*value, range.clone(), text.clone());
+                let (mut turned, range) = (*value, range.clone());
+                let (text, hover) = (text.clone(), hover.clone());
                 let mut moved = None;
+                // Exactly as tall as the knob and its reading, so the row's own
+                // centre alignment places it: a cell drawn from the top of a
+                // row tall enough for a knob floats above the words in the
+                // columns either side of it.
+                let tall = theme::KNOB
+                    + ui.spacing().item_spacing.y
+                    + ui.text_style_height(&egui::TextStyle::Monospace);
                 // The reading is the cell's click target, exactly as it is
                 // under the knobs: the knob takes the drag, the number under it
                 // takes the click that starts typing.
                 let reading = ui
-                    .vertical_centered(|ui| {
-                        if theme::knob(ui, &mut turned, range).changed() {
-                            moved = Some(turned);
-                        }
-                        ui.add(
-                            egui::Label::new(RichText::new(text).monospace().color(theme::ACCENT))
+                    .allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), tall),
+                        egui::Layout::top_down(egui::Align::Center),
+                        |ui| {
+                            if theme::knob(ui, &mut turned, range).changed() {
+                                moved = Some(turned);
+                            }
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(text).monospace().color(theme::ACCENT),
+                                )
                                 .selectable(false)
                                 .sense(egui::Sense::click()),
-                        )
-                    })
+                            )
+                        },
+                    )
                     .inner;
                 if let Some(turned) = moved {
                     self.did.turned = Some((row, col, turned));
                 }
-                reading.on_hover_text("drag the knob to move this end\nclick to type it")
+                reading.on_hover_text(format!("{hover}\ndrag the knob, or click to type it"))
+            }
+            Cell::Tag {
+                text,
+                colour,
+                hover,
+            } => {
+                let (text, colour, hover) = (text.clone(), *colour, hover.clone());
+                theme::tag(ui, &text, colour).on_hover_text(hover)
+            }
+            Cell::Number {
+                value,
+                range,
+                hover,
+            } => {
+                let (mut number, range, hover) = (*value, range.clone(), *hover);
+                // The field is the cell. A click here is for the number, never
+                // for the row.
+                claimed = true;
+                let field = ui.add(
+                    egui::DragValue::new(&mut number)
+                        .speed(0.15)
+                        .range(range)
+                        .clamp_existing_to_range(true),
+                );
+                // Every step while it is being dragged, so the cell follows the
+                // pointer, and the end of the drag as the one worth sending.
+                if field.changed() {
+                    self.did.numbered = Some((row, col, number, !field.dragged()));
+                } else if field.drag_stopped() {
+                    self.did.numbered = Some((row, col, number, true));
+                }
+                field.on_hover_text(hover)
             }
             Cell::Text(text) | Cell::Dim(text) => {
                 let rich = if matches!(content, Cell::Dim(_)) {
@@ -437,18 +582,11 @@ impl egui_table::TableDelegate for Delegate<'_> {
             }
         };
 
-        // The whole cell answers, not just the words in it. The widgets above
-        // took their own clicks first, so a place icon and a knob still behave;
-        // this picks up everything around them. Without it a right-click landed
-        // only on the text, which in a row tall enough to hold a knob is a
-        // sliver of it, and the row's menu looked broken.
-        let response = response.union(ui.interact(
-            ui.max_rect(),
-            ui.id().with(("cell", row, col)),
-            egui::Sense::click(),
-        ));
+        let response = response.union(whole);
 
-        if response.clicked() {
+        // A click the contents took is not a click on the cell as well:
+        // pressing Push sends a tone, and should not also pick the row.
+        if response.clicked() && !claimed {
             // A click on a row that is already selected, in a column that can
             // be typed into, starts typing: the same gesture every file
             // manager uses to rename. Nothing is lost, because the click could
