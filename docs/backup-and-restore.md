@@ -112,11 +112,17 @@ backup, reading it back, and comparing every preset against HX Edit's own bundle
 
 One block is deliberately absent. A real backup carries `SDMU`, an archive of
 980 model descriptors that is HX Edit's catalog cache rather than anything about
-the pedal's presets; inventing one would be inventing data. **Whether HX Edit
-accepts a bundle without it is untested** and needs a machine with HX Edit on it
-to find out. Nothing depends on the answer: TonePush restores from its own
-bundle, which carries the pedal's own bytes and cannot lose what a conversion
-might.
+the pedal's presets; inventing one would be inventing data.
+
+**HX Edit accepts the bundle without it.** Tested against HX Edit 3.82: its
+Extract Files From Backup reads the file, reports the right device and firmware,
+and writes out all 126 presets as `.hlx`, snapshots included. Those files read
+back correctly here too, so the round trip is whole - our bundle, out through HX
+Edit, and back in.
+
+One thing to know if you try it: HX Edit lists a backup by its **file name**, not
+its contents, so a bundle it will happily read is invisible in that dialog until
+it is called `HX Stomp Backup <YYYY-Mon-DD>.hxb`.
 
 ## The editor's other files [built]
 

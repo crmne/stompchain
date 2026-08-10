@@ -184,9 +184,10 @@ enum Cmd {
     /// hardware.
     ///
     /// The presets go out as HX Edit's own symbolic JSON, which is portable
-    /// across firmware in a way the pedal's own bytes are not. Whether HX Edit
-    /// itself accepts the result is untested - TonePush restores from its own
-    /// bundle, which cannot lose anything a conversion might.
+    /// across firmware in a way the pedal's own bytes are not. HX Edit 3.82
+    /// reads the result: it reports the right device and firmware and extracts
+    /// every preset. Restoring is still done from our own bundle, which carries
+    /// the pedal's bytes and cannot lose what a conversion might.
     ExportHxb {
         /// A bundle directory written by `tonepush back-up`.
         bundle: std::path::PathBuf,
@@ -1341,7 +1342,7 @@ fn export_hxb(bundle: &std::path::Path, output: &std::path::Path) -> Result<()> 
         bytes.len()
     );
     println!(
-        "note: whether HX Edit accepts this is untested; TonePush restores from the bundle itself"
+        "note: HX Edit reads this; name it \"HX Stomp Backup <YYYY-Mon-DD>.hxb\" or its\n      backup dialog will not list it"
     );
     Ok(())
 }
