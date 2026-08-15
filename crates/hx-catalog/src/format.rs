@@ -230,5 +230,15 @@ mod tests {
         let ty = comp.params.iter().find(|p| p.name == "Type").unwrap();
         assert_eq!(catalog.format(ty, 1.0), "Limit");
         assert_eq!(catalog.format(ty, 0.0), "Compress");
+
+        // `valueType: integer` does not necessarily mean a named menu. Pitch
+        // Wham's endpoints are stepped signed numbers; `choices` is the
+        // distinction the GUI must use before drawing a ComboBox.
+        let wham = catalog.model("HD2_PitchPitchWham").unwrap();
+        let heel = wham.params.iter().find(|p| p.name == "Heel Pitch").unwrap();
+        assert_eq!(heel.kind, Kind::Enum);
+        assert!(catalog.choices(heel).is_none());
+        assert_eq!(catalog.format(heel, -12.0), "-12");
+        assert_eq!(catalog.format(heel, 12.0), "+12");
     }
 }

@@ -1742,7 +1742,11 @@ impl App {
 
         match &mut self.tempo_draft {
             Some(draft) => {
-                let edit = ui.add(egui::TextEdit::singleline(draft).desired_width(52.0));
+                let edit = ui.add(
+                    egui::TextEdit::singleline(draft)
+                        .desired_width(52.0)
+                        .font(egui::TextStyle::Monospace),
+                );
                 if !edit.has_focus() && !edit.lost_focus() {
                     edit.request_focus();
                 }
@@ -1757,8 +1761,12 @@ impl App {
             }
             None => {
                 let label = ui.add(
-                    egui::Label::new(RichText::new(format!("{tempo:.1} BPM")).color(theme::ACCENT))
-                        .sense(egui::Sense::click()),
+                    egui::Label::new(
+                        RichText::new(format!("{tempo:.1} BPM"))
+                            .monospace()
+                            .color(theme::ACCENT),
+                    )
+                    .sense(egui::Sense::click()),
                 );
                 if label.on_hover_text("click to change tempo").clicked() {
                     self.tempo_draft = Some(format!("{tempo:.1}"));
@@ -7375,8 +7383,8 @@ impl App {
                     let drawn = ui.allocate_ui(cell, |ui| {
                         ui.vertical_centered(|ui| {
                             let mut changed = false;
-                            match param.kind {
-                                Kind::Switch => {
+                            match (param.kind, catalog.choices(param)) {
+                                (Kind::Switch, _) => {
                                     let mut on = current >= 0.5;
                                     let hit = ui.add(theme::switch(&mut on));
                                     changed = hit.changed();
@@ -7388,9 +7396,12 @@ impl App {
                                             .color(theme::ACCENT),
                                     );
                                 }
-                                // A menu is a menu: a knob that snaps between
-                                // named choices only pretended, arc and all.
-                                Kind::Enum => {
+                                // Only a catalog entry with actual labels is a
+                                // menu. `valueType: integer` also covers stepped
+                                // numbers such as Pitch Wham's -24..+24 range;
+                                // drawing those as a ComboBox produced an empty
+                                // popup because there were no choices to list.
+                                (Kind::Enum, Some(choices)) => {
                                     let choice = current.round().max(0.0) as usize;
                                     ui.add_space(11.0);
                                     egui::ComboBox::from_id_salt((
@@ -7399,20 +7410,17 @@ impl App {
                                     .width(cell.x)
                                     .selected_text(
                                         RichText::new(catalog.format(param, current))
-                                            .monospace()
                                             .color(theme::ACCENT),
                                     )
                                     .show_ui(ui, |ui| {
-                                        if let Some(choices) = catalog.choices(param) {
-                                            for (n, label) in choices.iter().enumerate() {
-                                                if ui
-                                                    .selectable_label(n == choice, label)
-                                                    .clicked()
-                                                    && n != choice
-                                                {
-                                                    current = n as f32;
-                                                    changed = true;
-                                                }
+                                        for (n, label) in choices.iter().enumerate() {
+                                            if ui
+                                                .selectable_label(n == choice, label)
+                                                .clicked()
+                                                && n != choice
+                                            {
+                                                current = n as f32;
+                                                changed = true;
                                             }
                                         }
                                     });
@@ -7541,6 +7549,12 @@ impl App {
                                     }
                                 });
                             if changed {
+                                // Integer parameters rendered as knobs move in
+                                // whole native steps. Named menus already return
+                                // an integer index, so this is harmless there too.
+                                if param.kind == Kind::Enum {
+                                    current = current.round();
+                                }
                                 edit = Some((index as i64, current, param.kind == Kind::Switch));
                             }
                         });

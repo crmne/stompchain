@@ -19,29 +19,28 @@ pub fn semibold(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Name(SEMIBOLD.into()))
 }
 
-/// The typeface: IBM Plex.
+/// Inter for the interface, with IBM Plex Mono for changing readings.
 ///
-/// A tone editor is a panel of numbers that change while you look at them, so
-/// the figures matter more than the letters. Plex has proper tabular figures -
-/// 0.0 and 8.8 occupy the same width, so a value does not shuffle sideways as
-/// a knob turns - a one that cannot be mistaken for an l, and a slashed zero in
-/// the mono cut for the slot labels. It was drawn for machinery, which is what
-/// this is, and it is OFL, so it ships with the binaries.
+/// Labels, buttons, headings, and prose use Inter, which is compact and clear
+/// at UI sizes. Values that move while a knob turns deliberately ask for the
+/// monospace family instead: equal-width figures keep the reading from
+/// shuffling sideways under the control. Both faces are OFL and ship with the
+/// binaries.
 ///
-/// egui's own fonts stay on behind it as the fallback: Plex has no ★, ☆ or ●,
-/// and a missing glyph draws as an empty box.
+/// egui's own fonts stay behind them as fallbacks for symbols neither face
+/// carries; a missing glyph must never become an empty box.
 pub fn fonts(ctx: &egui::Context) {
     use egui::{FontData, FontFamily};
 
     let mut fonts = egui::FontDefinitions::default();
     for (name, bytes) in [
         (
-            "plex",
-            &include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf")[..],
+            "inter",
+            &include_bytes!("../assets/fonts/Inter-Regular.ttf")[..],
         ),
         (
-            "plex-semibold",
-            &include_bytes!("../assets/fonts/IBMPlexSans-SemiBold.ttf")[..],
+            "inter-semibold",
+            &include_bytes!("../assets/fonts/Inter-SemiBold.ttf")[..],
         ),
         (
             "plex-mono",
@@ -55,12 +54,12 @@ pub fn fonts(ctx: &egui::Context) {
     }
 
     // First in the list is the primary; what follows is the fallback chain, so
-    // egui's bundled fonts still answer for the glyphs Plex does not carry.
+    // egui's bundled fonts still answer for glyphs Inter does not carry.
     fonts
         .families
         .entry(FontFamily::Proportional)
         .or_default()
-        .insert(0, "plex".to_owned());
+        .insert(0, "inter".to_owned());
     fonts
         .families
         .entry(FontFamily::Monospace)
@@ -68,7 +67,7 @@ pub fn fonts(ctx: &egui::Context) {
         .insert(0, "plex-mono".to_owned());
     // The semibold cut is its own family: `RichText::strong()` in egui changes
     // colour, not weight, so anything that wants weight has to ask for it.
-    let mut heavy = vec!["plex-semibold".to_owned()];
+    let mut heavy = vec!["inter-semibold".to_owned()];
     heavy.extend(fonts.families[&FontFamily::Proportional].iter().cloned());
     fonts
         .families
@@ -95,10 +94,9 @@ pub fn apply(ctx: &egui::Context) {
     v.selection.bg_fill = Color32::from_rgb(0x2c, 0x3a, 0x52);
     v.selection.stroke = Stroke::new(1.0_f32, ACCENT);
 
-    // A deliberate scale rather than egui's defaults. Plex carries a large
-    // x-height, so these read a size bigger than the numbers suggest; Small in
-    // particular does a lot of work here as the colour-dimmed second voice, and
-    // at egui's 9.0 it was a squint.
+    // A deliberate scale rather than egui's defaults. Small in particular does
+    // a lot of work here as the colour-dimmed second voice, and at egui's 9.0 it
+    // was a squint.
     use egui::{FontFamily::Monospace, FontFamily::Proportional, FontId, TextStyle};
     style.text_styles = [
         (TextStyle::Small, FontId::new(10.0, Proportional)),
@@ -108,6 +106,10 @@ pub fn apply(ctx: &egui::Context) {
         (TextStyle::Monospace, FontId::new(12.0, Monospace)),
     ]
     .into();
+    // DragValue is what egui uses for numeric fields on its own and inside
+    // sliders. These readings change under the pointer, so proportional
+    // figures would make the control's text visibly breathe while dragging.
+    style.drag_value_text_style = TextStyle::Monospace;
 
     style.spacing.item_spacing = Vec2::new(8.0, 6.0);
     style.spacing.slider_width = 180.0;
