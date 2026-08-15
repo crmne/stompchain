@@ -287,35 +287,55 @@ pub fn block_button_tinted(
         // it legible. A bypassed block loses its colour, which is the whole
         // point of bypassing it.
         let tint = if enabled { accent } else { DIM };
-        let fill = if !enabled {
-            Color32::from_rgb(0x22, 0x25, 0x2b)
-        } else if selected {
-            tint.gamma_multiply(0.30)
+        let fill = if selected {
+            if enabled {
+                accent.gamma_multiply(0.23)
+            } else {
+                // Selection must not make a bypassed block look engaged. A
+                // brighter neutral surface says “being edited” while its dim
+                // artwork and category edge continue to say “off”.
+                Color32::from_rgb(0x2a, 0x2f, 0x38)
+            }
+        } else if !enabled {
+            Color32::from_rgb(0x17, 0x1a, 0x20)
+        } else if response.hovered() {
+            Color32::from_rgb(0x23, 0x29, 0x32)
         } else {
-            Color32::from_rgb(0x2a, 0x2e, 0x36)
+            Color32::from_rgb(0x1b, 0x20, 0x27)
         };
         let border = if response.dragged() {
             Stroke::new(2.0_f32, ACCENT)
-        } else if selected {
-            Stroke::new(2.0_f32, tint)
         } else {
-            Stroke::new(1.0_f32, tint.gamma_multiply(0.55))
+            Stroke::new(
+                1.5_f32,
+                tint.gamma_multiply(if selected || response.hovered() {
+                    1.0
+                } else {
+                    0.78
+                }),
+            )
         };
 
         let painter = ui.painter();
-        painter.rect_filled(rect, CornerRadius::same(5), fill);
+        painter.rect_filled(rect, CornerRadius::same(6), fill);
         painter.rect_stroke(
             rect,
-            CornerRadius::same(5),
+            CornerRadius::same(6),
             border,
-            egui::StrokeKind::Middle,
+            egui::StrokeKind::Inside,
         );
 
-        let text_colour = if enabled { tint } else { DIM };
+        let text_colour = if !enabled {
+            DIM
+        } else if category.is_some() {
+            accent
+        } else {
+            TEXT
+        };
         if let Some(art) = artwork {
             let box_ = egui::Rect::from_center_size(
-                rect.center() - Vec2::new(0.0, 10.0),
-                Vec2::new(76.0, 48.0),
+                rect.center() - Vec2::new(0.0, 15.0),
+                Vec2::new(76.0, 58.0),
             );
             let tint = if enabled {
                 Color32::WHITE
@@ -332,7 +352,7 @@ pub fn block_button_tinted(
         // block holds two models and saying so in the name - "Cali Rectifire +
         // Cab" - only pushed the name itself off the tile. HX Edit puts the
         // category here for the same reason.
-        let name_y = if category.is_some() { 20.0 } else { 11.0 };
+        let name_y = if category.is_some() { 25.0 } else { 13.0 };
         ui.painter().text(
             rect.center_bottom() - Vec2::new(0.0, name_y),
             egui::Align2::CENTER_CENTER,
@@ -342,12 +362,12 @@ pub fn block_button_tinted(
         );
         if let Some(category) = category {
             ui.painter().text(
-                rect.center_bottom() - Vec2::new(0.0, 8.0),
+                rect.center_bottom() - Vec2::new(0.0, 10.0),
                 egui::Align2::CENTER_CENTER,
-                elide(category, 16),
-                egui::FontId::proportional(9.0),
+                category_short(category),
+                egui::FontId::proportional(9.5),
                 if enabled {
-                    DIM
+                    accent
                 } else {
                     DIM.gamma_multiply(0.6)
                 },
@@ -382,6 +402,8 @@ pub enum Sync {
     Same,
     /// Over there under this name, and different.
     Differs,
+    /// On its way there now.
+    Working,
     /// Not knowable yet, because the pedal has not been read.
     Unknown,
 }
@@ -642,6 +664,58 @@ pub fn category_chip(
     response
 }
 
+/// A category in the model browser's navigation rail.
+///
+/// Unlike a chip, this consumes a predictable single row. That lets the
+/// category vocabulary sit beside the models instead of pushing them several
+/// rows down whenever the browser is narrow.
+pub fn category_rail_row(
+    ui: &mut Ui,
+    name: &str,
+    icon: Option<&Art>,
+    colour: Color32,
+    on: bool,
+) -> Response {
+    const HEIGHT: f32 = 28.0;
+    const ICON: f32 = 14.0;
+    let size = Vec2::new(ui.available_width(), HEIGHT);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+
+    let painter = ui.painter();
+    let fill = if on {
+        colour.gamma_multiply(0.23)
+    } else if response.hovered() {
+        Color32::from_rgb(0x23, 0x29, 0x32)
+    } else {
+        Color32::TRANSPARENT
+    };
+    painter.rect_filled(rect, CornerRadius::same(4), fill);
+
+    let mut left = rect.left() + 6.0;
+    if let Some(icon) = icon {
+        icon.paint(
+            ui,
+            egui::Rect::from_min_size(
+                egui::pos2(left, rect.center().y - ICON / 2.0),
+                Vec2::splat(ICON),
+            ),
+            colour,
+        );
+        left += ICON + 6.0;
+    }
+    painter.text(
+        egui::pos2(left, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        elide(name, 15),
+        egui::FontId::proportional(11.0),
+        if on { TEXT } else { DIM },
+    );
+    response
+}
+
 /// A subcategory, as a smaller pill under the category it belongs to.
 ///
 /// Deliberately quieter than [`category_chip`]: no icon, no colour of its own,
@@ -683,27 +757,55 @@ pub fn shelf_pill(ui: &mut Ui, name: &str, on: bool) -> Response {
 ///
 /// A grid of thumbnails the way Logic's Pedalboard shows its shelf: with a few
 /// hundred models to choose from, the picture is what you actually recognise.
-pub fn model_tile(ui: &mut Ui, name: &str, artwork: Option<&Art>, selected: bool) -> Response {
-    let size = Vec2::new(140.0, 136.0);
+pub fn model_tile(
+    ui: &mut Ui,
+    name: &str,
+    artwork: Option<&Art>,
+    selected: bool,
+    accent: Color32,
+    size: Vec2,
+) -> Response {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     if !ui.is_rect_visible(rect) {
         return response;
     }
 
     let painter = ui.painter().with_clip_rect(rect);
+    painter.rect_filled(
+        rect,
+        CornerRadius::same(6),
+        if selected {
+            accent.gamma_multiply(0.23)
+        } else if response.hovered() {
+            Color32::from_rgb(0x23, 0x29, 0x32)
+        } else {
+            Color32::from_rgb(0x1b, 0x20, 0x27)
+        },
+    );
     if selected {
-        painter.rect_filled(rect, CornerRadius::same(5), ui.visuals().selection.bg_fill);
-    } else if response.hovered() {
-        painter.rect_filled(
-            rect,
-            CornerRadius::same(5),
-            Color32::from_rgb(0x25, 0x29, 0x31),
+        painter.rect_stroke(
+            rect.shrink(0.75),
+            CornerRadius::same(6),
+            Stroke::new(2.0_f32, accent),
+            egui::StrokeKind::Inside,
+        );
+    } else {
+        let outline = if response.hovered() {
+            Color32::from_rgb(0x48, 0x50, 0x5d)
+        } else {
+            Color32::from_rgb(0x32, 0x39, 0x44)
+        };
+        painter.rect_stroke(
+            rect.shrink(0.5),
+            CornerRadius::same(6),
+            Stroke::new(1.0_f32, outline),
+            egui::StrokeKind::Inside,
         );
     }
 
     let art = egui::Rect::from_min_size(
         egui::pos2(rect.left() + 8.0, rect.top() + 6.0),
-        Vec2::new(size.x - 16.0, 94.0),
+        Vec2::new(size.x - 16.0, (size.y - 32.0).max(64.0)),
     );
     match artwork {
         Some(a) => a.paint(ui, art, Color32::WHITE),
@@ -716,25 +818,14 @@ pub fn model_tile(ui: &mut Ui, name: &str, artwork: Option<&Art>, selected: bool
         }
     }
 
-    // Two lines of name, wrapped by hand: the tiles must stay the same size or
-    // the grid stops being a grid.
-    let mut galley = ui.painter().layout(
-        name.to_owned(),
+    // A browser model has one caption, not the category row carried by a
+    // signal-chain block. Keep it to one line and leave the full name on hover.
+    painter.text(
+        egui::pos2(rect.center().x, art.bottom() + 4.0),
+        egui::Align2::CENTER_TOP,
+        elide(name, 16),
         egui::FontId::proportional(12.0),
-        if selected { ACCENT } else { TEXT },
-        size.x - 8.0,
-    );
-    if galley.rows.len() > 2 {
-        galley = ui.painter().layout_no_wrap(
-            format!("{}…", name.chars().take(16).collect::<String>()),
-            egui::FontId::proportional(12.0),
-            if selected { ACCENT } else { TEXT },
-        );
-    }
-    painter.galley(
-        egui::pos2(rect.center().x - galley.size().x / 2.0, art.bottom() + 4.0),
-        galley,
-        TEXT,
+        if selected { accent } else { TEXT },
     );
 
     response.on_hover_text(name)
@@ -742,8 +833,8 @@ pub fn model_tile(ui: &mut Ui, name: &str, artwork: Option<&Art>, selected: bool
 
 /// Signal-path geometry. Fixed rather than derived so the two lanes of a split
 /// line up column for column, which is the whole point of drawing them stacked.
-pub const BLOCK_WIDTH: f32 = 104.0;
-pub const BLOCK_HEIGHT: f32 = 86.0;
+pub const BLOCK_WIDTH: f32 = 96.0;
+pub const BLOCK_HEIGHT: f32 = 108.0;
 pub const WIRE_WIDTH: f32 = 22.0;
 pub const JUNCTION_WIDTH: f32 = 34.0;
 /// Height of one lane including the gap under it.
@@ -855,9 +946,29 @@ fn elide(text: &str, max: usize) -> String {
     text.chars().take(max - 1).collect::<String>() + "…"
 }
 
+/// A category in the compact vocabulary used on the signal-chain cards.
+///
+/// The card already carries the full model name, so the second line should be
+/// the quick answer to “what kind of block is this?” rather than another long
+/// label competing for the same width.
+fn category_short(category: &str) -> String {
+    match category {
+        "Distortion" => "DIST".to_owned(),
+        "Dynamics" => "DYN".to_owned(),
+        "Modulation" => "MOD".to_owned(),
+        "Pitch/Synth" => "PITCH/SYNTH".to_owned(),
+        "Amp+Cab" => "AMP+CAB".to_owned(),
+        "Volume/Pan" => "VOLUME/PAN".to_owned(),
+        "Send/Return" => "SEND/RETURN".to_owned(),
+        known @ ("EQ" | "Delay" | "Reverb" | "Filter" | "Wah" | "Amp" | "Preamp" | "Cab" | "IR"
+        | "Looper" | "Input" | "Output" | "Split" | "Merge") => known.to_uppercase(),
+        other => other.to_uppercase(),
+    }
+}
+
 /// How much room a knob takes, across and down. Public because anything
 /// centring a knob against something else has to know what it costs.
-pub const KNOB: f32 = 44.0;
+pub const KNOB: f32 = 64.0;
 
 /// A rotary knob, the way a pedal has them.
 ///
@@ -881,7 +992,8 @@ pub fn knob(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>) 
 
     if ui.is_rect_visible(rect) {
         let centre = rect.center();
-        let radius = rect.width() * 0.42;
+        let face = rect.width() * 0.365;
+        let track = rect.width() * 0.455;
         let fraction = if span.abs() > f32::EPSILON {
             ((*value - min) / span).clamp(0.0, 1.0)
         } else {
@@ -895,35 +1007,82 @@ pub fn knob(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>) 
         let angle = start + sweep * fraction;
 
         let painter = ui.painter();
-        painter.circle_filled(centre, radius, Color32::from_rgb(0x2b, 0x2f, 0x38));
-        painter.circle_stroke(
+
+        // The complete sweep stays visible behind the travelled value. This
+        // makes a knob readable before looking at its number, while the layered
+        // face gives it the depth of the concept without pretending to be a
+        // photograph of hardware.
+        paint_arc(
+            painter,
             centre,
-            radius,
-            Stroke::new(1.0_f32, Color32::from_rgb(0x50, 0x56, 0x62)),
+            track,
+            start,
+            sweep,
+            1.0,
+            Stroke::new(3.0_f32, Color32::from_rgb(0x3b, 0x40, 0x49)),
+        );
+        paint_arc(
+            painter,
+            centre,
+            track,
+            start,
+            sweep,
+            fraction,
+            Stroke::new(3.2_f32, ACCENT),
         );
 
-        // The travelled arc, drawn as short segments.
-        let steps = 24;
-        let mut previous = None;
-        for i in 0..=steps {
-            let t = i as f32 / steps as f32;
-            if t > fraction {
-                break;
-            }
-            let a = start + sweep * t;
-            let p = centre + Vec2::new(a.cos(), a.sin()) * (radius + 3.0);
-            if let Some(prev) = previous {
-                painter.line_segment([prev, p], Stroke::new(2.5_f32, ACCENT));
-            }
-            previous = Some(p);
-        }
-
-        let pointer = centre + Vec2::new(angle.cos(), angle.sin()) * (radius - 5.0);
-        painter.line_segment([centre, pointer], Stroke::new(2.0_f32, TEXT));
-        painter.circle_filled(centre, 2.5, Color32::from_rgb(0x8a, 0x90, 0x9c));
+        painter.circle_filled(
+            centre + Vec2::new(0.0, 2.0),
+            face + 1.0,
+            Color32::from_black_alpha(120),
+        );
+        painter.circle_filled(centre, face, Color32::from_rgb(0x29, 0x2e, 0x36));
+        painter.circle_stroke(
+            centre,
+            face,
+            Stroke::new(
+                1.4_f32,
+                if response.hovered() {
+                    Color32::from_rgb(0x72, 0x79, 0x86)
+                } else {
+                    Color32::from_rgb(0x55, 0x5c, 0x68)
+                },
+            ),
+        );
+        let direction = Vec2::new(angle.cos(), angle.sin());
+        let pointer = [centre + direction * 2.0, centre + direction * (face * 0.76)];
+        painter.line_segment(pointer, Stroke::new(2.5_f32, TEXT));
     }
 
     response
+}
+
+fn paint_arc(
+    painter: &egui::Painter,
+    centre: egui::Pos2,
+    radius: f32,
+    start: f32,
+    sweep: f32,
+    fraction: f32,
+    stroke: Stroke,
+) {
+    let fraction = fraction.clamp(0.0, 1.0);
+    if fraction <= f32::EPSILON {
+        return;
+    }
+    let steps = (36.0 * fraction).ceil().max(2.0) as usize;
+    let points: Vec<egui::Pos2> = (0..=steps)
+        .map(|i| {
+            let t = fraction * i as f32 / steps as f32;
+            let angle = start + sweep * t;
+            centre + Vec2::new(angle.cos(), angle.sin()) * radius
+        })
+        .collect();
+    painter.add(egui::Shape::line(points.clone(), stroke));
+    if let (Some(first), Some(last)) = (points.first(), points.last()) {
+        painter.circle_filled(*first, stroke.width * 0.5, stroke.color);
+        painter.circle_filled(*last, stroke.width * 0.5, stroke.color);
+    }
 }
 
 /// A footswitch-style toggle, for the parameters a pedal exposes as a switch.
@@ -942,7 +1101,7 @@ pub fn knob(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>) 
 /// the pedal, and the same amber dot therefore meant two opposite things
 /// depending on where you were standing.
 pub fn place(ui: &mut Ui, icon: Icon, state: Sync) -> Response {
-    let sense = if state == Sync::Unknown {
+    let sense = if matches!(state, Sync::Unknown | Sync::Working) {
         Sense::hover()
     } else {
         Sense::click()
@@ -951,9 +1110,15 @@ pub fn place(ui: &mut Ui, icon: Icon, state: Sync) -> Response {
     if !ui.is_rect_visible(rect) {
         return response;
     }
-    let hot = response.hovered() && state != Sync::Unknown;
+    let hot = response.hovered() && !matches!(state, Sync::Unknown | Sync::Working);
     let tint = match state {
         Sync::Differs => ACCENT,
+        Sync::Working => {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(33));
+            let pulse = ui.input(|input| (input.time * 5.0).sin() as f32 * 0.18 + 0.82);
+            ACCENT.gamma_multiply(pulse)
+        }
         Sync::Same => TEXT,
         Sync::Absent => {
             if hot {
@@ -1032,9 +1197,9 @@ fn paint_tag(ui: &Ui, rect: egui::Rect, galley: std::sync::Arc<egui::Galley>, co
 /// block is engaged, dark when it is bypassed, and hollow when no footswitch
 /// carries it at all.
 pub fn footswitch(ui: &mut Ui, engaged: bool, lit: Option<Color32>, carried: bool) -> Response {
-    // The same 44px cell a knob takes, so a row of controls lines up whatever
+    // The same cell a knob takes, so a row of controls lines up whatever
     // is in it.
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(KNOB), Sense::click());
     if !ui.is_rect_visible(rect) {
         return response;
     }
@@ -1084,7 +1249,7 @@ pub fn footswitch(ui: &mut Ui, engaged: bool, lit: Option<Color32>, carried: boo
 
 pub fn switch(on: &mut bool) -> impl egui::Widget + '_ {
     move |ui: &mut Ui| {
-        let (rect, mut response) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::click());
+        let (rect, mut response) = ui.allocate_exact_size(Vec2::splat(KNOB), Sense::click());
         if response.clicked() {
             *on = !*on;
             response.mark_changed();

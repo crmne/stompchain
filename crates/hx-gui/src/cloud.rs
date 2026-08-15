@@ -10,9 +10,10 @@
 //! records the SHA-256 of the file it was given, which is the same question the
 //! library already answers about itself.
 //!
-//! Like the update check, failure is silence. No network, site down, nothing
-//! published yet: the column simply says nothing rather than claiming a tone is
-//! missing from a place it could not reach.
+//! Like the update check, failure is silence. With no network or a site that is
+//! down, the column says nothing rather than claiming a tone is missing from a
+//! place it could not reach. A successful empty answer is different: it draws
+//! the outline clouds that publish the first tones.
 
 use std::collections::BTreeSet;
 use std::sync::mpsc::{channel, Receiver};
@@ -39,10 +40,10 @@ fn tones() -> String {
 /// How many pages of tones to walk before stopping.
 ///
 /// The index answers fifty at a time. A cap rather than a `while` loop because
-/// this runs at startup against a server that may be having a bad day, and an
-/// editor that will not open until a paginated API says "no more" is an editor
-/// held hostage by somebody else's uptime.
-const PAGES: u32 = 20;
+/// this runs against a server that may be having a bad day. The editor opens
+/// while it works, but the task still needs a ceiling rather than asking an
+/// unbounded number of pages when the server's pagination is broken.
+const PAGES: u32 = 100;
 
 /// How many tones to ask about one at a time, when the index will not say.
 ///
@@ -73,8 +74,13 @@ pub fn published() -> Receiver<BTreeSet<String>> {
 fn fetch() -> Option<BTreeSet<String>> {
     let mut found = BTreeSet::new();
     let mut asked = 0usize;
+    // Reuse one connection while walking the index. The tone browser is well
+    // beyond its first thousand listings now; a fresh TLS handshake for every
+    // page made the truthful answer arrive several seconds later than needed.
+    let agent = ureq::Agent::new_with_defaults();
     for page in 1..=PAGES {
-        let body = ureq::get(format!("{}?page={page}", tones()))
+        let body = agent
+            .get(format!("{}?page={page}", tones()))
             .header("User-Agent", format!("TonePush/{VERSION}"))
             .header("Accept", "application/json")
             .call()
@@ -313,22 +319,62 @@ pub fn publish(token: &str, tone: &Publishing) -> Result<String, String> {
     form.field("tone[device_name]", "HX Stomp");
     form.file("tone[preset]", &tone.filename, &tone.hlx);
 
-    let mut response = ureq::post(tones())
+    // Keep the response body on validation errors. In particular, the site
+    // answers a duplicate file with 422 plus a precise JSON error; treating
+    // the status as a transport failure threw that useful answer away.
+    let http = ureq::config::Config::builder()
+        .http_status_as_error(false)
+        .build()
+        .new_agent();
+    let mut response = http
+        .post(tones())
         .header("User-Agent", agent())
         .header("Accept", "application/json")
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", form.content_type())
         .send(form.finish())
         .map_err(|e| format!("the tone browser refused it: {e}"))?;
+    let status = response.status().as_u16();
     let body = read_json(&mut response)?;
-    if let Some(errors) = body.get("errors").and_then(|e| e.as_array()) {
-        let said: Vec<&str> = errors.iter().filter_map(|e| e.as_str()).collect();
-        return Err(said.join("; "));
+    publish_answer(status, &body, &tone.name)
+}
+
+/// Interpret a publish response, including the useful body of a non-2xx one.
+fn publish_answer(status: u16, body: &serde_json::Value, fallback: &str) -> Result<String, String> {
+    let errors: Vec<&str> = body
+        .get("errors")
+        .and_then(|e| e.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.as_str())
+        .collect();
+    // The desired end state already exists. Report this as success so the
+    // caller fills the cloud instead of presenting a failed upload.
+    if errors
+        .iter()
+        .any(|error| error.eq_ignore_ascii_case("File sha256 has already been taken"))
+    {
+        return Ok(fallback.to_owned());
+    }
+    if !errors.is_empty() {
+        return Err(errors.join("; "));
+    }
+    if !(200..300).contains(&status) {
+        let said = body
+            .get("error")
+            .or_else(|| body.get("message"))
+            .and_then(|value| value.as_str())
+            .filter(|said| !said.is_empty())
+            .map_or_else(
+                || format!("the tone browser refused it (HTTP {status})"),
+                str::to_owned,
+            );
+        return Err(said);
     }
     Ok(body
         .get("name")
         .and_then(|n| n.as_str())
-        .unwrap_or(&tone.name)
+        .unwrap_or(fallback)
         .to_owned())
 }
 
@@ -461,5 +507,22 @@ mod tests {
     fn a_tone_with_no_implementations_is_not_an_error() {
         assert!(file_hashes(&serde_json::json!({ "id": 1 })).is_empty());
         assert!(file_hashes(&serde_json::json!({ "implementations": [] })).is_empty());
+    }
+
+    #[test]
+    fn a_duplicate_file_is_already_published_not_a_failed_publish() {
+        let body = serde_json::json!({
+            "errors": ["File sha256 has already been taken"]
+        });
+        assert_eq!(publish_answer(422, &body, "My tone").unwrap(), "My tone");
+    }
+
+    #[test]
+    fn a_real_publish_error_is_preserved() {
+        let body = serde_json::json!({ "errors": ["Name can't be blank"] });
+        assert_eq!(
+            publish_answer(422, &body, "My tone").unwrap_err(),
+            "Name can't be blank"
+        );
     }
 }

@@ -152,8 +152,8 @@ That gives a loop worth naming:
    copies it into your library, whole: the device's own document, so the
    snapshots and the routing come too.
 3. **Build a setlist.** Get the pedal holding the presets you want, in the order
-   you want, then Capture the pedal. That records all 126 slots and what is in
-   them.
+   you want, then click the computer icon in the SETLIST header. That records
+   all 126 slots and what is in them.
 4. **Play it back.** One button puts a setlist onto the pedal again, or you can
    send a single preset out of one into the slot it came from.
 

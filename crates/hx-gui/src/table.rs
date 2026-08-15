@@ -97,10 +97,11 @@ impl Cell {
             Cell::Places(places) => places
                 .iter()
                 .map(|(_, state, _)| match state {
-                    theme::Sync::Differs => '0',
-                    theme::Sync::Absent => '1',
-                    theme::Sync::Same => '2',
-                    theme::Sync::Unknown => '3',
+                    theme::Sync::Working => '0',
+                    theme::Sync::Differs => '1',
+                    theme::Sync::Absent => '2',
+                    theme::Sync::Same => '3',
+                    theme::Sync::Unknown => '4',
                 })
                 .collect(),
         }
@@ -475,7 +476,9 @@ impl egui_table::TableDelegate for Delegate<'_> {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     for (n, (icon, state, hover)) in places.iter().enumerate() {
                         let hit = theme::place(ui, *icon, *state);
-                        if *state != theme::Sync::Unknown && hit.on_hover_text(*hover).clicked() {
+                        if !matches!(state, theme::Sync::Unknown | theme::Sync::Working)
+                            && hit.on_hover_text(*hover).clicked()
+                        {
                             self.did.place = Some((row, n));
                             claimed = true;
                         }

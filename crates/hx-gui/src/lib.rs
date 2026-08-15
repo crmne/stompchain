@@ -71,6 +71,14 @@ struct Signing {
     answer: std::sync::mpsc::Receiver<cloud::Linked>,
 }
 
+/// A library tone on its way to the web, kept with its row identity so that
+/// the cloud itself can show the work instead of leaving the click unanswered.
+struct PublishingJob {
+    hash: String,
+    name: String,
+    answer: std::sync::mpsc::Receiver<Result<String, String>>,
+}
+
 /// A tone kept under a name another tone already answers to: the bytes (in the
 /// store already, so the question can be asked safely), who holds the name, and
 /// the name being typed in case the answer is *Save as*.
@@ -203,6 +211,14 @@ pub struct App {
     /// changes, because "Mono" means a different set in every category that
     /// has one.
     browsing_shelf: Option<String>,
+    /// Whether the model browser occupies its right-hand dock. Collapsing it
+    /// gives the selected pedal the full editor width without losing the
+    /// browser's familiar home or its current filters.
+    shelf_open: bool,
+    /// Forget the chain panel's manually dragged height on the next frame.
+    /// Set only when a different topology arrives, not for ordinary parameter
+    /// reloads, so each chain initially fits while subsequent resizing sticks.
+    fit_chain_on_next_frame: bool,
     /// Scroll the preset list to the selection on the next frame - set when a
     /// different preset loads, so following along from the pedal's own
     /// front panel keeps the list in view without fighting manual scrolling.
@@ -294,7 +310,7 @@ pub struct App {
     /// A sign-in waiting to be approved, somewhere else.
     signing_in: Option<Signing>,
     /// A tone being published, and the answer when the site gives one.
-    publishing: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    publishing: Option<PublishingJob>,
     /// A MIDI CC being dragged, by the block and the thing it drives.
     ///
     /// The number is only written to the pedal when the drag stops, so between
@@ -351,11 +367,10 @@ pub struct App {
     /// say, which is the common case and the quiet one.
     update_check: Option<std::sync::mpsc::Receiver<String>>,
     /// What the tone browser already has, by the hash of the file it was given,
-    /// and the answer while it is still coming. Empty and `None` together mean
-    /// the site never answered, which is drawn as nothing rather than as
-    /// "published nowhere".
+    /// and the answer while it is still coming. `None` means the site has not
+    /// answered; `Some(empty)` is a real answer saying nothing is published.
     cloud_check: Option<std::sync::mpsc::Receiver<std::collections::BTreeSet<String>>>,
-    cloud_files: std::collections::BTreeSet<String>,
+    cloud_files: Option<std::collections::BTreeSet<String>>,
     /// Each library tone's portable hash, worked out once. Reading and hashing
     /// two hundred `.hlx` files is nothing once and far too much every frame.
     portable_hashes: std::collections::HashMap<String, String>,
@@ -470,6 +485,7 @@ impl LibColumn {
                         theme::Sync::Differs => {
                             "On the pedal under this name, but different. Send this one"
                         }
+                        theme::Sync::Working => "Sending to the pedal…",
                         theme::Sync::Unknown => "",
                     },
                 )];
@@ -478,12 +494,13 @@ impl LibColumn {
                         theme::Icon::Cloud,
                         cloud,
                         match cloud {
-                            theme::Sync::Same => "Published on the tone browser",
-                            // Not "publish it": publishing needs an account and
-                            // an upload this cannot yet do, and an icon that
-                            // offers something it cannot deliver is worse than
-                            // one that only reports.
-                            _ => "Not on the tone browser",
+                            theme::Sync::Same => "Published on the tone browser. Open it",
+                            theme::Sync::Absent => "Not on the tone browser. Publish it",
+                            theme::Sync::Differs => {
+                                "A different version is published. Publish this one"
+                            }
+                            theme::Sync::Working => "Publishing…",
+                            theme::Sync::Unknown => "",
                         },
                     ));
                 }
@@ -593,6 +610,8 @@ impl App {
             selected: 0,
             browsing: None,
             browsing_shelf: None,
+            shelf_open: true,
+            fit_chain_on_next_frame: true,
             reveal_preset: false,
             irs: Vec::new(),
             setlists: Vec::new(),
@@ -649,7 +668,7 @@ impl App {
             renaming_header: None,
             update_check: Some(update::check()),
             cloud_check: Some(cloud::published()),
-            cloud_files: std::collections::BTreeSet::new(),
+            cloud_files: None,
             portable_hashes: std::collections::HashMap::new(),
             update_available: None,
         };
@@ -761,6 +780,9 @@ impl App {
                     assignments,
                     dirty,
                 }) => {
+                    if index != self.preset_index || layout != self.layout {
+                        self.fit_chain_on_next_frame = true;
+                    }
                     self.layout = layout;
                     self.assignments = assignments;
                     // The document has caught up, so anything held while a
@@ -868,6 +890,12 @@ impl App {
         if self.log.len() > 300 {
             self.log.remove(0);
         }
+    }
+
+    /// A problem that must be visible without opening the diagnostic log.
+    fn problem(&mut self, line: String) {
+        self.status = line.clone();
+        self.note(line);
     }
 
     /// A `file://` URI for a model's artwork, which egui loads and caches.
@@ -1309,17 +1337,12 @@ impl App {
         if let Some(rx) = &self.cloud_check {
             match rx.try_recv() {
                 Ok(files) => {
-                    self.cloud_files = files;
+                    self.cloud_files = Some(files);
                     self.cloud_check = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => self.cloud_check = None,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
-        }
-        // Nothing came back. Drawing an outline here would claim every tone is
-        // unpublished on the word of a request that failed.
-        if self.cloud_files.is_empty() {
-            return theme::Sync::Unknown;
         }
         let Some(portable) = self.portable_hashes.get(hash).cloned().or_else(|| {
             let found = library::portable_hash(hash)?;
@@ -1328,11 +1351,10 @@ impl App {
         }) else {
             return theme::Sync::Unknown;
         };
-        if self.cloud_files.contains(&portable) {
-            theme::Sync::Same
-        } else {
-            theme::Sync::Absent
-        }
+        // No answer is different from a successful answer containing no
+        // hashes. The latter is precisely when every row needs an actionable
+        // outline cloud so the first tone can be published.
+        cloud_presence(self.cloud_files.as_ref(), &portable)
     }
 
     /// Which TonePush this is, in the corner where a version belongs.
@@ -1576,15 +1598,23 @@ impl App {
     /// mistaken for one that touches all 126.
     fn backup_actions(&mut self, ui: &mut egui::Ui) {
         let live = matches!(self.connection, Connection::Online);
-        let small = |ui: &mut egui::Ui, label: &str, on: bool| {
-            ui.add_enabled(
-                on,
-                egui::Button::new(RichText::new(label).small()).frame(false),
-            )
-        };
-
-        if small(ui, "RESTORE", live)
-            .on_hover_text("put a backup back onto the pedal")
+        if ui
+            .add_enabled(live, egui::Button::new("Back up pedal…"))
+            .on_hover_text("save every preset, setting and impulse response")
+            .clicked()
+        {
+            if let Some(dir) = rfd::FileDialog::new()
+                .set_title("Where to put the backup")
+                .set_file_name(format!("{}.hxbundle", sanitise(&self.device)))
+                .save_file()
+            {
+                self.note("backing up the pedal".to_owned());
+                self.send(Cmd::BackUp(dir));
+            }
+        }
+        if ui
+            .add_enabled(live, egui::Button::new("Restore pedal…"))
+            .on_hover_text("replace the pedal with a complete backup")
             .clicked()
         {
             if let Some(dir) = rfd::FileDialog::new()
@@ -1599,19 +1629,6 @@ impl App {
                     }
                     Err(e) => self.note(format!("that is not a backup: {e}")),
                 }
-            }
-        }
-        if small(ui, "BACKUP", live)
-            .on_hover_text("save every preset, setting and impulse response")
-            .clicked()
-        {
-            if let Some(dir) = rfd::FileDialog::new()
-                .set_title("Where to put the backup")
-                .set_file_name(format!("{}.hxbundle", sanitise(&self.device)))
-                .save_file()
-            {
-                self.note("backing up the pedal".to_owned());
-                self.send(Cmd::BackUp(dir));
             }
         }
     }
@@ -1862,18 +1879,23 @@ impl App {
                     {
                         self.show_favorites_only = !self.show_favorites_only;
                     }
-                    // The counterpart to the per-preset dot beside it: that
-                    // one keeps a tone, this one keeps the whole pedal. Backup
-                    // and Restore used to sit here too and do not belong: they
-                    // act on the whole device, settings and impulse responses
-                    // included, so they live behind the device's own button.
+                    // The counterpart to the per-preset computer beside it:
+                    // that one keeps a tone, this one keeps the whole pedal.
+                    // Backup and Restore used to sit here too and do not
+                    // belong: they act on the whole device, settings and
+                    // impulse responses included, so they live behind the
+                    // device's own button.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let live = matches!(self.connection, Connection::Online);
                         if ui
-                            .add_enabled(
-                                live,
-                                egui::Button::new(RichText::new("CAPTURE").small()).frame(false),
-                            )
+                            .add_enabled_ui(live, |ui| {
+                                theme::small_icon_button(
+                                    ui,
+                                    theme::Icon::Computer,
+                                    Some(theme::DIM),
+                                )
+                            })
+                            .inner
                             .on_hover_text("keep every preset on the pedal, in order, as a setlist")
                             .clicked()
                         {
@@ -1987,6 +2009,7 @@ impl App {
                                         "In your library under this name, but different. \
                                          Update it from the pedal",
                                     ),
+                                    theme::Sync::Working => held.on_hover_text("Saving…"),
                                     theme::Sync::Unknown => held,
                                 };
                                 if held.clicked() {
@@ -2020,7 +2043,8 @@ impl App {
                                         RichText::new(&label).color(theme::DIM)
                                     };
                                     let target = ui.add(
-                                        egui::Button::new(text)
+                                        egui::Button::new(())
+                                            .left_text(text)
                                             .frame(false)
                                             .min_size(egui::vec2(ui.available_width(), 18.0)),
                                     );
@@ -3234,7 +3258,15 @@ impl App {
                 (entry.hash.clone(), entry.name.clone())
             };
             let state = self.tone_sync(&hash, &name);
-            let cloud = self.cloud_sync(&hash);
+            let cloud = if self
+                .publishing
+                .as_ref()
+                .is_some_and(|publishing| publishing.hash == hash)
+            {
+                theme::Sync::Working
+            } else {
+                self.cloud_sync(&hash)
+            };
             let entry = &self.lib_entries[i];
             grid.rows
                 .push(shown.iter().map(|c| c.cell(entry, state, cloud)).collect());
@@ -3298,11 +3330,12 @@ impl App {
                 _ => {
                     let entry = rows[row];
                     let hash = self.lib_entries[entry].hash.clone();
-                    let known = self
-                        .portable_hashes
-                        .get(&hash)
-                        .filter(|portable| self.cloud_files.contains(*portable))
-                        .cloned();
+                    let known = self.portable_hashes.get(&hash).and_then(|portable| {
+                        self.cloud_files
+                            .as_ref()
+                            .filter(|files| files.contains(portable))
+                            .map(|_| portable.clone())
+                    });
                     match known {
                         Some(portable) => {
                             let url = cloud::tone_url(&portable);
@@ -3490,20 +3523,22 @@ impl App {
     /// or no artist is not published under invented ones.
     fn start_publishing(&mut self, entry: usize, ctx: &egui::Context) {
         let Some(token) = self.config.token.clone() else {
-            return self.note("sign in first, and then the cloud will publish".into());
+            return self.problem("sign in first, and then the cloud will publish".into());
         };
-        if self.publishing.is_some() {
-            return self.note("one at a time: a tone is going up already".into());
+        if let Some(publishing) = &self.publishing {
+            return self.problem(format!("{} is already being published", publishing.name));
         }
         let Some(entry) = self.lib_entries.get(entry) else {
             return;
         };
         let Some(path) = library::portable_path(&entry.hash) else {
-            return self.note(format!("{} has no portable copy to publish", entry.name));
+            return self.problem(format!("{} has no portable copy to publish", entry.name));
         };
         let Ok(hlx) = std::fs::read(&path) else {
-            return self.note(format!("{} could not be read", entry.name));
+            return self.problem(format!("{} could not be read", entry.name));
         };
+        let hash = entry.hash.clone();
+        let name = entry.name.clone();
         let tone = cloud::Publishing {
             name: entry.meta.name.clone(),
             artist: entry.meta.artist.clone(),
@@ -3524,28 +3559,46 @@ impl App {
             let _ = tx.send(cloud::publish(&token, &tone));
             ctx.request_repaint();
         });
-        self.publishing = Some(rx);
+        self.status.clear();
+        self.publishing = Some(PublishingJob {
+            hash,
+            name,
+            answer: rx,
+        });
     }
 
     /// Collect the answer to a publish, if one has arrived.
     fn settle_publishing(&mut self) {
-        let Some(rx) = &self.publishing else {
+        let Some(publishing) = &self.publishing else {
             return;
         };
-        match rx.try_recv() {
-            Ok(Ok(name)) => {
-                self.publishing = None;
+        let hash = publishing.hash.clone();
+        let answer = match publishing.answer.try_recv() {
+            Ok(answer) => answer,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("publishing stopped without an answer".to_owned())
+            }
+        };
+        self.publishing = None;
+        match answer {
+            Ok(name) => {
+                // The POST is authoritative, including the duplicate-file
+                // answer. Fill this row immediately instead of waiting for a
+                // full public-index walk to reach the same hash.
+                let portable = self.portable_hashes.get(&hash).cloned().or_else(|| {
+                    let found = library::portable_hash(&hash)?;
+                    self.portable_hashes.insert(hash.clone(), found.clone());
+                    Some(found)
+                });
+                if let Some(portable) = portable {
+                    self.cloud_files.get_or_insert_default().insert(portable);
+                }
+                self.status.clear();
                 self.note(format!("{name} is on the tone browser"));
-                // Ask again what is up there, so the icon fills in without a
-                // restart.
                 self.cloud_check = Some(cloud::published());
             }
-            Ok(Err(why)) => {
-                self.publishing = None;
-                self.note(why);
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.publishing = None,
+            Err(why) => self.problem(why),
         }
     }
 
@@ -4021,42 +4074,56 @@ impl App {
                         .color(theme::DIM),
                 );
                 ui.separator();
-
-                ui.heading("The whole pedal");
-                ui.label(
-                    RichText::new(
-                        "A backup is every preset, every setting and every impulse \
-                         response, as the device's own bytes. One is taken automatically \
-                         whenever TonePush connects, and kept current as you save.",
-                    )
-                    .small()
-                    .color(theme::DIM),
-                );
-                ui.add_space(4.0);
-                ui.horizontal(|ui| self.backup_actions(ui));
-                ui.add_space(10.0);
-
-                ui.heading("Impulse responses");
-                ui.label(
-                    RichText::new(
-                        "The device's IR library, shared by every preset. Add an IR block \
-                         to a chain, then point it at one of these slots.",
-                    )
-                    .small()
-                    .color(theme::DIM),
-                );
-                ui.add_space(4.0);
-                if self.irs.is_empty() {
-                    ui.label(RichText::new("no impulse responses loaded").color(theme::DIM));
-                }
-                let irs = self.irs.clone();
-                let mut ir_save = None;
-                let mut ir_rename_start = None;
-                let mut ir_rename: Option<Option<(i64, String)>> = None;
                 egui::ScrollArea::vertical()
-                    .max_height(170.0)
-                    .id_salt("irs")
+                    .auto_shrink([false, false])
+                    .id_salt("device")
                     .show(ui, |ui| {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("BACK UP & RESTORE").small().color(theme::DIM));
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| self.backup_actions(ui));
+
+                        ui.add_space(18.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+
+                        let free_ir =
+                            (0..128).find(|slot| !self.irs.iter().any(|(used, _)| used == slot));
+                        let mut import_ir = false;
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("IMPULSE RESPONSES").small().color(theme::DIM));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    import_ir = ui
+                                        .add_enabled(
+                                            free_ir.is_some(),
+                                            egui::Button::new("Import IR…"),
+                                        )
+                                        .on_disabled_hover_text("every IR slot is in use")
+                                        .clicked();
+                                },
+                            );
+                        });
+                        if import_ir {
+                            if let (Some(slot), Some(file)) = (
+                                free_ir,
+                                rfd::FileDialog::new()
+                                    .add_filter("WAV", &["wav"])
+                                    .pick_file(),
+                            ) {
+                                self.note(format!("loading IR into slot {}", slot + 1));
+                                self.send(Cmd::LoadIr { slot, file });
+                            }
+                        }
+
+                        if self.irs.is_empty() {
+                            ui.label(RichText::new("No impulse responses").color(theme::DIM));
+                        }
+                        let irs = self.irs.clone();
+                        let mut ir_save = None;
+                        let mut ir_rename_start = None;
+                        let mut ir_rename: Option<Option<(i64, String)>> = None;
                         for (slot, name) in &irs {
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new(format!("{:>3}", slot + 1)).monospace());
@@ -4088,13 +4155,13 @@ impl App {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        if ui.small_button("clear").clicked() {
+                                        if ui.small_button("Clear").clicked() {
                                             self.send(Cmd::ClearIr(*slot));
                                         }
                                         // An IR that only ever existed on the
                                         // pedal can now come back off it.
                                         if ui
-                                            .small_button("save…")
+                                            .small_button("Save…")
                                             .on_hover_text("write this IR out as a WAV")
                                             .clicked()
                                         {
@@ -4104,83 +4171,89 @@ impl App {
                                 );
                             });
                         }
-                    });
-                if let Some((slot, name)) = ir_save {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_file_name(format!("{}.wav", sanitise(&name)))
-                        .add_filter("WAV", &["wav"])
-                        .save_file()
-                    {
-                        self.send(Cmd::SaveIr { slot, file: path });
-                    }
-                }
-                if let Some(started) = ir_rename_start {
-                    self.renaming_ir = Some(started);
-                }
-                if let Some(result) = ir_rename {
-                    self.renaming_ir = None;
-                    if let Some((slot, name)) = result {
-                        self.send(Cmd::RenameIr { slot, name });
-                    }
-                }
-                ui.label(
-                    RichText::new("Drop a mono WAV on the window to load one.")
-                        .small()
-                        .color(theme::DIM),
-                );
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.heading("Favourites");
-                ui.label(
-                    RichText::new(
-                        "Blocks the pedal keeps with their settings, ready to drop into \
-                         any preset. Select a block in the chain to keep it here.",
-                    )
-                    .small()
-                    .color(theme::DIM),
-                );
-                ui.add_space(4.0);
-                if self.favourites.is_empty() {
-                    ui.label(RichText::new("no favourites kept").color(theme::DIM));
-                }
-                let favourites = self.favourites.clone();
-                let mut forget = None;
-                for (index, name) in &favourites {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("{:>3}", index + 1)).monospace());
-                        ui.label(name);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("forget").clicked() {
-                                forget = Some(*index);
+                        if let Some((slot, name)) = ir_save {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .set_file_name(format!("{}.wav", sanitise(&name)))
+                                .add_filter("WAV", &["wav"])
+                                .save_file()
+                            {
+                                self.send(Cmd::SaveIr { slot, file: path });
                             }
-                        });
-                    });
-                }
-                if let Some(index) = forget {
-                    self.send(Cmd::ClearFavourite(index));
-                }
-                // Keeping one needs a block to keep and somewhere to put it.
-                let selected = self.selected_block();
-                let free = (0..16).find(|i| !favourites.iter().any(|(n, _)| n == i));
-                let can_keep = selected.is_some() && free.is_some();
-                if ui
-                    .add_enabled(can_keep, egui::Button::new("Keep the selected block"))
-                    .on_disabled_hover_text(if selected.is_none() {
-                        "select a block in the chain first"
-                    } else {
-                        "every favourite slot is in use"
-                    })
-                    .clicked()
-                {
-                    if let (Some((block, name)), Some(index)) = (selected, free) {
-                        self.send(Cmd::SaveFavourite { block, index, name });
-                    }
-                }
+                        }
+                        if let Some(started) = ir_rename_start {
+                            self.renaming_ir = Some(started);
+                        }
+                        if let Some(result) = ir_rename {
+                            self.renaming_ir = None;
+                            if let Some((slot, name)) = result {
+                                self.send(Cmd::RenameIr { slot, name });
+                            }
+                        }
 
-                ui.add_space(10.0);
-                ui.separator();
-                ui.checkbox(&mut self.show_activity, "Show what the device reports");
+                        ui.add_space(18.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+
+                        let favourites = self.favourites.clone();
+                        let selected = self.selected_block();
+                        let free = (0..16).find(|i| !favourites.iter().any(|(n, _)| n == i));
+                        let add_label = selected.as_ref().map_or_else(
+                            || "Add current block".to_owned(),
+                            |(_, name)| format!("Add “{name}”"),
+                        );
+                        let mut add_favourite = false;
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("FAVORITE BLOCKS").small().color(theme::DIM));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    add_favourite = ui
+                                        .add_enabled(
+                                            selected.is_some() && free.is_some(),
+                                            egui::Button::new(add_label),
+                                        )
+                                        .on_disabled_hover_text(if selected.is_none() {
+                                            "select an effect block in the chain first"
+                                        } else {
+                                            "every favorite slot is in use"
+                                        })
+                                        .clicked();
+                                },
+                            );
+                        });
+                        if add_favourite {
+                            if let (Some((block, name)), Some(index)) = (selected, free) {
+                                self.send(Cmd::SaveFavourite { block, index, name });
+                            }
+                        }
+                        if favourites.is_empty() {
+                            ui.label(RichText::new("No favorite blocks").color(theme::DIM));
+                        }
+                        let mut forget = None;
+                        for (index, name) in &favourites {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(format!("{:>3}", index + 1)).monospace());
+                                ui.label(name);
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.small_button("Remove").clicked() {
+                                            forget = Some(*index);
+                                        }
+                                    },
+                                );
+                            });
+                        }
+                        if let Some(index) = forget {
+                            self.send(Cmd::ClearFavourite(index));
+                        }
+
+                        ui.add_space(18.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+                        ui.label(RichText::new("DIAGNOSTICS").small().color(theme::DIM));
+                        ui.checkbox(&mut self.show_activity, "Device activity");
+                    });
             });
         self.show_device = open;
     }
@@ -4955,8 +5028,10 @@ impl App {
         }
 
         let mut write: Option<(i64, f32)> = None;
+        let mut first_group = true;
         for group in settings::groups().into_iter().filter(|g| wanted(g)) {
-            ui.add_space(6.0);
+            ui.add_space(if first_group { 6.0 } else { 18.0 });
+            first_group = false;
             ui.label(
                 RichText::new(group.to_uppercase())
                     .small()
@@ -5535,8 +5610,23 @@ impl App {
             }
         }
 
+        // The topology determines a useful first height, but the musician
+        // decides how much of the window the chain needs right now. Keep a
+        // small editor visible at the largest setting so the splitter cannot
+        // strand the selected block completely off-screen.
+        let min_height = 126.0;
+        let max_height = (root_ui.available_height() - 96.0).max(min_height);
+        let default_height = height.clamp(min_height, max_height);
+        if std::mem::take(&mut self.fit_chain_on_next_frame) {
+            root_ui.ctx().data_mut(|data| {
+                data.remove::<egui::containers::panel::PanelState>(egui::Id::new("chain"));
+            });
+        }
+
         egui::Panel::top("chain")
-            .exact_size(height.clamp(126.0, root_ui.ctx().content_rect().height() * 0.55))
+            .resizable(true)
+            .default_size(default_height)
+            .size_range(min_height..=max_height)
             .show(root_ui, |ui| {
                 ui.add_space(6.0);
                 if self.chain.is_empty() {
@@ -5559,6 +5649,10 @@ impl App {
                 // click - and it would fight dragging a block along the chain,
                 // which is the same gesture.
                 egui::ScrollArea::both()
+                    // The scroll area must occupy the dragged panel height;
+                    // otherwise its content's natural height pulls the panel
+                    // back and makes the resize handle feel inert.
+                    .auto_shrink([false, false])
                     .scroll_source(egui::scroll_area::ScrollSource {
                         drag: egui::scroll_area::DragScroll::Never,
                         ..Default::default()
@@ -7028,16 +7122,38 @@ impl App {
             .and_then(|c| c.model_number(block.model))
             .map(|m| m.id.clone());
 
+        if !self.shelf_open {
+            let mut reopen = false;
+            egui::Panel::right("shelf-collapsed")
+                .resizable(false)
+                .exact_size(32.0)
+                .show(root_ui, |ui| {
+                    ui.add_space(6.0);
+                    reopen = ui
+                        .add_sized(
+                            [ui.available_width(), 26.0],
+                            egui::Button::new("‹").frame(false),
+                        )
+                        .on_hover_text("show the model browser")
+                        .clicked();
+                });
+            if reopen {
+                self.shelf_open = true;
+            }
+            return;
+        }
+
         let mut picked = None;
         egui::Panel::right("shelf")
             .default_size(430.0)
-            .size_range(200.0..=620.0)
+            .size_range(300.0..=620.0)
             .show(root_ui, |ui| {
                 let App {
                     catalog,
                     search,
                     browsing,
                     browsing_shelf,
+                    shelf_open,
                     ..
                 } = self;
                 let Some(catalog) = catalog.as_ref() else {
@@ -7056,8 +7172,11 @@ impl App {
                         model: current.as_deref(),
                         paired: block.paired.is_some(),
                     },
-                    heading,
-                    false,
+                    PickerChrome {
+                        heading,
+                        focus_search: false,
+                        open: Some(shelf_open),
+                    },
                 );
             });
 
@@ -7128,8 +7247,11 @@ impl App {
                                 shelf: browsing_shelf,
                             },
                             Holding::default(),
-                            "ADD A BLOCK",
-                            true,
+                            PickerChrome {
+                                heading: "ADD A BLOCK",
+                                focus_search: true,
+                                open: None,
+                            },
                         );
                     });
             });
@@ -7300,7 +7422,7 @@ impl App {
         // Knobs sit in rows under the pedal like the face of one, every row
         // starting at the same left edge so the columns line up - a wrapped
         // row that started at the margin made twelve knobs look scattered.
-        let cell = egui::vec2(84.0, 100.0);
+        let cell = egui::vec2(84.0, 116.0);
         let pitch = cell.x + ui.spacing().item_spacing.x;
         // The bypass is a control like any other and leads them: it is the
         // first thing you reach for on a real pedal, and putting it on a line
@@ -7340,7 +7462,10 @@ impl App {
         let catalog = self.catalog.as_ref().expect("checked above");
         let params = catalog.ordered_params(model);
         for row in cells.chunks(columns) {
-            ui.horizontal(|ui| {
+            // Cells with an assignment badge or a wrapped name are taller.
+            // Pin every cell to the top of the row so those extras extend
+            // downward instead of shifting the knob and value upward.
+            ui.horizontal_top(|ui| {
                 ui.add_space(indent);
                 for slot in row {
                     let Some((index, value)) = *slot else {
@@ -7766,32 +7891,50 @@ fn number_of(catalog: &hx_catalog::Catalog, id: &str) -> Option<u32> {
         .map(|s| s.number)
 }
 
+struct PickerChrome<'a> {
+    heading: &'a str,
+    focus_search: bool,
+    open: Option<&'a mut bool>,
+}
+
 fn model_picker(
     ui: &mut egui::Ui,
     catalog: &hx_catalog::Catalog,
     at: Browsing,
     holding: Holding,
-    heading: &str,
-    focus_search: bool,
+    chrome: PickerChrome<'_>,
 ) -> Option<Picked> {
     let Browsing {
         search,
         category: browsing,
         shelf,
     } = at;
-    let mut picked = None;
-
+    let PickerChrome {
+        heading,
+        focus_search,
+        open,
+    } = chrome;
     ui.horizontal(|ui| {
         ui.label(RichText::new(heading).small().color(theme::DIM));
+        let collapse_width = if open.is_some() { 24.0 } else { 0.0 };
         let field = ui.add(
             egui::TextEdit::singleline(search)
                 .hint_text("Search pedals")
-                .desired_width(f32::INFINITY),
+                .desired_width((ui.available_width() - collapse_width).max(80.0)),
         );
         // Typing is the fastest way to find one of several hundred, so the
         // popup opens ready for it.
         if focus_search && !field.has_focus() {
             field.request_focus();
+        }
+        if let Some(open) = open {
+            if ui
+                .small_button("›")
+                .on_hover_text("hide the model browser")
+                .clicked()
+            {
+                *open = false;
+            }
         }
     });
     ui.add_space(4.0);
@@ -7811,31 +7954,11 @@ fn model_picker(
             .and_then(|id| catalog.category_of(id))
             .unwrap_or(1)
     });
-    ui.horizontal_wrapped(|ui| {
-        for category in catalog.categories() {
-            if !category.is_effect() || catalog.models_in(category.id).is_empty() {
-                continue;
-            }
-            let colour = theme::category_colour(category.colour);
-            let on = !searching && category.id == showing;
-            // Ours first, HX Edit's only where we have not drawn one.
-            let icon = theme::category_icon(&category.name).or_else(|| {
-                catalog.category_artwork(category).map(|(path, frames)| {
-                    let uri = format!("file://{}", path.display());
-                    match frames {
-                        0 | 1 => theme::Art::whole(uri),
-                        n => theme::Art::strip(uri, 0, n),
-                    }
-                })
-            });
-            if theme::category_chip(ui, &category.name, icon.as_ref(), colour, on).clicked() {
-                *browsing = Some(category.id);
-                // The shelf under it belonged to the old category.
-                *shelf = None;
-                search.clear();
-            }
-        }
-    });
+    let categories: Vec<&hx_catalog::Category> = catalog
+        .categories()
+        .iter()
+        .filter(|category| category.is_effect() && !catalog.models_in(category.id).is_empty())
+        .collect();
 
     // Whether what is on screen fills a block with two models. A search cuts
     // across categories, so it can only offer single models.
@@ -7908,41 +8031,201 @@ fn model_picker(
         0
     };
 
-    if shelved {
-        ui.add_space(4.0);
-        ui.horizontal_wrapped(|ui| {
-            for (i, (name, models)) in shelves.iter().enumerate() {
-                if theme::shelf_pill(ui, name, i == open)
-                    .on_hover_text(format!("{} models", models.len()))
-                    .clicked()
-                {
-                    *shelf = Some((*name).to_owned());
-                }
-            }
-        });
-    }
-    ui.separator();
-
     // One shelf at a time when there are shelves; everything otherwise.
-    let showing: Vec<&hx_catalog::Model> = if shelved {
+    let models: Vec<&hx_catalog::Model> = if shelved {
         shelves[open].1.clone()
     } else {
         models
     };
 
+    // Below this width a permanent rail would leave only one narrow model
+    // column. Collapse the same category vocabulary into one compact menu
+    // instead. This applies equally to swapping and inserting: there is one
+    // model browser, responsive to the room it has.
+    if ui.available_width() < 400.0 {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("CATEGORY").small().color(theme::DIM));
+            egui::ComboBox::from_id_salt("model-category")
+                .selected_text(if searching {
+                    "All search results"
+                } else {
+                    catalog
+                        .category(showing)
+                        .map_or("Models", |category| category.name.as_str())
+                })
+                .width(ui.available_width())
+                .show_ui(ui, |ui| {
+                    for category in &categories {
+                        if ui
+                            .selectable_label(!searching && category.id == showing, &category.name)
+                            .clicked()
+                        {
+                            *browsing = Some(category.id);
+                            *shelf = None;
+                            search.clear();
+                        }
+                    }
+                });
+        });
+        if shelved {
+            ui.add_space(4.0);
+            picker_shelves(ui, &shelves, open, shelf);
+        }
+        ui.separator();
+        picker_models(ui, catalog, &models, holding, pairing, true)
+    } else {
+        let body = ui.available_size();
+        let mut picked = None;
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(118.0, body.y),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    egui::ScrollArea::vertical()
+                        .id_salt("model-category-rail")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            for category in &categories {
+                                let colour = theme::category_colour(category.colour);
+                                let on = !searching && category.id == showing;
+                                let icon = picker_category_icon(catalog, category);
+                                if theme::category_rail_row(
+                                    ui,
+                                    &category.name,
+                                    icon.as_ref(),
+                                    colour,
+                                    on,
+                                )
+                                .clicked()
+                                {
+                                    *browsing = Some(category.id);
+                                    *shelf = None;
+                                    search.clear();
+                                }
+                            }
+                        });
+                },
+            );
+            ui.separator();
+            ui.allocate_ui_with_layout(
+                ui.available_size(),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        let heading = if searching {
+                            RichText::new("Search results").color(theme::DIM)
+                        } else {
+                            let category = catalog.category(showing);
+                            RichText::new(category.map_or("Models", |c| c.name.as_str())).color(
+                                category.map_or(theme::TEXT, |c| theme::category_colour(c.colour)),
+                            )
+                        };
+                        ui.label(heading.strong());
+                        if shelved {
+                            for (i, (name, shelf_models)) in shelves.iter().enumerate() {
+                                if theme::shelf_pill(ui, name, i == open)
+                                    .on_hover_text(format!("{} models", shelf_models.len()))
+                                    .clicked()
+                                {
+                                    *shelf = Some((*name).to_owned());
+                                }
+                            }
+                        }
+                    });
+                    ui.separator();
+                    picked = picker_models(ui, catalog, &models, holding, pairing, true);
+                },
+            );
+        });
+        picked
+    }
+}
+
+fn picker_category_icon(
+    catalog: &hx_catalog::Catalog,
+    category: &hx_catalog::Category,
+) -> Option<theme::Art> {
+    // Ours first, HX Edit's only where we have not drawn one.
+    theme::category_icon(&category.name).or_else(|| {
+        catalog.category_artwork(category).map(|(path, frames)| {
+            let uri = format!("file://{}", path.display());
+            match frames {
+                0 | 1 => theme::Art::whole(uri),
+                n => theme::Art::strip(uri, 0, n),
+            }
+        })
+    })
+}
+
+fn picker_shelves(
+    ui: &mut egui::Ui,
+    shelves: &[(&str, Vec<&hx_catalog::Model>)],
+    open: usize,
+    shelf: &mut Option<String>,
+) {
+    ui.horizontal_wrapped(|ui| {
+        for (i, (name, models)) in shelves.iter().enumerate() {
+            if theme::shelf_pill(ui, name, i == open)
+                .on_hover_text(format!("{} models", models.len()))
+                .clicked()
+            {
+                *shelf = Some((*name).to_owned());
+            }
+        }
+    });
+}
+
+fn picker_models(
+    ui: &mut egui::Ui,
+    catalog: &hx_catalog::Catalog,
+    models: &[&hx_catalog::Model],
+    holding: Holding,
+    pairing: bool,
+    compact: bool,
+) -> Option<Picked> {
+    let mut picked = None;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            if showing.is_empty() {
+            if models.is_empty() {
                 ui.label(RichText::new("Nothing matches").color(theme::DIM));
+                return;
             }
+
+            let size = if compact {
+                let available = ui.available_width();
+                let gap = ui.spacing().item_spacing.x;
+                // Add Block opens wide enough for three models. The dock grows
+                // into the same third column as it is resized, but never makes
+                // the thumbnails too narrow just to squeeze one more in.
+                let columns =
+                    (((available + gap) / (112.0 + gap)).floor() as usize).clamp(1, 3) as f32;
+                let width = ((available - gap * (columns - 1.0)) / columns)
+                    .floor()
+                    .clamp(112.0, 156.0)
+                    .min(available);
+                // Browser tiles only have a name below the art. Unlike signal
+                // chain blocks, they do not reserve a second category line.
+                egui::vec2(width, (width * 0.84).clamp(102.0, 132.0))
+            } else {
+                egui::vec2(156.0, 132.0)
+            };
+
             ui.horizontal_wrapped(|ui| {
-                for model in showing {
+                for model in models {
                     let selected = holding.model == Some(model.id.as_str());
+                    let colour = catalog
+                        .category_of(&model.id)
+                        .and_then(|id| catalog.category(id))
+                        .map(|category| theme::category_colour(category.colour))
+                        .unwrap_or(theme::ACCENT);
                     let art = catalog
                         .artwork(model)
                         .map(|p| theme::Art::whole(format!("file://{}", p.display())));
-                    if theme::model_tile(ui, &model.name, art.as_ref(), selected).clicked() {
+                    if theme::model_tile(ui, &model.name, art.as_ref(), selected, colour, size)
+                        .clicked()
+                    {
                         // Only models the firmware knows by number can be sent.
                         picked = number_of(catalog, &model.id).map(|model_number| Picked {
                             model: model_number,
@@ -7958,7 +8241,6 @@ fn model_picker(
                 }
             });
         });
-
     picked
 }
 
@@ -8493,6 +8775,21 @@ fn sanitise(name: &str) -> String {
     }
 }
 
+/// Whether a portable tone is present in the web library.
+///
+/// Kept separate from the asynchronous request so the important distinction
+/// between no answer and a successful empty answer stays pinned by tests.
+fn cloud_presence(
+    files: Option<&std::collections::BTreeSet<String>>,
+    portable: &str,
+) -> theme::Sync {
+    match files {
+        None => theme::Sync::Unknown,
+        Some(files) if files.contains(portable) => theme::Sync::Same,
+        Some(_) => theme::Sync::Absent,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -8507,6 +8804,19 @@ mod tests {
             evt_tx,
             cmd_rx,
         )
+    }
+
+    #[test]
+    fn an_empty_cloud_answer_offers_the_first_publish() {
+        let empty = std::collections::BTreeSet::new();
+        assert!(matches!(
+            cloud_presence(None, "portable"),
+            theme::Sync::Unknown
+        ));
+        assert!(matches!(
+            cloud_presence(Some(&empty), "portable"),
+            theme::Sync::Absent
+        ));
     }
 
     /// The app reaches for the device on startup, so it begins in Connecting
