@@ -1,0 +1,23 @@
+{
+  "songs": [
+    {
+      "id": 123,
+      "title": "Comfortably Numb",
+      "kind": "song",
+      "artist": "Pink Floyd",
+      "part": "Second solo",
+      "description": "A singing lead musical idea.",
+      "tags": ["lead"],
+      "genres": ["Rock"],
+      "tuning": "Standard",
+      "guitar_type": "Stratocaster",
+      "pickup_type": "single_coil",
+      "pickup_electronics": "passive",
+      "tone_count": 2,
+      "devices": ["HX Stomp", "Helix"],
+      "file_sha256s": [
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    }
+  ]
+}

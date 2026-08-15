@@ -77,8 +77,8 @@ features:
 <div style="max-width: 960px; margin: 3rem auto 0; text-align: center;">
   <h2 style="font-size: 1.5rem; font-weight: 600; margin-bottom: 0.75rem;">Find your sound on TonePush</h2>
   <p style="color: var(--vp-c-text-2); max-width: 640px; margin: 0 auto;">
-    Discover complete guitar tones, compare implementations for your hardware,
-    and publish your own from the editor. Visit
+    Find a Song—the musical idea—choose a playable Tone made for your hardware,
+    and publish your own Songs and Tones from the editor. Visit
     <a href="https://tonepush.rocks">tonepush.rocks</a> to find your sound.
   </p>
 </div>

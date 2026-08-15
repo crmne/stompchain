@@ -310,8 +310,8 @@ pub fn portable_path(hash: &str) -> Option<PathBuf> {
 /// The hash of a tone's *portable* copy, which is a different number from the
 /// tone's own identity and answers a different question.
 ///
-/// A tone is identified here by the bytes the device gave us. The tone browser
-/// stores what was uploaded to it, which is the `.hlx`. So "is this tone on the
+/// A tone is identified here by the bytes the device gave us. TonePush stores
+/// the uploaded Tone artifact, which is the `.hlx`. So "is this tone on the
 /// site" is asked of the portable copy's hash and never of the object's, and
 /// the two must not be confused: every tone in the library has both, and they
 /// never match.
@@ -319,10 +319,11 @@ pub fn portable_hash(hash: &str) -> Option<String> {
     Some(hash_of(&std::fs::read(portable_path(hash)?).ok()?))
 }
 
-/// A tone's editable metadata. The field set matches the Tones web schema so
-/// publishing to the site is a straight copy, not a translation. The chain
-/// itself - blocks, amps, output - is derived from the document when shown,
-/// never stored here, so it can never drift from the bytes.
+/// A local Tone's editable metadata, including the Song it realizes. Song facts
+/// (`song`, `artist`, tags, genres and `description`) are kept apart from Tone
+/// facts (`name`, `tone_description`, part, guitar and playback character) when
+/// they cross the cloud boundary. The chain itself is derived from the preset,
+/// never stored here, so it cannot drift from the bytes.
 #[derive(serde::Serialize, serde::Deserialize, Default, Clone, PartialEq)]
 pub struct Meta {
     /// The tone's name as the pedal shows it - "DIR:USDoubleNrm", colon and
@@ -330,7 +331,11 @@ pub struct Meta {
     /// and changing it moves nothing on disk.
     #[serde(default)]
     pub name: String,
+    /// The Song's description: the musical idea shared by all its Tones.
     pub description: String,
+    /// What is specific to this device-native Tone.
+    #[serde(default)]
+    pub tone_description: String,
     pub tags: Vec<String>,
     pub character: String, // clean / drive / hi-gain / fuzz / other
     pub genres: Vec<String>,
@@ -668,26 +673,40 @@ pub fn collect_garbage() -> usize {
 }
 
 impl Meta {
-    /// This tone's details in the shape the Tones site takes them.
-    ///
-    /// The field set was chosen to match, so this is nearly a straight copy -
-    /// but "nearly" is where uploads fail. Two fields are enums on the site and
-    /// free text here, so they are mapped to the site's own keys and dropped
-    /// when they do not match one, rather than sent as something the site will
-    /// reject with a validation error nobody can act on. `kind` follows the
-    /// same rule the site uses: a tone with a song is a song, otherwise it is
-    /// an original.
+    /// This local row's Song and Tone facts as a two-resource web manifest.
+    /// The preset file is the Tone artifact and is exported separately.
     pub fn for_the_web(&self, name: &str) -> serde_json::Value {
+        let original = self.song.trim().is_empty();
+        let mut song = serde_json::Map::new();
+        song.insert(
+            "title".into(),
+            if original { name } else { self.song.trim() }.into(),
+        );
+        song.insert(
+            "kind".into(),
+            if original { "original" } else { "song" }.into(),
+        );
+        song.insert(
+            "artist_name".into(),
+            if original || self.artist.trim().is_empty() {
+                serde_json::Value::Null
+            } else {
+                self.artist.trim().into()
+            },
+        );
+        if !self.description.trim().is_empty() {
+            song.insert("description".into(), self.description.trim().into());
+        }
+        song.insert("tags".into(), self.tags.clone().into());
+        song.insert("genre_ids".into(), serde_json::Value::Array(Vec::new()));
+
         let mut tone = serde_json::Map::new();
         tone.insert("name".into(), name.into());
-        tone.insert("tags".into(), self.tags.clone().into());
         for (field, value) in [
-            ("description", &self.description),
+            ("description", &self.tone_description),
             ("part", &self.part),
             ("tuning", &self.tuning),
             ("guitar_type", &self.guitar),
-            ("song", &self.song),
-            ("artist", &self.artist),
         ] {
             if !value.trim().is_empty() {
                 tone.insert(field.into(), value.trim().into());
@@ -699,21 +718,15 @@ impl Meta {
         if let Some(key) = pickup_electronics_key(&self.pickup_electronics) {
             tone.insert("pickup_electronics".into(), key.into());
         }
-        tone.insert(
-            "kind".into(),
-            if self.song.trim().is_empty() {
-                "original"
-            } else {
-                "song"
-            }
-            .into(),
-        );
-        serde_json::Value::Object(tone)
+        if let Some(key) = character_key(&self.character) {
+            tone.insert("character".into(), key.into());
+        }
+        serde_json::json!({ "song": song, "tone": tone })
     }
 }
 
 /// The site's `pickup_type` keys, from however the field was typed here.
-fn pickup_type_key(value: &str) -> Option<&'static str> {
+pub fn pickup_type_key(value: &str) -> Option<&'static str> {
     let folded: String = value
         .chars()
         .filter(|c| c.is_ascii_alphanumeric())
@@ -728,10 +741,22 @@ fn pickup_type_key(value: &str) -> Option<&'static str> {
 }
 
 /// The site's `pickup_electronics` keys.
-fn pickup_electronics_key(value: &str) -> Option<&'static str> {
+pub fn pickup_electronics_key(value: &str) -> Option<&'static str> {
     match value.trim().to_ascii_lowercase().as_str() {
         "passive" => Some("passive"),
         "active" => Some("active"),
+        _ => None,
+    }
+}
+
+/// The cloud enum key for the local display spelling.
+pub fn character_key(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "clean" => Some("clean"),
+        "drive" => Some("drive"),
+        "hi-gain" | "hi_gain" => Some("hi_gain"),
+        "fuzz" | "fuzzy" => Some("fuzzy"),
+        "other" => Some("other"),
         _ => None,
     }
 }
@@ -1496,41 +1521,48 @@ mod tests {
         assert_eq!(objects, 0, "no orphan left behind");
     }
 
-    /// The site's two enum fields are free text here, and an upload that sends
-    /// "Humbucker" where the site wants "humbucker" fails a validation the
-    /// person cannot see. What will not map is left out rather than guessed.
+    /// Song and Tone facts stay separate in the exported manifest, and local
+    /// display spellings become the cloud enum keys.
     #[test]
-    fn the_web_shape_uses_the_sites_own_enum_keys() {
+    fn the_web_manifest_separates_song_and_tone_fields() {
         let meta = Meta {
             pickup_type: "Humbucker".into(),
             pickup_electronics: "Passive".into(),
             song: "Blackened".into(),
             artist: "Metallica".into(),
             tags: vec!["thrash".into()],
+            character: "hi-gain".into(),
+            tone_description: "For HX Stomp".into(),
             ..Default::default()
         };
         let json = meta.for_the_web("Blackened Rhythm");
-        assert_eq!(json["name"], "Blackened Rhythm");
-        assert_eq!(json["pickup_type"], "humbucker");
-        assert_eq!(json["pickup_electronics"], "passive");
-        assert_eq!(json["kind"], "song", "a tone with a song is a song");
-        assert_eq!(json["tags"][0], "thrash");
+        assert_eq!(json["song"]["title"], "Blackened");
+        assert_eq!(json["song"]["kind"], "song");
+        assert_eq!(json["song"]["artist_name"], "Metallica");
+        assert_eq!(json["song"]["tags"][0], "thrash");
+        assert_eq!(json["tone"]["name"], "Blackened Rhythm");
+        assert_eq!(json["tone"]["description"], "For HX Stomp");
+        assert_eq!(json["tone"]["pickup_type"], "humbucker");
+        assert_eq!(json["tone"]["pickup_electronics"], "passive");
+        assert_eq!(json["tone"]["character"], "hi_gain");
 
-        // Nothing typed, nothing sent - and no song makes it an original.
+        // No catalog title makes an original Song named after its first Tone.
         let bare = Meta {
             pickup_type: "mystery".into(),
             ..Default::default()
         };
         let json = bare.for_the_web("Untitled");
         assert!(
-            json.get("pickup_type").is_none(),
+            json["tone"].get("pickup_type").is_none(),
             "an unmappable pickup is left out"
         );
         assert!(
-            json.get("description").is_none(),
+            json["song"].get("description").is_none(),
             "empty fields are left out"
         );
-        assert_eq!(json["kind"], "original");
+        assert_eq!(json["song"]["kind"], "original");
+        assert_eq!(json["song"]["title"], "Untitled");
+        assert!(json["song"]["artist_name"].is_null());
     }
 
     #[test]

@@ -163,8 +163,9 @@ is not edited in place. That is deliberate: it is a record of a rig that worked
 on a particular night, and a record you can edit is not a record.
 
 Nothing in the library is a lock-in. Tones are the pedal's own preset documents
-in a plain folder, setlists are small JSON files beside them, and a tone can be
-written out as `.hlx` with its details alongside for uploading to the web.
+in a plain folder, setlists are small JSON files beside them, and a Tone can be
+written out as `.hlx` with a manifest that keeps its Song facts and device-native
+Tone facts separate. Publishing creates the Song first, then adds the Tone.
 
 ## Layout
 

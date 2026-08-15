@@ -1,0 +1,53 @@
+{
+  "id": 456,
+  "song_id": 123,
+  "name": "Numb HX",
+  "device": {
+    "id": 1,
+    "name": "HX Stomp",
+    "slug": "hx-stomp",
+    "family": "Helix",
+    "manufacturer": "Line 6",
+    "capabilities": {},
+    "artifact_extensions": ["hlx"]
+  },
+  "creator": "Public Name",
+  "description": "HX Stomp lead preset.",
+  "state": "published",
+  "availability": "free",
+  "source_kind": "native",
+  "firmware_version": "3.80",
+  "minimum_firmware_version": null,
+  "parser_version": "0.4.3",
+  "installs_count": 0,
+  "saves_count": 0,
+  "remix_count": 0,
+  "parent_id": null,
+  "signal_chain": [],
+  "file_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "parsed_metadata": {},
+  "dependencies": [],
+  "audio_previews": [],
+  "download": {
+    "artifact": "/tones/456/artifact"
+  },
+  "song": {
+    "id": 123,
+    "title": "Comfortably Numb",
+    "kind": "song",
+    "artist": "Pink Floyd",
+    "part": "Second solo",
+    "description": "A singing lead musical idea.",
+    "tags": ["lead"],
+    "genres": ["Rock"],
+    "tuning": "Standard",
+    "guitar_type": "Stratocaster",
+    "pickup_type": "single_coil",
+    "pickup_electronics": "passive",
+    "tone_count": 2,
+    "devices": ["HX Stomp", "Helix"],
+    "file_sha256s": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ]
+  }
+}

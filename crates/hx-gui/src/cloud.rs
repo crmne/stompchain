@@ -1,235 +1,556 @@
-//! Which tones the tone browser already has.
+//! The TonePush web API: Songs are musical ideas and Tones are playable,
+//! device-native presets that belong to them.
 //!
-//! One question, asked once at startup, off the UI thread: what is published?
-//! The answer is a set of file hashes, and a tone in the library is on the site
-//! when its portable copy hashes to one of them.
-//!
-//! Hashes rather than names, because a name is not an identity. Two people can
-//! publish "Master of Puppets - Rhythm" and mean different rigs, and one person
-//! can rename their own tone without it becoming a different one. The site
-//! records the SHA-256 of the file it was given, which is the same question the
-//! library already answers about itself.
-//!
-//! Like the update check, failure is silence. With no network or a site that is
-//! down, the column says nothing rather than claiming a tone is missing from a
-//! place it could not reach. A successful empty answer is different: it draws
-//! the outline clouds that publish the first tones.
+//! Public discovery is deliberately typed at this boundary. The library only
+//! needs Song file hashes today, while the same client also exposes Song
+//! details and individual Tone downloads for the browser/install UI. Publishing
+//! mirrors the two resources on the server: create a Song, then add its first
+//! Tone. If the second request fails the error says that the Song was created;
+//! there is no delete call and therefore no pretend rollback.
 
 use std::collections::BTreeSet;
+use std::fmt;
 use std::sync::mpsc::{channel, Receiver};
+
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
 use crate::update::VERSION;
 
-/// Where the tone browser lives. The docs are on `docs.` beside it.
-///
-/// `TONEPUSH_SITE` points it somewhere else, which is how the publishing side
-/// is exercised against a site running on this machine. Nothing in the app
-/// offers to change it: a person has one tone browser.
+const SITE: &str = "https://tonepush.rocks";
+const PAGES: u32 = 100;
+
+/// Where the web application lives. `TONEPUSH_SITE` is useful when exercising
+/// the editor against a local Rails server.
 pub fn site() -> String {
     std::env::var("TONEPUSH_SITE").unwrap_or_else(|_| SITE.to_owned())
 }
 
-const SITE: &str = "https://tonepush.rocks";
-
-/// The read half of the site's API. It needs no credential: reading what has
-/// been published is public, and only publishing needs an account.
-fn tones() -> String {
-    format!("{}/api/v1/tones", site())
+fn agent_name() -> String {
+    format!("TonePush {VERSION} ({})", std::env::consts::OS)
 }
 
-/// How many pages of tones to walk before stopping.
-///
-/// The index answers fifty at a time. A cap rather than a `while` loop because
-/// this runs against a server that may be having a bad day. The editor opens
-/// while it works, but the task still needs a ceiling rather than asking an
-/// unbounded number of pages when the server's pagination is broken.
-const PAGES: u32 = 100;
+fn api_agent() -> ureq::Agent {
+    ureq::config::Config::builder()
+        .http_status_as_error(false)
+        .build()
+        .new_agent()
+}
 
-/// How many tones to ask about one at a time, when the index will not say.
-///
-/// The index carries `file_sha256s` now, so the ordinary path is one request
-/// per page and this is never reached. It is the fallback for a site that has
-/// not deployed that yet, where the hashes live only on a tone's details and
-/// learning them costs a request each. Capped so an editor opening against an
-/// older site with a large library does not fire a thousand requests at it,
-/// and it says so when it stops rather than quietly reporting less.
-const DETAILS: usize = 200;
+/// A catalog song by an Artist or an original musical idea.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SongKind {
+    Song,
+    Original,
+}
 
-/// Ask the site what it has, in the background.
-///
-/// The receiver yields at most one value: every published file's hash. Any
-/// failure at all yields nothing and hangs up, which the caller reads as "the
-/// site has not answered" rather than "the site has nothing".
+/// One row returned by `GET /api/v1/songs` and embedded in Tone details.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SongSummary {
+    pub id: i64,
+    pub title: String,
+    pub kind: SongKind,
+    pub artist: Option<String>,
+    pub part: Option<String>,
+    pub description: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub genres: Vec<String>,
+    pub tuning: Option<String>,
+    pub guitar_type: Option<String>,
+    pub pickup_type: Option<String>,
+    pub pickup_electronics: Option<String>,
+    pub tone_count: u64,
+    #[serde(default)]
+    pub devices: Vec<String>,
+    #[serde(default)]
+    pub file_sha256s: Vec<String>,
+}
+
+/// One Song together with the playable Tones a person may choose from.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SongDetails {
+    #[serde(flatten)]
+    pub summary: SongSummary,
+    #[serde(default)]
+    pub tones: Vec<ToneDetails>,
+}
+
+/// The device a Tone can be installed on.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct DeviceSummary {
+    pub id: i64,
+    pub name: String,
+    pub slug: String,
+    pub family: Option<String>,
+    pub manufacturer: String,
+    #[serde(default)]
+    pub capabilities: serde_json::Value,
+    #[serde(default)]
+    pub artifact_extensions: Vec<String>,
+}
+
+/// The fields needed to present a playable Tone in a Song detail view.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ToneSummary {
+    pub id: i64,
+    pub song_id: i64,
+    pub name: String,
+    pub device: DeviceSummary,
+    pub creator: Option<String>,
+    pub description: Option<String>,
+    pub state: String,
+    pub availability: String,
+    pub source_kind: String,
+    pub firmware_version: Option<String>,
+    pub minimum_firmware_version: Option<String>,
+    pub parser_version: Option<String>,
+    pub installs_count: u64,
+    pub saves_count: u64,
+    pub remix_count: u64,
+    pub parent_id: Option<i64>,
+    #[serde(default)]
+    pub signal_chain: Vec<serde_json::Value>,
+}
+
+/// Where a playable Tone comes from. Native Tones have an artifact path;
+/// externally indexed Tones lead to their original source instead.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ToneDownload {
+    pub artifact: Option<String>,
+    pub external: Option<String>,
+}
+
+/// The complete response from `GET /api/v1/tones/:id`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ToneDetails {
+    #[serde(flatten)]
+    pub summary: ToneSummary,
+    pub file_sha256: Option<String>,
+    #[serde(default)]
+    pub parsed_metadata: serde_json::Value,
+    #[serde(default)]
+    pub dependencies: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub audio_previews: Vec<serde_json::Value>,
+    pub download: Option<ToneDownload>,
+    /// Present on the individual Tone endpoint. A Tone embedded in its own
+    /// Song details does not repeat the parent Song.
+    pub song: Option<SongSummary>,
+}
+
+/// Facets accepted by Song search. Empty values are not sent.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SongSearch {
+    pub q: Option<String>,
+    pub artist: Option<String>,
+    pub device: Option<String>,
+    pub output_target: Option<String>,
+    pub genre: Option<String>,
+    pub page: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct SongsResponse {
+    songs: Vec<SongSummary>,
+}
+
+/// A client rooted at one TonePush web deployment.
+#[derive(Clone)]
+pub struct CloudClient {
+    base: String,
+    http: ureq::Agent,
+}
+
+impl CloudClient {
+    pub fn new(base: impl Into<String>) -> Self {
+        Self {
+            base: base.into().trim_end_matches('/').to_owned(),
+            http: api_agent(),
+        }
+    }
+
+    fn songs_url(&self) -> String {
+        format!("{}/api/v1/songs", self.base)
+    }
+
+    /// Search musical ideas. The returned rows are Songs, not installable
+    /// presets; call [`Self::song`] and let the person choose one of its Tones.
+    pub fn search_songs(&self, search: &SongSearch) -> Result<Vec<SongSummary>, String> {
+        let mut request = self
+            .http
+            .get(self.songs_url())
+            .header("User-Agent", agent_name())
+            .header("Accept", "application/json")
+            .query("page", search.page.max(1).to_string());
+        for (key, value) in [
+            ("q", search.q.as_deref()),
+            ("artist", search.artist.as_deref()),
+            ("device", search.device.as_deref()),
+            ("output_target", search.output_target.as_deref()),
+            ("genre", search.genre.as_deref()),
+        ] {
+            if let Some(value) = value.filter(|value| !value.is_empty()) {
+                request = request.query(key, value);
+            }
+        }
+        let response = request
+            .call()
+            .map_err(|error| format!("the Song catalog did not answer: {error}"))?;
+        decode(response).map(|response: SongsResponse| response.songs)
+    }
+
+    /// Fetch one musical idea and the playable Tones belonging to it.
+    pub fn song(&self, id: i64) -> Result<SongDetails, String> {
+        let response = self
+            .http
+            .get(format!("{}/api/v1/songs/{id}", self.base))
+            .header("User-Agent", agent_name())
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|error| format!("the Song catalog did not answer: {error}"))?;
+        decode(response)
+    }
+
+    /// Fetch one playable, device-native Tone.
+    pub fn tone(&self, id: i64) -> Result<ToneDetails, String> {
+        let response = self
+            .http
+            .get(format!("{}/api/v1/tones/{id}", self.base))
+            .header("User-Agent", agent_name())
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|error| format!("the Tone catalog did not answer: {error}"))?;
+        decode(response)
+    }
+
+    /// Resolve a Tone's download without pretending an external catalog entry
+    /// is a native artifact. Callers open [`ToneDelivery::External`] in the
+    /// browser and install [`ToneDelivery::Artifact`] into the local library.
+    pub fn download(&self, tone: &ToneDetails) -> Result<ToneDelivery, String> {
+        let Some(location) = &tone.download else {
+            return Err(format!("{} has no downloadable preset", tone.summary.name));
+        };
+        if let Some(url) = &location.external {
+            return Ok(ToneDelivery::External(url.clone()));
+        }
+        let Some(path) = &location.artifact else {
+            return Err(format!("{} has no downloadable preset", tone.summary.name));
+        };
+        let url = if path.starts_with("http://") || path.starts_with("https://") {
+            path.clone()
+        } else {
+            format!("{}{}", self.base, path)
+        };
+        let mut response = self
+            .http
+            .get(url)
+            .header("User-Agent", agent_name())
+            .call()
+            .map_err(|error| format!("the Tone artifact did not answer: {error}"))?;
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            let body = response.body_mut().read_to_string().unwrap_or_default();
+            return Err(api_error(status, &body));
+        }
+        let bytes = response
+            .body_mut()
+            .read_to_vec()
+            .map_err(|error| format!("the Tone artifact was unreadable: {error}"))?;
+        Ok(ToneDelivery::Artifact(bytes))
+    }
+
+    /// Create a musical idea. This operation never uploads a preset.
+    pub fn create_song(
+        &self,
+        token: &str,
+        request: &CreateSongRequest,
+    ) -> Result<SongDetails, String> {
+        let body = serde_json::to_vec(request)
+            .map_err(|error| format!("the Song could not be encoded: {error}"))?;
+        let response = self
+            .http
+            .post(self.songs_url())
+            .header("User-Agent", agent_name())
+            .header("Accept", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .content_type("application/json")
+            .send(body)
+            .map_err(|error| format!("the Song catalog did not answer: {error}"))?;
+        decode(response)
+    }
+
+    /// Add one playable Tone to an existing Song.
+    pub fn create_tone(
+        &self,
+        token: &str,
+        song_id: i64,
+        request: &CreateToneRequest,
+    ) -> Result<ToneDetails, String> {
+        let form = request.multipart();
+        let response = self
+            .http
+            .post(format!("{}/api/v1/songs/{song_id}/tones", self.base))
+            .header("User-Agent", agent_name())
+            .header("Accept", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", form.content_type())
+            .send(form.finish())
+            .map_err(|error| format!("the Tone catalog did not answer: {error}"))?;
+        decode(response)
+    }
+
+    /// Publish through the resourceful two-step contract. An existing Song
+    /// goes straight to Tone creation; a new one is created first.
+    pub fn publish(
+        &self,
+        token: &str,
+        request: &PublishRequest,
+    ) -> Result<ToneDetails, PublishError> {
+        let (song_id, created) = match &request.song {
+            PublishSong::Existing(id) => (*id, None),
+            PublishSong::New(song) => {
+                let created = self
+                    .create_song(token, song)
+                    .map_err(PublishError::CreatingSong)?;
+                (created.summary.id, Some(created.summary.title))
+            }
+        };
+        self.create_tone(token, song_id, &request.tone)
+            .map_err(|reason| PublishError::CreatingTone {
+                song_id,
+                created_song: created,
+                reason,
+            })
+    }
+}
+
+/// A resolved Tone download.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToneDelivery {
+    Artifact(Vec<u8>),
+    External(String),
+}
+
+/// The JSON body for creating one Song.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CreateSongRequest {
+    pub creator_name: String,
+    pub song: NewSong,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NewSong {
+    pub title: String,
+    pub kind: SongKind,
+    pub artist_name: Option<String>,
+    pub description: Option<String>,
+    pub tags: Vec<String>,
+    pub genre_ids: Vec<i64>,
+}
+
+/// The portable preset attached to a new Tone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresetUpload {
+    pub filename: String,
+    pub bytes: Vec<u8>,
+}
+
+/// The multipart body for adding a Tone to a Song.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CreateToneRequest {
+    pub creator_name: String,
+    pub tone: NewTone,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NewTone {
+    pub name: String,
+    pub description: Option<String>,
+    pub part: Option<String>,
+    pub tuning: Option<String>,
+    pub guitar_type: Option<String>,
+    pub pickup_type: Option<String>,
+    pub pickup_electronics: Option<String>,
+    pub device_id: Option<i64>,
+    pub device_name: Option<String>,
+    pub firmware_version: Option<String>,
+    pub parser_version: Option<String>,
+    pub output_target: Option<String>,
+    pub chain_content: Option<String>,
+    pub character: Option<String>,
+    pub blocks: Vec<serde_json::Value>,
+    pub parsed_metadata: serde_json::Value,
+    pub preset: Option<PresetUpload>,
+}
+
+impl CreateToneRequest {
+    fn multipart(&self) -> Multipart {
+        let mut form = Multipart::new();
+        if !self.creator_name.is_empty() {
+            form.field("creator_name", &self.creator_name);
+        }
+        form.field("tone[name]", &self.tone.name);
+        for (field, value) in [
+            ("description", self.tone.description.as_deref()),
+            ("part", self.tone.part.as_deref()),
+            ("tuning", self.tone.tuning.as_deref()),
+            ("guitar_type", self.tone.guitar_type.as_deref()),
+            ("pickup_type", self.tone.pickup_type.as_deref()),
+            (
+                "pickup_electronics",
+                self.tone.pickup_electronics.as_deref(),
+            ),
+            ("device_name", self.tone.device_name.as_deref()),
+            ("firmware_version", self.tone.firmware_version.as_deref()),
+            ("parser_version", self.tone.parser_version.as_deref()),
+            ("output_target", self.tone.output_target.as_deref()),
+            ("chain_content", self.tone.chain_content.as_deref()),
+            ("character", self.tone.character.as_deref()),
+        ] {
+            if let Some(value) = value {
+                form.field(&format!("tone[{field}]"), value);
+            }
+        }
+        if let Some(id) = self.tone.device_id {
+            form.field("tone[device_id]", &id.to_string());
+        }
+        form.object_array("tone[blocks]", &self.tone.blocks);
+        if !self.tone.parsed_metadata.is_null()
+            && self
+                .tone
+                .parsed_metadata
+                .as_object()
+                .is_none_or(|object| !object.is_empty())
+        {
+            form.json("tone[parsed_metadata]", &self.tone.parsed_metadata);
+        }
+        if let Some(preset) = &self.tone.preset {
+            form.file("tone[preset]", &preset.filename, &preset.bytes);
+        }
+        form
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PublishRequest {
+    pub song: PublishSong,
+    pub tone: CreateToneRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PublishSong {
+    New(CreateSongRequest),
+    Existing(i64),
+}
+
+/// Which of the two publishing operations failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PublishError {
+    CreatingSong(String),
+    CreatingTone {
+        song_id: i64,
+        created_song: Option<String>,
+        reason: String,
+    },
+}
+
+impl fmt::Display for PublishError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CreatingSong(reason) => write!(formatter, "the Song was not created: {reason}"),
+            Self::CreatingTone {
+                song_id,
+                created_song: Some(title),
+                reason,
+            } => write!(
+                formatter,
+                "Song “{title}” was created as #{song_id}, but its Tone was not published: \
+                 {reason}. The empty Song remains on TonePush"
+            ),
+            Self::CreatingTone {
+                song_id,
+                created_song: None,
+                reason,
+            } => write!(
+                formatter,
+                "the Tone was not added to Song #{song_id}: {reason}"
+            ),
+        }
+    }
+}
+
+/// Ask the Song index what native files are already published, off the UI
+/// thread. Failure yields no value; a successful empty catalog yields an empty
+/// set so the library can still offer its first publish action.
 pub fn published() -> Receiver<BTreeSet<String>> {
     let (tx, rx) = channel();
     std::thread::spawn(move || {
-        if let Some(hashes) = fetch() {
+        if let Ok(hashes) = fetch_published(&CloudClient::new(site())) {
             let _ = tx.send(hashes);
         }
     });
     rx
 }
 
-/// Walk the index and collect every implementation's file hash.
-fn fetch() -> Option<BTreeSet<String>> {
+fn fetch_published(client: &CloudClient) -> Result<BTreeSet<String>, String> {
     let mut found = BTreeSet::new();
-    let mut asked = 0usize;
-    // Reuse one connection while walking the index. The tone browser is well
-    // beyond its first thousand listings now; a fresh TLS handshake for every
-    // page made the truthful answer arrive several seconds later than needed.
-    let agent = ureq::Agent::new_with_defaults();
     for page in 1..=PAGES {
-        let body = agent
-            .get(format!("{}?page={page}", tones()))
-            .header("User-Agent", format!("TonePush/{VERSION}"))
-            .header("Accept", "application/json")
-            .call()
-            .ok()?
-            .body_mut()
-            .read_to_string()
-            .ok()?;
-        let json: serde_json::Value = serde_json::from_str(&body).ok()?;
-        let tones = json.get("tones")?.as_array()?;
-        // The last page is the one that comes back empty. Stopping on a short
-        // page instead would stop early the day the page size changes.
-        if tones.is_empty() {
+        let songs = client.search_songs(&SongSearch {
+            page,
+            ..Default::default()
+        })?;
+        if songs.is_empty() {
             break;
         }
-        for tone in tones {
-            // The index carries the hashes itself, which makes the whole
-            // question one request per page.
-            if let Some(listed) = summary_hashes(tone) {
-                found.extend(listed);
-                continue;
-            }
-            // An older site only has them on a tone's details, so this asks -
-            // once per tone, which is why it is capped. Kept so the editor
-            // still works against a site that has not deployed the index
-            // change yet, and it costs nothing once that lands.
-            if asked >= DETAILS {
-                eprintln!(
-                    "the tone browser has more than {DETAILS} tones and its index does \
-                     not carry file_sha256, so only the first {DETAILS} were checked."
-                );
-                return Some(found);
-            }
-            let Some(id) = tone.get("id").and_then(|id| id.as_i64()) else {
-                continue;
-            };
-            asked += 1;
-            found.extend(hashes_of(id));
+        for song in songs {
+            found.extend(
+                song.file_sha256s
+                    .into_iter()
+                    .filter(|hash| hash.len() == 64)
+                    .map(|hash| hash.to_ascii_lowercase()),
+            );
         }
     }
-    Some(found)
+    Ok(found)
 }
 
-/// The hashes a tone's index entry lists, when the site puts them there.
-///
-/// `None` means the field is absent, which is a site old enough to keep them
-/// only on the details - a different thing from a tone that has none, which is
-/// an empty list and needs no second request.
-fn summary_hashes(tone: &serde_json::Value) -> Option<Vec<String>> {
-    let listed = tone.get("file_sha256s")?.as_array()?;
-    Some(
-        listed
-            .iter()
-            .filter_map(|hash| hash.as_str())
-            .filter(|hash| hash.len() == 64)
-            .map(|hash| hash.to_ascii_lowercase())
-            .collect(),
-    )
+/// Open the public Song catalog. Song summaries expose a numeric API id but no
+/// canonical browser URL or slug, so the editor does not invent a deep link.
+pub fn song_catalog_url() -> String {
+    format!("{}/songs", site())
 }
 
-/// Every file hash published for one tone, across its implementations.
-///
-/// A tone can be built more than once - the same song for different pedals -
-/// and each of those is a separate file with its own hash. All of them count:
-/// the question is whether *this* file is up there, not whether its name is.
-fn hashes_of(id: i64) -> Vec<String> {
-    let Ok(mut response) = ureq::get(format!("{}/{id}", tones()))
-        .header("User-Agent", format!("TonePush/{VERSION}"))
-        .header("Accept", "application/json")
-        .call()
-    else {
-        return Vec::new();
-    };
-    let Ok(body) = response.body_mut().read_to_string() else {
-        return Vec::new();
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) else {
-        return Vec::new();
-    };
-    file_hashes(&json)
-}
-
-/// The `file_sha256` of every implementation in a tone's details.
-///
-/// Separated from the request so the shape of the site's answer can be pinned
-/// by a test without a network.
-fn file_hashes(details: &serde_json::Value) -> Vec<String> {
-    details
-        .get("implementations")
-        .and_then(|i| i.as_array())
-        .map(|implementations| {
-            implementations
-                .iter()
-                .filter_map(|i| i.get("file_sha256")?.as_str())
-                // An implementation whose artifact was never uploaded - an
-                // external one pointing at CustomTone, say - has no hash, and
-                // null is not a hash of anything.
-                .filter(|hash| hash.len() == 64)
-                .map(|hash| hash.to_ascii_lowercase())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// Where a person goes to see a tone that is already up there.
-pub fn tone_url(hash: &str) -> String {
-    format!("{}/tones?q={hash}", site())
-}
-
-/// Signing this computer in, and publishing once it is.
-///
-/// The site signs people in by mailing them a link, and that mail is as likely
-/// to be read on a phone as on the machine running this. So the editor cannot
-/// wait for a browser to come back to it the way a command-line tool does: it
-/// asks the site for a pairing, shows the code, and asks about that pairing
-/// until somebody approves it from wherever they happen to be.
+/// Signing this computer in remains the existing pairing flow.
 fn pairings() -> String {
     format!("{}/api/v1/pairings", site())
 }
 
-/// A pairing in progress: what to show the person, and what to ask about.
 #[derive(Debug, Clone)]
 pub struct Pairing {
     pub code: String,
-    /// The page that approves it. Opened for them, and worth showing in case
-    /// the browser that opened is not the one they are signed in to.
     pub url: String,
 }
 
-/// How the pairing ended.
 pub enum Linked {
-    /// Signed in, with the credential and who it belongs to.
     In { token: String, account: String },
-    /// Nobody approved it in time, or the site stopped answering.
     GaveUp(String),
 }
 
-/// Ask the site to start a pairing.
 pub fn start_pairing() -> Result<Pairing, String> {
     let mut response = ureq::post(pairings())
-        .header("User-Agent", agent())
+        .header("User-Agent", agent_name())
         .header("Accept", "application/json")
         .send_empty()
-        .map_err(|e| format!("the tone browser did not answer: {e}"))?;
-    let body = read_json(&mut response)?;
+        .map_err(|error| format!("TonePush did not answer the pairing request: {error}"))?;
+    let body: serde_json::Value = decode_body(&mut response)?;
     let (Some(code), Some(url)) = (
-        body.get("code").and_then(|c| c.as_str()),
-        body.get("url").and_then(|u| u.as_str()),
+        body.get("code").and_then(|code| code.as_str()),
+        body.get("url").and_then(|url| url.as_str()),
     ) else {
-        return Err("the tone browser did not offer a code".to_owned());
+        return Err("TonePush did not offer a pairing code".to_owned());
     };
     Ok(Pairing {
         code: code.to_owned(),
@@ -237,23 +558,22 @@ pub fn start_pairing() -> Result<Pairing, String> {
     })
 }
 
-/// Ask about a pairing once. `Ok(None)` means nobody has approved it yet.
 pub fn poll_pairing(code: &str) -> Result<Option<Linked>, String> {
     let mut response = ureq::get(format!("{}/{code}", pairings()))
-        .header("User-Agent", agent())
+        .header("User-Agent", agent_name())
         .header("Accept", "application/json")
         .call()
-        .map_err(|e| format!("the tone browser stopped answering: {e}"))?;
-    let body = read_json(&mut response)?;
-    match body.get("state").and_then(|s| s.as_str()) {
+        .map_err(|error| format!("TonePush stopped answering the pairing request: {error}"))?;
+    let body: serde_json::Value = decode_body(&mut response)?;
+    match body.get("state").and_then(|state| state.as_str()) {
         Some("linked") => {
             let token = body
                 .get("token")
-                .and_then(|t| t.as_str())
-                .ok_or("the tone browser said linked and sent no credential")?;
+                .and_then(|token| token.as_str())
+                .ok_or("TonePush paired without returning a session token")?;
             let account = body
                 .get("name")
-                .and_then(|n| n.as_str())
+                .and_then(|name| name.as_str())
                 .unwrap_or("your account");
             Ok(Some(Linked::In {
                 token: token.to_owned(),
@@ -267,122 +587,60 @@ pub fn poll_pairing(code: &str) -> Result<Option<Linked>, String> {
     }
 }
 
-fn agent() -> String {
-    format!("TonePush {VERSION} ({})", std::env::consts::OS)
+/// Publish a new Song and Tone against the configured site.
+pub fn publish(token: &str, request: &PublishRequest) -> Result<ToneDetails, PublishError> {
+    CloudClient::new(site()).publish(token, request)
 }
 
-/// The site's answer, as JSON. Anything unreadable is reported as such rather
-/// than left to look like a refusal.
-fn read_json(response: &mut ureq::http::Response<ureq::Body>) -> Result<serde_json::Value, String> {
-    let text = response
+fn decode<T: DeserializeOwned>(
+    mut response: ureq::http::Response<ureq::Body>,
+) -> Result<T, String> {
+    let status = response.status().as_u16();
+    let body = response
         .body_mut()
         .read_to_string()
-        .map_err(|e| format!("the tone browser answered nothing readable: {e}"))?;
-    serde_json::from_str(&text)
-        .map_err(|e| format!("the tone browser answered something unreadable: {e}"))
+        .map_err(|error| format!("TonePush answered nothing readable: {error}"))?;
+    if !(200..300).contains(&status) {
+        return Err(api_error(status, &body));
+    }
+    serde_json::from_str(&body)
+        .map_err(|error| format!("TonePush answered with invalid JSON: {error}"))
 }
 
-/// What the site is told about a tone being published.
-///
-/// The library already asks for all of this, which is the point: a row that has
-/// been filled in is a listing, and one that has not cannot be published until
-/// it is. Nothing here is invented on anybody's behalf.
-#[derive(Debug, Default)]
-pub struct Publishing {
-    pub name: String,
-    pub artist: String,
-    pub song: String,
-    pub part: String,
-    pub description: String,
-    pub creator_name: String,
-    /// The portable copy. Its hash is what the library matches against, so this
-    /// is the `.hlx` and never the pedal's own bytes.
-    pub hlx: Vec<u8>,
-    pub filename: String,
+fn decode_body<T: DeserializeOwned>(
+    response: &mut ureq::http::Response<ureq::Body>,
+) -> Result<T, String> {
+    let body = response
+        .body_mut()
+        .read_to_string()
+        .map_err(|error| format!("TonePush answered nothing readable: {error}"))?;
+    serde_json::from_str(&body)
+        .map_err(|error| format!("TonePush answered with invalid JSON: {error}"))
 }
 
-/// Put one tone on the site, with its file.
-pub fn publish(token: &str, tone: &Publishing) -> Result<String, String> {
-    let kind = if tone.song.is_empty() {
-        "original"
-    } else {
-        "song"
-    };
-    let mut form = Multipart::new();
-    form.field("creator_name", &tone.creator_name);
-    form.field("tone[name]", &tone.name);
-    form.field("tone[kind]", kind);
-    form.field("tone[artist_name]", &tone.artist);
-    form.field("tone[song]", &tone.song);
-    form.field("tone[part]", &tone.part);
-    form.field("tone[description]", &tone.description);
-    form.field("tone[device_name]", "HX Stomp");
-    form.file("tone[preset]", &tone.filename, &tone.hlx);
-
-    // Keep the response body on validation errors. In particular, the site
-    // answers a duplicate file with 422 plus a precise JSON error; treating
-    // the status as a transport failure threw that useful answer away.
-    let http = ureq::config::Config::builder()
-        .http_status_as_error(false)
-        .build()
-        .new_agent();
-    let mut response = http
-        .post(tones())
-        .header("User-Agent", agent())
-        .header("Accept", "application/json")
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", form.content_type())
-        .send(form.finish())
-        .map_err(|e| format!("the tone browser refused it: {e}"))?;
-    let status = response.status().as_u16();
-    let body = read_json(&mut response)?;
-    publish_answer(status, &body, &tone.name)
-}
-
-/// Interpret a publish response, including the useful body of a non-2xx one.
-fn publish_answer(status: u16, body: &serde_json::Value, fallback: &str) -> Result<String, String> {
-    let errors: Vec<&str> = body
-        .get("errors")
-        .and_then(|e| e.as_array())
+fn api_error(status: u16, body: &str) -> String {
+    let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
+    let errors = parsed
+        .as_ref()
+        .and_then(|body| body.get("errors"))
+        .and_then(|errors| errors.as_array())
         .into_iter()
         .flatten()
-        .filter_map(|e| e.as_str())
-        .collect();
-    // The desired end state already exists. Report this as success so the
-    // caller fills the cloud instead of presenting a failed upload.
-    if errors
-        .iter()
-        .any(|error| error.eq_ignore_ascii_case("File sha256 has already been taken"))
-    {
-        return Ok(fallback.to_owned());
-    }
+        .filter_map(|error| error.as_str())
+        .collect::<Vec<_>>();
     if !errors.is_empty() {
-        return Err(errors.join("; "));
+        return errors.join("; ");
     }
-    if !(200..300).contains(&status) {
-        let said = body
-            .get("error")
-            .or_else(|| body.get("message"))
-            .and_then(|value| value.as_str())
-            .filter(|said| !said.is_empty())
-            .map_or_else(
-                || format!("the tone browser refused it (HTTP {status})"),
-                str::to_owned,
-            );
-        return Err(said);
-    }
-    Ok(body
-        .get("name")
-        .and_then(|n| n.as_str())
-        .unwrap_or(fallback)
-        .to_owned())
+    parsed
+        .as_ref()
+        .and_then(|body| body.get("error").or_else(|| body.get("message")))
+        .and_then(|message| message.as_str())
+        .filter(|message| !message.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("TonePush refused the request (HTTP {status})"))
 }
 
-/// A multipart body, built by hand.
-///
-/// A file has to go up as multipart - that is what the site's form takes - and
-/// that is thirty lines of joining bytes together. A crate for it would be a
-/// dependency for thirty lines.
+/// A small multipart encoder with Rails-style nested field names.
 struct Multipart {
     boundary: String,
     body: Vec<u8>,
@@ -390,13 +648,11 @@ struct Multipart {
 
 impl Multipart {
     fn new() -> Self {
-        // Unique enough: it only has to not appear in the parts, and the parts
-        // are a preset file and some short strings.
         let boundary = format!(
             "----TonePush{:x}",
             std::process::id() as u64 * 2_654_435_761
         );
-        Multipart {
+        Self {
             boundary,
             body: Vec::new(),
         }
@@ -425,6 +681,35 @@ impl Multipart {
         self.body.extend_from_slice(b"\r\n");
     }
 
+    fn object_array(&mut self, name: &str, values: &[serde_json::Value]) {
+        for value in values {
+            if let Some(object) = value.as_object() {
+                for (key, value) in object {
+                    self.json(&format!("{name}[][{key}]"), value);
+                }
+            }
+        }
+    }
+
+    fn json(&mut self, name: &str, value: &serde_json::Value) {
+        match value {
+            serde_json::Value::Null => {}
+            serde_json::Value::Bool(value) => self.field(name, &value.to_string()),
+            serde_json::Value::Number(value) => self.field(name, &value.to_string()),
+            serde_json::Value::String(value) => self.field(name, value),
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    self.json(&format!("{name}[]"), value);
+                }
+            }
+            serde_json::Value::Object(values) => {
+                for (key, value) in values {
+                    self.json(&format!("{name}[{key}]"), value);
+                }
+            }
+        }
+    }
+
     fn content_type(&self) -> String {
         format!("multipart/form-data; boundary={}", self.boundary)
     }
@@ -439,90 +724,380 @@ impl Multipart {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::{Arc, Mutex};
 
-    /// The shape the site actually returns, trimmed to what is read here.
-    fn details() -> serde_json::Value {
+    fn song_json(id: i64, title: &str) -> serde_json::Value {
         serde_json::json!({
-            "id": 1,
-            "name": "Master of Puppets - Rhythm",
-            "implementations": [
-                { "id": 1, "file_sha256": "a".repeat(64) },
-                { "id": 2, "file_sha256": "B".repeat(64) },
-            ]
+            "id": id,
+            "title": title,
+            "kind": "original",
+            "artist": null,
+            "part": "Clean",
+            "description": "Wide and clean",
+            "tags": ["clean"],
+            "genres": ["Ambient"],
+            "tuning": "Standard",
+            "guitar_type": "Stratocaster",
+            "pickup_type": "single_coil",
+            "pickup_electronics": "passive",
+            "tone_count": 1,
+            "devices": ["HX Stomp"],
+            "file_sha256s": ["A".repeat(64)]
         })
     }
 
+    fn tone_json(id: i64, song_id: i64, title: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "song_id": song_id,
+            "name": "Wide HX",
+            "device": {
+                "id": 1,
+                "name": "HX Stomp",
+                "slug": "hx-stomp",
+                "family": "Helix",
+                "manufacturer": "Line 6",
+                "capabilities": {},
+                "artifact_extensions": ["hlx"]
+            },
+            "creator": "Public Name",
+            "description": "The playable preset",
+            "state": "published",
+            "availability": "free",
+            "source_kind": "native",
+            "firmware_version": "3.80",
+            "minimum_firmware_version": null,
+            "parser_version": "0.4.3",
+            "installs_count": 0,
+            "saves_count": 0,
+            "remix_count": 0,
+            "parent_id": null,
+            "signal_chain": [{"name": "Minotaur"}],
+            "file_sha256": "b".repeat(64),
+            "parsed_metadata": {},
+            "dependencies": [],
+            "audio_previews": [],
+            "download": {"artifact": format!("/tones/{id}/artifact")},
+            "song": song_json(song_id, title)
+        })
+    }
+
+    struct StubServer {
+        base: String,
+        requests: Arc<Mutex<Vec<Vec<u8>>>>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl StubServer {
+        fn start(responses: Vec<(u16, serde_json::Value)>) -> Self {
+            Self::start_raw(
+                responses
+                    .into_iter()
+                    .map(|(status, body)| (status, serde_json::to_vec(&body).unwrap()))
+                    .collect(),
+            )
+        }
+
+        fn start_raw(responses: Vec<(u16, Vec<u8>)>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let captured = requests.clone();
+            let thread = std::thread::spawn(move || {
+                for (status, body) in responses {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    captured.lock().unwrap().push(read_request(&mut stream));
+                    let reason = if (200..300).contains(&status) {
+                        "OK"
+                    } else {
+                        "Unprocessable Entity"
+                    };
+                    write!(
+                        stream,
+                        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .unwrap();
+                    stream.write_all(&body).unwrap();
+                }
+            });
+            Self {
+                base,
+                requests,
+                thread: Some(thread),
+            }
+        }
+
+        fn finish(mut self) -> Vec<Vec<u8>> {
+            self.thread.take().unwrap().join().unwrap();
+            Arc::try_unwrap(self.requests)
+                .unwrap()
+                .into_inner()
+                .unwrap()
+        }
+    }
+
+    fn read_request(stream: &mut TcpStream) -> Vec<u8> {
+        let mut request = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let header_end = loop {
+            let read = stream.read(&mut chunk).unwrap();
+            assert!(read > 0);
+            request.extend_from_slice(&chunk[..read]);
+            if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                break end + 4;
+            }
+        };
+        let headers = String::from_utf8_lossy(&request[..header_end]);
+        let length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().unwrap())
+            })
+            .unwrap_or(0);
+        while request.len() < header_end + length {
+            let read = stream.read(&mut chunk).unwrap();
+            assert!(read > 0);
+            request.extend_from_slice(&chunk[..read]);
+        }
+        request
+    }
+
+    fn new_song() -> CreateSongRequest {
+        CreateSongRequest {
+            creator_name: "Public Name".into(),
+            song: NewSong {
+                title: "Wide Clean".into(),
+                kind: SongKind::Original,
+                artist_name: None,
+                description: Some("A musical idea".into()),
+                tags: vec!["clean".into(), "wide".into()],
+                genre_ids: Vec::new(),
+            },
+        }
+    }
+
+    fn new_tone() -> CreateToneRequest {
+        CreateToneRequest {
+            creator_name: "Public Name".into(),
+            tone: NewTone {
+                name: "Wide HX".into(),
+                part: Some("Clean".into()),
+                device_name: Some("HX Stomp".into()),
+                firmware_version: Some("3.80".into()),
+                parser_version: Some(crate::update::VERSION.into()),
+                blocks: vec![serde_json::json!({
+                    "name": "Minotaur", "category": 1, "enabled": true, "path": 0
+                })],
+                parsed_metadata: serde_json::json!({"models_used": [101]}),
+                preset: Some(PresetUpload {
+                    filename: "wide.hlx".into(),
+                    bytes: b"preset bytes".to_vec(),
+                }),
+                ..Default::default()
+            },
+        }
+    }
+
     #[test]
-    fn every_implementations_hash_counts() {
+    fn song_and_tone_wire_shapes_decode_separately() {
+        let index: SongsResponse =
+            serde_json::from_str(include_str!("../tests/fixtures/cloud/songs-index.json")).unwrap();
+        let song: SongDetails =
+            serde_json::from_str(include_str!("../tests/fixtures/cloud/song-details.json"))
+                .unwrap();
+        assert_eq!(index.songs[0], song.summary);
+        assert_eq!(song.tones.len(), 2, "the UI must offer both playable Tones");
+        assert_eq!(song.tones[0].summary.name, "Numb HX");
+        assert!(song.tones[0]
+            .download
+            .as_ref()
+            .and_then(|download| download.artifact.as_ref())
+            .is_some());
+
+        let tone: ToneDetails =
+            serde_json::from_str(include_str!("../tests/fixtures/cloud/tone-details.json"))
+                .unwrap();
+        assert_eq!(tone.summary.song_id, song.summary.id);
         assert_eq!(
-            file_hashes(&details()),
-            vec!["a".repeat(64), "b".repeat(64)],
-            "the same tone built for two pedals is two files, and either being \
-             present means that file is published"
+            tone.song.as_ref().map(|song| song.title.as_str()),
+            Some(song.summary.title.as_str())
         );
-    }
-
-    /// The site stores them lowercase, but a hash that came back shouting is
-    /// still the same hash, and comparing it as-is would say "not published".
-    #[test]
-    fn a_hash_is_matched_regardless_of_case() {
-        assert!(file_hashes(&details()).contains(&"b".repeat(64)));
+        assert_eq!(tone.file_sha256, Some("a".repeat(64)));
     }
 
     #[test]
-    fn an_implementation_with_no_file_contributes_nothing() {
-        let json = serde_json::json!({
-            "implementations": [
-                { "id": 1, "file_sha256": serde_json::Value::Null },
-                { "id": 2 },
-                { "id": 3, "file_sha256": "" },
-                { "id": 4, "file_sha256": "not-a-hash" },
-            ]
+    fn song_index_hashes_are_normalized_for_library_matching() {
+        let server = StubServer::start(vec![
+            (
+                200,
+                serde_json::json!({"songs": [song_json(12, "Wide Clean")]}),
+            ),
+            (200, serde_json::json!({"songs": []})),
+        ]);
+        let client = CloudClient::new(&server.base);
+        assert_eq!(
+            fetch_published(&client).unwrap(),
+            BTreeSet::from(["a".repeat(64)])
+        );
+        let requests = server.finish();
+        assert!(String::from_utf8_lossy(&requests[0]).starts_with("GET /api/v1/songs?page=1 "));
+    }
+
+    #[test]
+    fn search_sends_every_supported_song_facet() {
+        let server = StubServer::start(vec![(200, serde_json::json!({"songs": []}))]);
+        let client = CloudClient::new(&server.base);
+        client
+            .search_songs(&SongSearch {
+                q: Some("wide clean".into()),
+                artist: Some("7".into()),
+                device: Some("2".into()),
+                output_target: Some("frfr_pa".into()),
+                genre: Some("3".into()),
+                page: 4,
+            })
+            .unwrap();
+        let request = server.finish().pop().unwrap();
+        let request = String::from_utf8_lossy(&request);
+        assert!(request.starts_with("GET /api/v1/songs?"));
+        for pair in [
+            "q=wide%20clean",
+            "artist=7",
+            "device=2",
+            "output_target=frfr_pa",
+            "genre=3",
+            "page=4",
+        ] {
+            assert!(request.contains(pair), "missing {pair} in {request}");
+        }
+    }
+
+    #[test]
+    fn publishing_creates_the_song_then_adds_its_tone() {
+        let mut song = song_json(12, "Wide Clean");
+        song["tone_count"] = 0.into();
+        song["tones"] = serde_json::json!([]);
+        let server = StubServer::start(vec![(201, song), (201, tone_json(34, 12, "Wide Clean"))]);
+        let client = CloudClient::new(&server.base);
+        let published = client
+            .publish(
+                "session-token",
+                &PublishRequest {
+                    song: PublishSong::New(new_song()),
+                    tone: new_tone(),
+                },
+            )
+            .unwrap();
+        assert_eq!(published.summary.id, 34);
+
+        let requests = server.finish();
+        let song_request = String::from_utf8_lossy(&requests[0]);
+        assert!(song_request.starts_with("POST /api/v1/songs "));
+        let song_body = song_request.split("\r\n\r\n").nth(1).unwrap();
+        let song_body: serde_json::Value = serde_json::from_str(song_body).unwrap();
+        assert_eq!(song_body["song"]["kind"], "original");
+        assert_eq!(song_body["song"]["title"], "Wide Clean");
+
+        let tone_request = String::from_utf8_lossy(&requests[1]);
+        assert!(tone_request.starts_with("POST /api/v1/songs/12/tones "));
+        for field in [
+            "name=\"tone[name]\"",
+            "name=\"tone[preset]\"",
+            "name=\"tone[blocks][][name]\"",
+            "name=\"tone[parsed_metadata][models_used][]\"",
+        ] {
+            assert!(tone_request.contains(field), "missing {field}");
+        }
+        for song_only in ["tone[kind]", "tone[artist_name]", "tone[tags]"] {
+            assert!(!tone_request.contains(song_only), "sent {song_only}");
+        }
+    }
+
+    #[test]
+    fn adding_to_an_existing_song_skips_song_creation() {
+        let server = StubServer::start(vec![(201, tone_json(34, 12, "Wide Clean"))]);
+        let client = CloudClient::new(&server.base);
+        client
+            .publish(
+                "session-token",
+                &PublishRequest {
+                    song: PublishSong::Existing(12),
+                    tone: new_tone(),
+                },
+            )
+            .unwrap();
+        let requests = server.finish();
+        assert_eq!(requests.len(), 1);
+        assert!(String::from_utf8_lossy(&requests[0]).starts_with("POST /api/v1/songs/12/tones "));
+    }
+
+    #[test]
+    fn a_failed_tone_reports_that_the_song_remains() {
+        let mut song = song_json(12, "Wide Clean");
+        song["tone_count"] = 0.into();
+        song["tones"] = serde_json::json!([]);
+        let server = StubServer::start(vec![
+            (201, song),
+            (422, serde_json::json!({"errors": ["Name can't be blank"]})),
+        ]);
+        let client = CloudClient::new(&server.base);
+        let error = client
+            .publish(
+                "session-token",
+                &PublishRequest {
+                    song: PublishSong::New(new_song()),
+                    tone: new_tone(),
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            PublishError::CreatingTone {
+                song_id: 12,
+                created_song: Some(_),
+                ..
+            }
+        ));
+        assert!(error.to_string().contains("empty Song remains"));
+        assert_eq!(server.finish().len(), 2, "no third request is attempted");
+    }
+
+    #[test]
+    fn external_tones_return_their_source_without_fetching_it() {
+        let mut json = tone_json(34, 12, "Wide Clean");
+        json["source_kind"] = "external".into();
+        json["file_sha256"] = serde_json::Value::Null;
+        json["download"] = serde_json::json!({
+            "external": "https://line6.com/customtone/tone/34/"
         });
-        assert!(file_hashes(&json).is_empty());
-    }
-
-    #[test]
-    fn an_index_that_lists_hashes_needs_no_second_request() {
-        let tone = serde_json::json!({ "id": 1, "file_sha256s": ["A".repeat(64)] });
-        assert_eq!(summary_hashes(&tone), Some(vec!["a".repeat(64)]));
-    }
-
-    /// The distinction the fallback turns on: a tone with nothing published is
-    /// an empty list, and a site that does not carry them at all is no field.
-    #[test]
-    fn no_field_and_an_empty_field_mean_different_things() {
-        let older = serde_json::json!({ "id": 1 });
-        assert_eq!(summary_hashes(&older), None, "ask this one for its details");
-
-        let none_published = serde_json::json!({ "id": 1, "file_sha256s": [] });
+        let tone: ToneDetails = serde_json::from_value(json).unwrap();
+        let client = CloudClient::new("http://127.0.0.1:1");
         assert_eq!(
-            summary_hashes(&none_published),
-            Some(Vec::new()),
-            "this one has answered; asking again would be a wasted request"
+            client.download(&tone).unwrap(),
+            ToneDelivery::External("https://line6.com/customtone/tone/34/".into())
         );
     }
 
     #[test]
-    fn a_tone_with_no_implementations_is_not_an_error() {
-        assert!(file_hashes(&serde_json::json!({ "id": 1 })).is_empty());
-        assert!(file_hashes(&serde_json::json!({ "implementations": [] })).is_empty());
-    }
-
-    #[test]
-    fn a_duplicate_file_is_already_published_not_a_failed_publish() {
-        let body = serde_json::json!({
-            "errors": ["File sha256 has already been taken"]
-        });
-        assert_eq!(publish_answer(422, &body, "My tone").unwrap(), "My tone");
-    }
-
-    #[test]
-    fn a_real_publish_error_is_preserved() {
-        let body = serde_json::json!({ "errors": ["Name can't be blank"] });
+    fn native_tones_download_the_artifact_selected_from_the_song() {
+        let server = StubServer::start_raw(vec![(200, b"native preset".to_vec())]);
+        let mut json: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/cloud/tone-details.json"))
+                .unwrap();
+        json["download"] = serde_json::json!({"artifact": "/tones/456/artifact"});
+        let tone: ToneDetails = serde_json::from_value(json).unwrap();
+        let client = CloudClient::new(&server.base);
         assert_eq!(
-            publish_answer(422, &body, "My tone").unwrap_err(),
-            "Name can't be blank"
+            client.download(&tone).unwrap(),
+            ToneDelivery::Artifact(b"native preset".to_vec())
         );
+        let request = server.finish().pop().unwrap();
+        assert!(String::from_utf8_lossy(&request).starts_with("GET /tones/456/artifact "));
     }
 }

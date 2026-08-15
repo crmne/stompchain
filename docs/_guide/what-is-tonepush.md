@@ -34,7 +34,7 @@ If something misbehaves, [an issue](https://github.com/crmne/tonepush/issues) wi
 
 ## Where this is going
 
-The editor is part of [TonePush](https://tonepush.rocks), where players can find complete guitar tones, compare implementations for their hardware, and publish their own.
+The editor is part of [TonePush](https://tonepush.rocks). A **Song** there is the musical idea: either a catalog song by an Artist or an original. A **Tone** is one playable, device-native preset belonging to that Song. Players find the Song first, then choose the Tone made for their hardware, or publish both from the editor.
 
 ## Prior art
 

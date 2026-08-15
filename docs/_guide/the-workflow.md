@@ -44,9 +44,13 @@ A setlist is never edited in place. That looks like a limitation and is not: a s
 
 This is also why deleting a tone from your library never breaks a setlist. If a setlist still plays it, the tone is kept for that setlist even after it leaves your library.
 
-## Sending a tone to the web
+## Publishing a Song and Tone
 
-A tone in your library can be written out for [TonePush](https://tonepush.rocks) with **Export for the web**. You get two files: the tone as Line 6's own `.hlx`, which the site reads to work out what the tone is, and a `.json` of the details only you know, in the fields the site expects.
+On [TonePush](https://tonepush.rocks), a **Song** is the musical idea: either a catalog song by an Artist or an original. A **Tone** is one playable, device-native preset belonging to that Song. Publishing from the library creates the Song first and then attaches the `.hlx` as its first Tone. If adding the Tone fails, the editor says that the empty Song remains instead of pretending the two requests were one transaction.
+
+**Export for the web** writes the same information without publishing it: the Tone as Line 6's own `.hlx`, plus a `.json` manifest with separate `song` and `tone` objects. Song facts include its title, kind, Artist, description and tags; Tone facts include the preset name, part, guitar, tuning and device-specific description.
+
+Song search results are musical ideas, not files that can be installed. Open a Song and choose one of its Tones for your device before downloading or installing it. An externally indexed Tone opens its original source; a native Tone downloads its hosted artifact.
 
 ## Where everything is
 

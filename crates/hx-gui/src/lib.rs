@@ -8,7 +8,7 @@ use std::time::Duration;
 use egui::RichText;
 use hx_catalog::{Catalog, Kind};
 
-mod cloud;
+pub mod cloud;
 mod config;
 mod eq;
 /// Public so the desktop entry point can bring an older library across before
@@ -76,7 +76,7 @@ struct Signing {
 struct PublishingJob {
     hash: String,
     name: String,
-    answer: std::sync::mpsc::Receiver<Result<String, String>>,
+    answer: std::sync::mpsc::Receiver<Result<cloud::ToneDetails, cloud::PublishError>>,
 }
 
 /// A tone kept under a name another tone already answers to: the bytes (in the
@@ -366,7 +366,7 @@ pub struct App {
     /// release's tag once it has. Both stay `None` when there is nothing to
     /// say, which is the common case and the quiet one.
     update_check: Option<std::sync::mpsc::Receiver<String>>,
-    /// What the tone browser already has, by the hash of the file it was given,
+    /// What TonePush already has, by the hash of each published Tone artifact,
     /// and the answer while it is still coming. `None` means the site has not
     /// answered; `Some(empty)` is a real answer saying nothing is published.
     cloud_check: Option<std::sync::mpsc::Receiver<std::collections::BTreeSet<String>>>,
@@ -494,10 +494,10 @@ impl LibColumn {
                         theme::Icon::Cloud,
                         cloud,
                         match cloud {
-                            theme::Sync::Same => "Published on the tone browser. Open it",
-                            theme::Sync::Absent => "Not on the tone browser. Publish it",
+                            theme::Sync::Same => "Published on TonePush. Open the Song catalog",
+                            theme::Sync::Absent => "Not on TonePush. Publish its Song and Tone",
                             theme::Sync::Differs => {
-                                "A different version is published. Publish this one"
+                                "A different Tone artifact is published. Publish this one"
                             }
                             theme::Sync::Working => "Publishing…",
                             theme::Sync::Unknown => "",
@@ -3337,9 +3337,9 @@ impl App {
                             .map(|_| portable.clone())
                     });
                     match known {
-                        Some(portable) => {
-                            let url = cloud::tone_url(&portable);
-                            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                        Some(_) => {
+                            ui.ctx()
+                                .open_url(egui::OpenUrl::new_tab(cloud::song_catalog_url()));
                         }
                         None => self.start_publishing(entry, ui.ctx()),
                     }
@@ -3460,7 +3460,7 @@ impl App {
                         self.config.sign_out();
                         ui.close();
                     }
-                    if ui.button("Open the tone browser").clicked() {
+                    if ui.button("Open TonePush").clicked() {
                         ui.ctx().open_url(egui::OpenUrl::new_tab(cloud::site()));
                         ui.close();
                     }
@@ -3469,7 +3469,7 @@ impl App {
             None => {
                 if ui
                     .small_button("Sign in")
-                    .on_hover_text("to publish tones to the tone browser")
+                    .on_hover_text("to publish Songs and Tones")
                     .clicked()
                 {
                     self.start_signing_in(ui.ctx());
@@ -3515,12 +3515,11 @@ impl App {
         });
     }
 
-    /// Put one tone on the tone browser.
+    /// Publish this local Tone under its Song.
     ///
-    /// The file that goes up is the portable copy, because that is the one
-    /// another rig can play and the one whose hash the library already matches
-    /// against. What is said about it is what the row says: a tone with no name
-    /// or no artist is not published under invented ones.
+    /// A new Song is created first, then the portable preset is attached as its
+    /// first device-native Tone. These remain two calls in the cloud client so
+    /// a failed second call can truthfully report the empty Song left behind.
     fn start_publishing(&mut self, entry: usize, ctx: &egui::Context) {
         let Some(token) = self.config.token.clone() else {
             return self.problem("sign in first, and then the cloud will publish".into());
@@ -3537,26 +3536,127 @@ impl App {
         let Ok(hlx) = std::fs::read(&path) else {
             return self.problem(format!("{} could not be read", entry.name));
         };
+        let catalog_song = !entry.meta.song.trim().is_empty();
+        if catalog_song && entry.meta.artist.trim().is_empty() {
+            return self.problem(format!(
+                "{} names a catalog Song but has no Artist",
+                entry.name
+            ));
+        }
         let hash = entry.hash.clone();
         let name = entry.name.clone();
-        let tone = cloud::Publishing {
-            name: entry.meta.name.clone(),
-            artist: entry.meta.artist.clone(),
-            song: entry.meta.song.clone(),
-            part: entry.meta.part.clone(),
-            description: entry.meta.description.clone(),
-            creator_name: self.config.account.clone().unwrap_or_default(),
-            hlx,
-            filename: path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| format!("{}.hlx", entry.name)),
+        let present = |value: &str| {
+            let value = value.trim();
+            (!value.is_empty()).then(|| value.to_owned())
+        };
+        let inspected = serde_json::from_slice::<serde_json::Value>(&hlx)
+            .ok()
+            .and_then(|document| {
+                self.catalog
+                    .as_ref()
+                    .map(|catalog| hx_catalog::inspect(&document, catalog))
+            });
+        let blocks = inspected
+            .as_ref()
+            .map(|tone| {
+                tone.blocks
+                    .iter()
+                    .map(|block| {
+                        serde_json::json!({
+                            "name": block.model_name,
+                            "category": block.category,
+                            "enabled": block.enabled,
+                            "path": block.path,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let parsed_metadata = inspected.as_ref().map_or(serde_json::Value::Null, |tone| {
+            serde_json::json!({
+                "models_used": tone.models_used,
+                "skipped": tone.skipped,
+            })
+        });
+        let chain_content = inspected.as_ref().map(|tone| {
+            match tone.chain_content {
+                hx_catalog::ChainContent::FullRig => "full_rig",
+                hx_catalog::ChainContent::AmpAndCab => "amp_and_cab",
+                hx_catalog::ChainContent::AmpOnly => "amp_only",
+                hx_catalog::ChainContent::EffectsOnly => "effects_only",
+            }
+            .to_owned()
+        });
+        let output_target = inspected.as_ref().map(|tone| {
+            match tone.output_target_guess {
+                hx_catalog::OutputTarget::FrfrPa => "frfr_pa",
+                hx_catalog::OutputTarget::GuitarCabOrDi => "guitar_cab",
+            }
+            .to_owned()
+        });
+        let character = library::character_key(&entry.meta.character).map(str::to_owned);
+        let request = cloud::PublishRequest {
+            song: cloud::PublishSong::New(cloud::CreateSongRequest {
+                creator_name: self.config.account.clone().unwrap_or_default(),
+                song: cloud::NewSong {
+                    title: if catalog_song {
+                        entry.meta.song.trim().to_owned()
+                    } else {
+                        entry.name.clone()
+                    },
+                    kind: if catalog_song {
+                        cloud::SongKind::Song
+                    } else {
+                        cloud::SongKind::Original
+                    },
+                    artist_name: catalog_song.then(|| entry.meta.artist.trim().to_owned()),
+                    description: present(&entry.meta.description),
+                    tags: entry.meta.tags.clone(),
+                    genre_ids: Vec::new(),
+                },
+            }),
+            tone: cloud::CreateToneRequest {
+                creator_name: self.config.account.clone().unwrap_or_default(),
+                tone: cloud::NewTone {
+                    name: entry.name.clone(),
+                    description: present(&entry.meta.tone_description),
+                    part: present(&entry.meta.part),
+                    tuning: present(&entry.meta.tuning),
+                    guitar_type: present(&entry.meta.guitar),
+                    pickup_type: library::pickup_type_key(&entry.meta.pickup_type)
+                        .map(str::to_owned),
+                    pickup_electronics: library::pickup_electronics_key(
+                        &entry.meta.pickup_electronics,
+                    )
+                    .map(str::to_owned),
+                    device_id: None,
+                    device_name: Some(if self.device.is_empty() {
+                        "HX Stomp".to_owned()
+                    } else {
+                        self.device.clone()
+                    }),
+                    firmware_version: present(&self.firmware),
+                    parser_version: Some(update::VERSION.to_owned()),
+                    output_target,
+                    chain_content,
+                    character,
+                    blocks,
+                    parsed_metadata,
+                    preset: Some(cloud::PresetUpload {
+                        filename: path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| format!("{}.hlx", entry.name)),
+                        bytes: hlx,
+                    }),
+                },
+            },
         };
 
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(cloud::publish(&token, &tone));
+            let _ = tx.send(cloud::publish(&token, &request));
             ctx.request_repaint();
         });
         self.status.clear();
@@ -3577,15 +3677,17 @@ impl App {
             Ok(answer) => answer,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                Err("publishing stopped without an answer".to_owned())
+                self.publishing = None;
+                self.problem("publishing stopped without an answer".to_owned());
+                return;
             }
         };
         self.publishing = None;
         match answer {
-            Ok(name) => {
-                // The POST is authoritative, including the duplicate-file
-                // answer. Fill this row immediately instead of waiting for a
-                // full public-index walk to reach the same hash.
+            Ok(tone) => {
+                // The Tone POST is authoritative. Fill this row immediately
+                // instead of waiting for a full Song-index walk to reach the
+                // same hash.
                 let portable = self.portable_hashes.get(&hash).cloned().or_else(|| {
                     let found = library::portable_hash(&hash)?;
                     self.portable_hashes.insert(hash.clone(), found.clone());
@@ -3595,10 +3697,10 @@ impl App {
                     self.cloud_files.get_or_insert_default().insert(portable);
                 }
                 self.status.clear();
-                self.note(format!("{name} is on the tone browser"));
+                self.note(format!("{} is published as a Tone", tone.summary.name));
                 self.cloud_check = Some(cloud::published());
             }
-            Err(why) => self.problem(why),
+            Err(why) => self.problem(why.to_string()),
         }
     }
 
@@ -3785,8 +3887,8 @@ impl App {
         }
     }
 
-    /// The right inspector: the selected tone's fields, saved as they are
-    /// edited. The field set is the Tones web schema, so publishing is a copy.
+    /// The right inspector: the selected local Tone and the Song it realizes.
+    /// The labels keep musical-idea facts distinct from device-preset facts.
     fn library_inspector(&mut self, ui: &mut egui::Ui) {
         fn combo(ui: &mut egui::Ui, id: &str, value: &mut String, options: &[&str]) {
             egui::ComboBox::from_id_salt(id)
@@ -3848,16 +3950,16 @@ impl App {
                     .num_columns(2)
                     .spacing([8.0, 6.0])
                     .show(ui, |ui| {
-                        ui.label("Artist");
+                        ui.label("Song artist");
                         ui.text_edit_singleline(&mut self.lib_draft.artist);
                         ui.end_row();
-                        ui.label("Song");
+                        ui.label("Song title");
                         ui.text_edit_singleline(&mut self.lib_draft.song);
                         ui.end_row();
-                        ui.label("Part");
+                        ui.label("Tone part");
                         ui.text_edit_singleline(&mut self.lib_draft.part);
                         ui.end_row();
-                        ui.label("Character");
+                        ui.label("Tone character");
                         combo(
                             ui,
                             "char",
@@ -3865,13 +3967,13 @@ impl App {
                             &["clean", "drive", "hi-gain", "fuzz", "other"],
                         );
                         ui.end_row();
-                        ui.label("Genres");
+                        ui.label("Song genres");
                         ui.text_edit_singleline(&mut self.lib_genres_buf);
                         ui.end_row();
-                        ui.label("Guitar");
+                        ui.label("Tone guitar");
                         ui.text_edit_singleline(&mut self.lib_draft.guitar);
                         ui.end_row();
-                        ui.label("Pickups");
+                        ui.label("Tone pickups");
                         combo(
                             ui,
                             "pt",
@@ -3879,7 +3981,7 @@ impl App {
                             &["single-coil", "humbucker", "P90"],
                         );
                         ui.end_row();
-                        ui.label("Electronics");
+                        ui.label("Tone electronics");
                         combo(
                             ui,
                             "pe",
@@ -3887,10 +3989,10 @@ impl App {
                             &["passive", "active"],
                         );
                         ui.end_row();
-                        ui.label("Tuning");
+                        ui.label("Tone tuning");
                         ui.text_edit_singleline(&mut self.lib_draft.tuning);
                         ui.end_row();
-                        ui.label("Gain");
+                        ui.label("Tone gain");
                         ui.text_edit_singleline(&mut self.lib_draft.gain);
                         ui.end_row();
                     });
@@ -3902,7 +4004,7 @@ impl App {
                     .collect();
 
                 ui.add_space(6.0);
-                ui.label(RichText::new("Description").small().color(theme::DIM));
+                ui.label(RichText::new("Song description").small().color(theme::DIM));
                 ui.add(
                     egui::TextEdit::multiline(&mut self.lib_draft.description)
                         .desired_rows(2)
@@ -3910,7 +4012,15 @@ impl App {
                 );
 
                 ui.add_space(6.0);
-                ui.label(RichText::new("Tags").small().color(theme::DIM));
+                ui.label(RichText::new("Tone description").small().color(theme::DIM));
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.lib_draft.tone_description)
+                        .desired_rows(2)
+                        .desired_width(f32::INFINITY),
+                );
+
+                ui.add_space(6.0);
+                ui.label(RichText::new("Song tags").small().color(theme::DIM));
                 let mut remove = None;
                 ui.horizontal_wrapped(|ui| {
                     for (ti, tag) in self.lib_draft.tags.iter().enumerate() {
@@ -3992,7 +4102,7 @@ impl App {
         }
     }
 
-    /// Write a library tone out in the shape the Tones site takes.
+    /// Write a library Tone and its Song facts in the cloud contract's shape.
     ///
     /// Two files, not one: the `.hlx` the site parses for what the tone *is* -
     /// through the same inspector the site runs, so the two cannot drift - and
