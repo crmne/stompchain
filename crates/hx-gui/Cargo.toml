@@ -19,27 +19,26 @@ serde_json = "1"
 # tree builds for macOS, Windows, Linux and Android.
 # The winit backends are named features from 0.30 on: with default features off
 # and neither named, winit compiles for no platform at all and says so.
-eframe = { version = "0.30", default-features = false, features = [
+eframe = { version = "0.36", default-features = false, features = [
     "glow",
     "default_fonts",
     "wayland",
     "x11",
 ] }
-egui = "0.30"
-egui_extras = { version = "0.30", features = ["image", "file", "svg"] }
+egui = "0.36"
+egui_extras = { version = "0.36", features = ["image", "file", "svg"] }
 # Virtualised rows and sticky columns for the library table. egui_extras'
 # TableBuilder builds every row whether or not it is on screen, which a library
 # of a few thousand tones cannot afford.
-egui_table = "0.2"
+egui_table = "0.10"
 image = { version = "0.25", default-features = false, features = ["png"] }
 # Native file dialogs, so import and export use the system picker rather than a
 # path typed into a text box.
-# The async-std flavour runs its own reactor, which the synchronous dialog
-# calls need; the tokio flavour panics with "no reactor running" the moment
-# any dialog opens outside a tokio runtime, which is everywhere in this app.
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
+# The portal feature includes rfd's synchronous pollster bridge, so dialogs do
+# not depend on an application-wide async runtime.
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 ureq = { version = "3.4.0", default-features = false, features = ["rustls", "platform-verifier"] }
-sha2 = "0.10"
+sha2 = "0.11"
 
 [lib]
 name = "hx_gui"

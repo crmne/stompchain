@@ -356,7 +356,7 @@ impl egui_table::TableDelegate for Delegate<'_> {
             if hit.hovered() {
                 ui.painter().rect_filled(
                     rect,
-                    egui::Rounding::same(3.0),
+                    egui::CornerRadius::same(3),
                     egui::Color32::from_rgb(0x25, 0x29, 0x31),
                 );
             }
@@ -393,7 +393,7 @@ impl egui_table::TableDelegate for Delegate<'_> {
         };
         if let Some(fill) = background {
             ui.painter()
-                .rect_filled(ui.max_rect(), egui::Rounding::ZERO, fill);
+                .rect_filled(ui.max_rect(), egui::CornerRadius::ZERO, fill);
         }
 
         // Every cell is inset from its column's edge. Without it the text sits
@@ -421,7 +421,7 @@ impl egui_table::TableDelegate for Delegate<'_> {
             let mut shown = egui::TextEdit::singleline(&mut self.grid.draft)
                 .id(self.id.with(("editing", row, col)))
                 .desired_width(f32::INFINITY)
-                .frame(false)
+                .frame(egui::Frame::NONE)
                 .show(ui);
             let field = shown.response;
             if !field.has_focus() && !field.lost_focus() {
@@ -610,7 +610,7 @@ impl egui_table::TableDelegate for Delegate<'_> {
                 for (n, item) in items.iter().enumerate() {
                     if ui.button(item).clicked() {
                         self.did.chose = Some((row, n));
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
             });

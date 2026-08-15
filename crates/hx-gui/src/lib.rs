@@ -20,7 +20,7 @@ mod theme;
 mod update;
 mod wav;
 
-pub use session::{spawn, ApplyBlock, Cmd, Evt};
+pub use session::{spawn, spawn_repainting, ApplyBlock, Cmd, Evt};
 
 /// A tone file opened for a look before anything touches the pedal. It is
 /// drawn by the same renderer as the loaded chain - one renderer, and the
@@ -1002,40 +1002,43 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         self.drain_events();
-        // The device pushes front-panel activity asynchronously, so repaint on
-        // a timer rather than only on input.
-        ctx.request_repaint_after(Duration::from_millis(150));
+        // Device events wake the UI directly. This slow fallback is for the
+        // other background receivers (resource extraction and cloud work), so
+        // an otherwise idle editor does not rebuild the whole immediate-mode
+        // interface several times per second.
+        ctx.request_repaint_after(Duration::from_secs(1));
 
-        self.shortcuts(ctx);
+        self.shortcuts(&ctx);
         self.finish_extraction();
         // Both arrive from a thread and neither belongs to any one panel: one
         // is a person approving a sign-in somewhere else, the other is the site
         // taking a tone.
         self.settle_signing_in();
         self.settle_publishing();
-        self.dropped_files(ctx);
-        self.top_bar(ctx);
-        self.status_bar(ctx);
+        self.dropped_files(&ctx);
+        self.top_bar(ui);
+        self.status_bar(ui);
         // Before the preset list on purpose: an egui panel claims its edge
         // from what is left, so the library has to be laid out first to run the
         // full width of the window rather than stopping at the preset list.
-        self.library_strip(ctx);
-        self.preset_list(ctx);
-        self.activity(ctx);
-        self.signal_chain(ctx);
+        self.library_strip(ui);
+        self.preset_list(ui);
+        self.activity(ui);
+        self.signal_chain(ui);
         // The shelf sits beside the pedal being edited rather than under it,
         // so choosing a different model is plainly a secondary action.
-        self.shelf(ctx);
-        self.editor(ctx);
-        self.insert_picker(ctx);
-        self.device_window(ctx);
-        self.eq_window(ctx);
-        self.preferences_window(ctx);
-        self.preview_window(ctx);
+        self.shelf(ui);
+        self.editor(ui);
+        self.insert_picker(&ctx);
+        self.device_window(&ctx);
+        self.eq_window(&ctx);
+        self.preferences_window(&ctx);
+        self.preview_window(&ctx);
         // Over everything: the one step the app cannot work without.
-        self.onboarding_modal(ctx);
+        self.onboarding_modal(&ctx);
     }
 }
 
@@ -1046,10 +1049,11 @@ impl App {
     /// log toggle - an inventory of the program rather than of the music. The
     /// preset actions moved to the preset list they act on, the device moved
     /// to a status bar at the bottom, and what is left is the preset itself.
-    fn top_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("top")
-            .exact_height(46.0)
-            .show(ctx, |ui| {
+    fn top_bar(&mut self, root_ui: &mut egui::Ui) {
+        let ctx = root_ui.ctx().clone();
+        egui::Panel::top("top")
+            .exact_size(46.0)
+            .show(root_ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     // What preset, which of its three states, and what you can
                     // do to it - in that order, because that is the order the
@@ -1068,7 +1072,7 @@ impl App {
                     });
                 });
             });
-        self.confirm_clear_window(ctx);
+        self.confirm_clear_window(&ctx);
     }
 
     /// What you can do to the loaded preset, as drawn actions beside its name.
@@ -1167,10 +1171,10 @@ impl App {
     }
 
     /// The device, along the bottom, where a status bar belongs.
-    fn status_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("status")
-            .exact_height(28.0)
-            .show(ctx, |ui| {
+    fn status_bar(&mut self, root_ui: &mut egui::Ui) {
+        egui::Panel::bottom("status")
+            .exact_size(28.0)
+            .show(root_ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.add_space(8.0);
                     let colour = match self.connection {
@@ -1252,7 +1256,7 @@ impl App {
                             }
                         }
                         Connection::Connecting => {
-                            ui.spinner();
+                            theme::spinner(ui);
                         }
                         Connection::Offline => {
                             if ui
@@ -1618,14 +1622,14 @@ impl App {
             return;
         }
         if self.loading {
-            ui.spinner();
+            theme::spinner(ui);
         } else if self
             .busy_since
             .is_some_and(|since| since.elapsed() > Duration::from_millis(150))
         {
             // An edit is on its way to the pedal. Only conversations that
             // last are worth announcing - a flicker per knob tick is noise.
-            ui.spinner().on_hover_text("writing to the pedal…");
+            theme::spinner(ui).on_hover_text("writing to the pedal…");
         }
         // The dot keeps its place whether or not it is painted, so the name
         // does not jump sideways the first time a knob is turned.
@@ -1817,14 +1821,15 @@ impl App {
         }
     }
 
-    fn preset_list(&mut self, ctx: &egui::Context) {
+    fn preset_list(&mut self, root_ui: &mut egui::Ui) {
+        let ctx = root_ui.ctx().clone();
         let mut capture = false;
         let mut cancel_send = false;
         let mut picked: Option<i64> = None;
-        egui::SidePanel::left("presets")
-            .default_width(216.0)
-            .width_range(150.0..=340.0)
-            .show(ctx, |ui| {
+        egui::Panel::left("presets")
+            .default_size(216.0)
+            .size_range(150.0..=340.0)
+            .show(root_ui, |ui| {
                 ui.add_space(4.0);
                 // The actions sit on the list they act on, the way HX Edit
                 // puts COPY / PASTE / IMPORT / EXPORT on its preset header. A
@@ -2065,11 +2070,11 @@ impl App {
                                     row.context_menu(|ui| {
                                         if ui.button("Rename").clicked() {
                                             rename_start = Some((index, name.clone()));
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                         if ui.button("Copy").clicked() {
                                             menu_action = Some((index, RowAction::Copy));
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                         let can_paste = self.clipboard.is_some();
                                         if ui
@@ -2077,20 +2082,20 @@ impl App {
                                             .clicked()
                                         {
                                             menu_action = Some((index, RowAction::Paste));
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                         ui.separator();
                                         if ui.button("Save to file…").clicked() {
                                             menu_action = Some((index, RowAction::Export));
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                         if ui.button("Load from file…").clicked() {
                                             menu_action = Some((index, RowAction::Import));
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                         if ui.button("Keep in library").clicked() {
                                             menu_action = Some((index, RowAction::Keep));
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                         ui.separator();
                                         // Last, alone, below a line: it empties
@@ -2098,7 +2103,7 @@ impl App {
                                         // reach it. It asks before it does.
                                         if ui.button("Remove").clicked() {
                                             menu_action = Some((index, RowAction::Remove));
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                     });
                                 }
@@ -2634,13 +2639,14 @@ impl App {
     /// the other half, not a drawer that belongs to the editor. Drag its edge
     /// to give it more or less room; it does not close, the same way the pedal
     /// does not close.
-    fn library_strip(&mut self, ctx: &egui::Context) {
+    fn library_strip(&mut self, root_ui: &mut egui::Ui) {
+        let ctx = root_ui.ctx().clone();
         let mut capture = false;
-        egui::TopBottomPanel::bottom("library")
+        egui::Panel::bottom("library")
             .resizable(true)
-            .default_height(260.0)
-            .height_range(96.0..=680.0)
-            .show(ctx, |ui| {
+            .default_size(260.0)
+            .size_range(96.0..=680.0)
+            .show(root_ui, |ui| {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("LIBRARY").small().color(theme::DIM));
@@ -2686,19 +2692,19 @@ impl App {
                 ui.separator();
                 match self.lib_showing {
                     LibraryView::Tones => {
-                        egui::SidePanel::left("lib-tags")
+                        egui::Panel::left("lib-tags")
                             .resizable(false)
-                            .default_width(150.0)
-                            .show_inside(ui, |ui| {
+                            .default_size(150.0)
+                            .show(ui, |ui| {
                                 egui::ScrollArea::vertical()
                                     .auto_shrink([false, false])
                                     .id_salt("lib-tags-scroll")
                                     .show(ui, |ui| self.library_tags_rail(ui));
                             });
-                        egui::SidePanel::right("lib-inspector")
+                        egui::Panel::right("lib-inspector")
                             .resizable(true)
-                            .default_width(310.0)
-                            .show_inside(ui, |ui| {
+                            .default_size(310.0)
+                            .show(ui, |ui| {
                                 // Scrolled, not grown. Without this the
                                 // inspector's field stack decided the panel's
                                 // height, which is how the library ended up
@@ -2709,13 +2715,13 @@ impl App {
                                     .id_salt("lib-inspector-scroll")
                                     .show(ui, |ui| self.library_inspector(ui));
                             });
-                        egui::CentralPanel::default().show_inside(ui, |ui| self.library_table(ui));
+                        egui::CentralPanel::default().show(ui, |ui| self.library_table(ui));
                     }
                     // Setlists on the left, what is in the chosen one on the
                     // right, drawn by the same table the tones use. A setlist
                     // is a list of tones, so it should look like one.
                     LibraryView::Setlists => {
-                        egui::SidePanel::left("lib-setlists")
+                        egui::Panel::left("lib-setlists")
                             .resizable(true)
                             // A floor taken from the table it holds, not
                             // guessed. Without one the panel could be dragged
@@ -2723,13 +2729,13 @@ impl App {
                             // about a hundred pixels, where the headers sat on
                             // top of each other and "Put this setlist on the
                             // pedal" wrapped a word to a line.
-                            .min_width(table::width_wanted(&setlist_rail_columns()))
-                            .default_width(340.0)
+                            .min_size(table::width_wanted(&setlist_rail_columns()))
+                            .default_size(340.0)
                             // Not wrapped in a scroll area: the table does its
                             // own scrolling, and a virtualised table inside a
                             // scroll is two scrollbars fighting over one wheel.
-                            .show_inside(ui, |ui| self.setlist_rail(ui));
-                        egui::CentralPanel::default().show_inside(ui, |ui| self.setlist_slots(ui));
+                            .show(ui, |ui| self.setlist_rail(ui));
+                        egui::CentralPanel::default().show(ui, |ui| self.setlist_slots(ui));
                     }
                 }
             });
@@ -2737,10 +2743,10 @@ impl App {
             self.note("reading the whole setlist off the pedal".to_owned());
             self.send(Cmd::CaptureSetlist);
         }
-        self.confirm_push_window(ctx);
-        self.confirm_delete_window(ctx);
-        self.name_clash_window(ctx);
-        self.confirm_switch_window(ctx);
+        self.confirm_push_window(&ctx);
+        self.confirm_delete_window(&ctx);
+        self.name_clash_window(&ctx);
+        self.confirm_switch_window(&ctx);
     }
 
     /// Every setlist in the library, down the left, as the table everything
@@ -3399,7 +3405,7 @@ impl App {
                 "approve it at {}\nthen this signs itself in",
                 signing.url
             ));
-            ui.spinner();
+            theme::spinner(ui);
             if ui.small_button("Cancel").clicked() {
                 self.signing_in = None;
             }
@@ -3411,11 +3417,11 @@ impl App {
                 ui.menu_button(RichText::new(account).small(), |ui| {
                     if ui.button("Sign out").clicked() {
                         self.config.sign_out();
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui.button("Open the tone browser").clicked() {
                         ui.ctx().open_url(egui::OpenUrl::new_tab(cloud::site()));
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
             }
@@ -4692,7 +4698,7 @@ impl App {
         let (rect, _) =
             ui.allocate_exact_size(egui::Vec2::new(width, HEIGHT), egui::Sense::hover());
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, egui::Rounding::same(4.0), theme::BACKGROUND);
+        painter.rect_filled(rect, egui::CornerRadius::same(4), theme::BACKGROUND);
 
         let x_of = |hz: f32| rect.left() + eq::position(hz) * rect.width();
         let y_of = |db: f32| rect.center().y - (db / RANGE_DB) * (rect.height() / 2.0);
@@ -4801,7 +4807,7 @@ impl App {
             // Scrolling over a band is how every EQ sets Q, and it saves the
             // panel a third handle per band.
             if response.hovered() {
-                let scroll = ui.input(|i| i.raw_scroll_delta.y);
+                let scroll = ui.input(|i| i.smooth_scroll_delta().y);
                 if scroll != 0.0 {
                     let q = (band.q * (1.0 + scroll.signum() * 0.12)).clamp(0.1, 10.0);
                     writes.push((q_id, q));
@@ -5059,7 +5065,7 @@ impl App {
             i.raw
                 .dropped_files
                 .iter()
-                .filter_map(|f| f.path.clone())
+                .map(|f| f.path().to_owned())
                 .collect()
         });
         for path in dropped {
@@ -5342,7 +5348,7 @@ impl App {
         // The window opens at the chain's full width, and narrower only when
         // the screen cannot hold it - then the chain scrolls inside.
         let natural = self.chain_width(&preview.layout) + 24.0;
-        let width = natural.min(ctx.screen_rect().width() - 48.0);
+        let width = natural.min(ctx.content_rect().width() - 48.0);
         let mut open = true;
         let mut load = false;
         let mut cancel = false;
@@ -5474,13 +5480,13 @@ impl App {
         }
     }
 
-    fn activity(&mut self, ctx: &egui::Context) {
+    fn activity(&mut self, root_ui: &mut egui::Ui) {
         if !self.show_activity {
             return;
         }
-        egui::TopBottomPanel::bottom("activity")
-            .exact_height(100.0)
-            .show(ctx, |ui| {
+        egui::Panel::bottom("activity")
+            .exact_size(100.0)
+            .show(root_ui, |ui| {
                 ui.label(RichText::new("DEVICE ACTIVITY").small().color(theme::DIM));
                 egui::ScrollArea::vertical()
                     .stick_to_bottom(true)
@@ -5508,7 +5514,7 @@ impl App {
     ///
     /// The number of lanes is not fixed at two: Helix and Helix LT carry two
     /// independent signal paths, so a preset that splits both has four.
-    fn signal_chain(&mut self, ctx: &egui::Context) {
+    fn signal_chain(&mut self, root_ui: &mut egui::Ui) {
         let mut height = 40.0;
         for path in &self.layout.paths {
             height += theme::BLOCK_HEIGHT;
@@ -5521,15 +5527,15 @@ impl App {
             }
         }
 
-        egui::TopBottomPanel::top("chain")
-            .exact_height(height.clamp(126.0, ctx.screen_rect().height() * 0.55))
-            .show(ctx, |ui| {
+        egui::Panel::top("chain")
+            .exact_size(height.clamp(126.0, root_ui.ctx().content_rect().height() * 0.55))
+            .show(root_ui, |ui| {
                 ui.add_space(6.0);
                 if self.chain.is_empty() {
                     ui.centered_and_justified(|ui| {
                         if self.loading {
                             ui.horizontal(|ui| {
-                                ui.spinner();
+                                theme::spinner(ui);
                                 ui.label(RichText::new("loading…").color(theme::DIM));
                             });
                         } else {
@@ -5545,7 +5551,10 @@ impl App {
                 // click - and it would fight dragging a block along the chain,
                 // which is the same gesture.
                 egui::ScrollArea::both()
-                    .drag_to_scroll(false)
+                    .scroll_source(egui::scroll_area::ScrollSource {
+                        drag: egui::scroll_area::DragScroll::Never,
+                        ..Default::default()
+                    })
                     .show(ui, |ui| {
                         self.gap_rects.clear();
                         self.block_rects.clear();
@@ -5988,19 +5997,19 @@ impl App {
                 hit.context_menu(|ui| {
                     if ui.button("Copy").clicked() {
                         action = Some(RowAction::Copy);
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui
                         .add_enabled(copied.is_some(), egui::Button::new("Paste"))
                         .clicked()
                     {
                         action = Some(RowAction::Paste);
-                        ui.close_menu();
+                        ui.close();
                     }
                     ui.separator();
                     if ui.button("Remove").clicked() {
                         action = Some(RowAction::Remove);
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
                 match action {
@@ -6130,8 +6139,8 @@ impl App {
     /// different pedal look as important as adjusting the one you have. The
     /// pedal is the work; the shelf is a side trip, so it is a panel of its
     /// own beside this one.
-    fn editor(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default().show(ctx, |ui| {
+    fn editor(&mut self, root_ui: &mut egui::Ui) {
+        egui::CentralPanel::default().show(root_ui, |ui| {
             let Some(block) = self.chain.get(self.selected).cloned() else {
                 ui.centered_and_justified(|ui| {
                     ui.label(RichText::new("Connect a device to begin").color(theme::DIM));
@@ -6206,7 +6215,7 @@ impl App {
         if !self.show_onboarding {
             return;
         }
-        let screen = ctx.screen_rect();
+        let screen = ctx.content_rect();
         egui::Area::new(egui::Id::new("onboarding-modal"))
             .order(egui::Order::Foreground)
             .fixed_pos(screen.min)
@@ -6227,7 +6236,7 @@ impl App {
                         .max_rect(card)
                         .layout(egui::Layout::top_down(egui::Align::Min)),
                 );
-                egui::Frame::popup(&ctx.style())
+                egui::Frame::popup(ui.style())
                     .inner_margin(28.0)
                     .show(&mut card_ui, |ui| {
                         ui.set_width(card.width() - 56.0);
@@ -6341,7 +6350,7 @@ impl App {
                             ui.add_space(10.0);
                             if self.extracting.is_some() {
                                 ui.horizontal(|ui| {
-                                    ui.spinner();
+                                    theme::spinner(ui);
                                     if let Some(status) = &self.onboarding_status {
                                         ui.label(RichText::new(status).color(theme::DIM));
                                     }
@@ -6993,7 +7002,7 @@ impl App {
     /// [`Self::insert_picker`] - because choosing a pedal in a panel on the
     /// far side of the window, after arming a mode there, was a lot of
     /// ceremony for "put a delay here".
-    fn shelf(&mut self, ctx: &egui::Context) {
+    fn shelf(&mut self, root_ui: &mut egui::Ui) {
         let Some(block) = self.chain.get(self.selected).cloned() else {
             return;
         };
@@ -7012,10 +7021,10 @@ impl App {
             .map(|m| m.id.clone());
 
         let mut picked = None;
-        egui::SidePanel::right("shelf")
-            .default_width(430.0)
-            .width_range(200.0..=620.0)
-            .show(ctx, |ui| {
+        egui::Panel::right("shelf")
+            .default_size(430.0)
+            .size_range(200.0..=620.0)
+            .show(root_ui, |ui| {
                 let App {
                     catalog,
                     search,
@@ -7087,7 +7096,7 @@ impl App {
             .fixed_pos(pos)
             .constrain(true)
             .show(ctx, |ui| {
-                egui::Frame::popup(&ctx.style())
+                egui::Frame::popup(ui.style())
                     .inner_margin(10.0)
                     .show(ui, |ui| {
                         ui.set_width(520.0);
@@ -7337,8 +7346,9 @@ impl App {
                             let rect = egui::Rect::from_min_size(before, cell);
                             ui.painter().rect_stroke(
                                 rect.shrink(1.0),
-                                egui::Rounding::same(4.0),
+                                egui::CornerRadius::same(4),
                                 egui::Stroke::new(1.0_f32, theme::ACCENT),
+                                egui::StrokeKind::Middle,
                             );
                             if ui
                                 .put(rect, egui::Button::new("").frame(false))
@@ -7511,7 +7521,7 @@ impl App {
                             // way to reach this, so it should not be hidden
                             // behind the gesture people try second.
                             if name.clicked() {
-                                ui.memory_mut(|m| m.toggle_popup(popup_id(position, index)));
+                                egui::Popup::toggle_id(ui.ctx(), popup_id(position, index));
                             }
                             parts.push(name.clone());
                             for part in &parts {
@@ -7521,17 +7531,15 @@ impl App {
                                     }
                                 });
                             }
-                            egui::popup::popup_below_widget(
-                                ui,
-                                popup_id(position, index),
-                                &name,
-                                egui::PopupCloseBehavior::CloseOnClick,
-                                |ui| {
+                            egui::Popup::from_response(&name)
+                                .id(popup_id(position, index))
+                                .open_memory(None)
+                                .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+                                .show(|ui| {
                                     if let Some(chose) = assign_menu(ui, menu) {
                                         assign = Some((index as i64, chose));
                                     }
-                                },
-                            );
+                                });
                             if changed {
                                 edit = Some((index as i64, current, param.kind == Kind::Switch));
                             }
@@ -7541,8 +7549,9 @@ impl App {
                         let rect = drawn.response.rect;
                         ui.painter().rect_stroke(
                             rect.shrink(1.0),
-                            egui::Rounding::same(4.0),
+                            egui::CornerRadius::same(4),
                             egui::Stroke::new(1.0_f32, theme::ACCENT),
+                            egui::StrokeKind::Middle,
                         );
                         // On top of the control, so a pick cannot turn a knob
                         // by accident. It goes away the moment one is chosen.
@@ -7564,11 +7573,11 @@ impl App {
         }
         if let Some(index) = pick {
             self.assigning = None;
-            ui.memory_mut(|m| m.open_popup(popup_id(position, index)));
+            egui::Popup::open_id(ui.ctx(), popup_id(position, index));
         }
         if pick_bypass {
             self.assigning = None;
-            ui.memory_mut(|m| m.open_popup(bypass_popup_id(position)));
+            egui::Popup::open_id(ui.ctx(), bypass_popup_id(position));
         }
         if let Some(update) = set_draft {
             self.param_draft = update;
@@ -7631,7 +7640,7 @@ fn center_row(ui: &mut egui::Ui, content_width: f32, add: impl FnOnce(&mut egui:
 /// What a button with this label will measure, for centring rows of them.
 fn button_width(ui: &egui::Ui, text: &str) -> f32 {
     let font = egui::TextStyle::Button.resolve(ui.style());
-    let galley = ui.fonts(|fonts| fonts.layout_no_wrap(text.to_owned(), font, theme::TEXT));
+    let galley = ui.fonts_mut(|fonts| fonts.layout_no_wrap(text.to_owned(), font, theme::TEXT));
     galley.size().x + 2.0 * ui.spacing().button_padding.x
 }
 
@@ -7646,7 +7655,7 @@ fn credits_width(ui: &egui::Ui) -> f32 {
         "·",
         "♥ sponsor",
     ];
-    let text: f32 = ui.fonts(|fonts| {
+    let text: f32 = ui.fonts_mut(|fonts| {
         pieces
             .iter()
             .map(|piece| {
@@ -8129,7 +8138,7 @@ fn assign_menu(ui: &mut egui::Ui, menu: &AssignMenu) -> Option<AssignAction> {
         .clicked()
     {
         action = Some(AssignAction::To(None));
-        ui.close_menu();
+        ui.close();
     }
     for (source, carries) in &menu.sources {
         let on = menu.under == Some(*source);
@@ -8141,7 +8150,7 @@ fn assign_menu(ui: &mut egui::Ui, menu: &AssignMenu) -> Option<AssignAction> {
         };
         if ui.selectable_label(on, label).clicked() {
             action = Some(AssignAction::To((!on).then_some(*source)));
-            ui.close_menu();
+            ui.close();
         }
     }
     action
@@ -8366,17 +8375,15 @@ fn bypass_cell(ui: &mut egui::Ui, cell: egui::Vec2, view: &BypassView) -> Option
             if label.clicked() {
                 open = true;
             }
-            egui::popup::popup_below_widget(
-                ui,
-                bypass_popup_id(view.position),
-                &label,
-                egui::PopupCloseBehavior::CloseOnClickOutside,
-                |ui| {
+            egui::Popup::from_response(&label)
+                .id(bypass_popup_id(view.position))
+                .open_memory(None)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| {
                     if let Some(chose) = assign_menu(ui, &view.menu) {
                         action = Some(BypassAction::Assign(chose));
                     }
-                },
-            );
+                });
             parts.push(label);
             for part in &parts {
                 part.context_menu(|ui| {
@@ -8388,7 +8395,7 @@ fn bypass_cell(ui: &mut egui::Ui, cell: egui::Vec2, view: &BypassView) -> Option
         });
     });
     if open {
-        ui.memory_mut(|m| m.toggle_popup(bypass_popup_id(view.position)));
+        egui::Popup::toggle_id(ui.ctx(), bypass_popup_id(view.position));
     }
     action
 }
@@ -8734,7 +8741,8 @@ mod tests {
             screen_rect: Some(screen),
             ..Default::default()
         };
-        let _ = ctx.run(input.clone(), |ctx| app.signal_chain(ctx));
+        ctx.run_ui(input.clone(), |ui| app.signal_chain(ui))
+            .drop_without_applying_deltas();
         let pos = at(app);
         input.events.push(egui::Event::PointerMoved(pos));
         input.events.push(egui::Event::PointerButton {
@@ -8743,7 +8751,8 @@ mod tests {
             pressed: false,
             modifiers: egui::Modifiers::NONE,
         });
-        let _ = ctx.run(input, |ctx| app.signal_chain(ctx));
+        ctx.run_ui(input, |ui| app.signal_chain(ui))
+            .drop_without_applying_deltas();
         ctx
     }
 

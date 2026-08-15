@@ -5,7 +5,10 @@
 //! worker owns it outright: the protocol is a strictly ordered stream, and two
 //! callers would interleave transfers and desynchronise it.
 
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{
+    mpsc::{self, Receiver, Sender},
+    Arc, OnceLock,
+};
 use std::time::{Duration, Instant};
 
 /// One slot on its way to the pedal: where it goes, and the preset that goes
@@ -364,13 +367,57 @@ pub fn chain_of(preset: &hx_proto::Preset) -> Vec<Block> {
         .collect()
 }
 
+/// Connect the device worker's event channel to eframe's event loop.
+///
+/// The worker exists before eframe creates its context, so binding happens in
+/// the app-creation callback. Once bound, a device event wakes a sleeping UI
+/// immediately instead of waiting for a polling repaint.
+#[derive(Clone, Default)]
+pub struct RepaintSignal(Arc<OnceLock<egui::Context>>);
+
+impl RepaintSignal {
+    pub fn bind(&self, ctx: &egui::Context) {
+        let _ = self.0.set(ctx.clone());
+    }
+
+    fn request(&self) {
+        if let Some(ctx) = self.0.get() {
+            ctx.request_repaint();
+        }
+    }
+}
+
+#[derive(Clone)]
+struct Events {
+    tx: Sender<Evt>,
+    repaint: RepaintSignal,
+}
+
+impl Events {
+    fn send(&self, evt: Evt) {
+        if self.tx.send(evt).is_ok() {
+            self.repaint.request();
+        }
+    }
+}
+
 pub fn spawn() -> (Sender<Cmd>, Receiver<Evt>) {
+    let (commands, events, _) = spawn_repainting();
+    (commands, events)
+}
+
+pub fn spawn_repainting() -> (Sender<Cmd>, Receiver<Evt>, RepaintSignal) {
     let (cmd_tx, cmd_rx) = mpsc::channel();
     let (evt_tx, evt_rx) = mpsc::channel();
+    let repaint = RepaintSignal::default();
+    let worker_repaint = repaint.clone();
     std::thread::spawn(move || {
         Worker {
             cmds: cmd_rx,
-            events: evt_tx,
+            events: Events {
+                tx: evt_tx,
+                repaint: worker_repaint,
+            },
             device: None,
             setlist: 0,
             history: Vec::new(),
@@ -382,12 +429,12 @@ pub fn spawn() -> (Sender<Cmd>, Receiver<Evt>) {
         }
         .run()
     });
-    (cmd_tx, evt_rx)
+    (cmd_tx, evt_rx, repaint)
 }
 
 struct Worker {
     cmds: Receiver<Cmd>,
-    events: Sender<Evt>,
+    events: Events,
     device: Option<hx_usb::Session>,
     /// Which setlist preset selections apply to.
     setlist: i64,
@@ -1072,7 +1119,7 @@ impl Worker {
     }
 
     fn report_history(&self) {
-        let _ = self.events.send(Evt::History {
+        self.events.send(Evt::History {
             undo: self.history.len(),
             redo: self.future.len(),
         });
@@ -1427,7 +1474,7 @@ impl Worker {
         let outcome = self.try_on_device(|d| {
             hx_usb::backup::capture(d, dir, stamp, |step| {
                 if let Some(evt) = working(&step) {
-                    let _ = events.send(evt);
+                    events.send(evt);
                 }
             })
         });
@@ -1447,7 +1494,7 @@ impl Worker {
         let done = self.run_on_device(|d| {
             hx_usb::backup::restore(dir, d, hx_usb::backup::Parts::default(), |step| {
                 if let Some(evt) = working(&step) {
-                    let _ = events.send(evt);
+                    events.send(evt);
                 }
             })
         });
@@ -1543,8 +1590,7 @@ impl Worker {
             return;
         };
         for (event, args) in device.poll_notifications() {
-            let _ = self
-                .events
+            self.events
                 .send(Evt::Activity(format!("event {event}: {args:?}")));
         }
         // The device goes quiet while committing a write; one missed beat is
@@ -1578,14 +1624,14 @@ impl Worker {
         match f(device) {
             Ok(value) => Some(value),
             Err(e) => {
-                let _ = self.events.send(Evt::Failed(e.to_string()));
+                self.events.send(Evt::Failed(e.to_string()));
                 None
             }
         }
     }
 
     fn send(&self, evt: Evt) {
-        let _ = self.events.send(evt);
+        self.events.send(evt);
     }
 }
 

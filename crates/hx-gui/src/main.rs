@@ -29,7 +29,7 @@ fn main() -> eframe::Result<()> {
         eprintln!("gave {renamed} tones their own names on disk");
     }
 
-    let (tx, rx) = hx_gui::spawn();
+    let (tx, rx, repaint) = hx_gui::spawn_repainting();
     // Closing the window must let the device go cleanly. A process that just
     // disappears leaves the device mid-conversation, and it then refuses new
     // sessions until its power is pulled.
@@ -38,15 +38,18 @@ fn main() -> eframe::Result<()> {
         "TonePush",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default().with_inner_size([980.0, 640.0]),
-            // With vsync on, glow blocks in eglSwapBuffers waiting for a frame
-            // callback the compositor stops sending once the window is hidden
-            // (another workspace) - so the app cannot answer the Wayland ping
-            // and is flagged unresponsive. Off, it paints and returns freely;
-            // the 150 ms repaint timer keeps idle cost low.
-            vsync: false,
+            // A Wayland compositor stops sending frame callbacks to a hidden
+            // window. Waiting for vsync here then blocks the event loop, so it
+            // cannot answer the compositor and is marked unresponsive. Busy
+            // indicators are paced in `theme::spinner` instead.
+            glow_options: eframe::egui_glow::GlowConfiguration {
+                vsync: false,
+                ..Default::default()
+            },
             ..Default::default()
         },
         Box::new(move |cc| {
+            repaint.bind(&cc.egui_ctx);
             // Lets `ui.image("file://…")` load the model artwork HX Edit ships.
             egui_extras::install_image_loaders(&cc.egui_ctx);
             Ok(Box::new(hx_gui::App::new(&cc.egui_ctx, tx, rx)))

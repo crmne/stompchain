@@ -187,6 +187,24 @@ without dragging a transport along.
 | Android | Reachable but not wired up: the USB Host API hands over a file descriptor, which `nusb` can adopt, and the GUI already runs on eframe. |
 | iOS | Not possible. The protocol lives on a vendor USB interface, and iOS gives third-party apps no raw USB access, and none of it is reachable over class-compliant MIDI either. |
 
+## Updating dependencies
+
+Dependency updates are an explicit local maintenance action, not a scheduled
+bot. Start with a clean working tree and run:
+
+```sh
+./tools/update-dependencies.py
+```
+
+The command raises direct Cargo and Ruby constraints across incompatible
+release lines, refreshes both lockfiles, updates the pinned Rust and Ruby
+toolchains and numeric GitHub Action versions, then runs the Rust tests and
+lints, builds and loads the Ruby gem, and builds the documentation. Review the
+result with `git diff` before committing it. If an incompatible update needs a
+source migration, the failed check and all dependency changes are left in the
+working tree to fix together. `--no-verify` is available when only the update
+step is wanted.
+
 ## Handle with care
 
 These devices can lock up hard enough to need their **9V adapter pulled**; a

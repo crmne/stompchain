@@ -1,7 +1,7 @@
 //! Dark styling and the two custom widgets, following HX Edit's look closely
 //! enough that the layout reads as familiar.
 
-use egui::{Color32, Response, Rounding, Sense, Stroke, Ui, Vec2};
+use egui::{Color32, CornerRadius, Response, Sense, Stroke, Ui, Vec2};
 
 pub const BACKGROUND: Color32 = Color32::from_rgb(0x12, 0x14, 0x18);
 pub const PANEL: Color32 = Color32::from_rgb(0x1a, 0x1d, 0x23);
@@ -78,7 +78,8 @@ pub fn fonts(ctx: &egui::Context) {
 }
 
 pub fn apply(ctx: &egui::Context) {
-    let mut style = (*ctx.style()).clone();
+    ctx.set_theme(egui::Theme::Dark);
+    let mut style = (*ctx.style_of(egui::Theme::Dark)).clone();
     let v = &mut style.visuals;
 
     v.dark_mode = true;
@@ -110,7 +111,39 @@ pub fn apply(ctx: &egui::Context) {
 
     style.spacing.item_spacing = Vec2::new(8.0, 6.0);
     style.spacing.slider_width = 180.0;
-    ctx.set_style(style);
+    ctx.set_style_of(egui::Theme::Dark, style);
+}
+
+/// An animated busy indicator paced independently of the graphics driver.
+///
+/// egui's stock spinner requests an immediate frame. That normally relies on
+/// vsync to cap the loop, but EGL drivers are allowed to ignore the requested
+/// swap interval; on those machines one visible spinner consumes a whole CPU
+/// core. Thirty frames per second is smooth for this small indicator and keeps
+/// the rest of the interface responsive without busy-rendering.
+pub fn spinner(ui: &mut Ui) -> Response {
+    let size = ui.spacing().interact_size.y;
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::new(egui::WidgetType::ProgressIndicator));
+
+    if ui.is_rect_visible(rect) {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(33));
+        let radius = size / 2.0 - 2.0;
+        let start = ui.input(|input| input.time) * std::f64::consts::TAU;
+        let sweep = 240_f64.to_radians();
+        let points = (0..16)
+            .map(|i| {
+                let angle = start + sweep * f64::from(i) / 15.0;
+                let (sin, cos) = angle.sin_cos();
+                rect.center() + radius * egui::vec2(cos as f32, sin as f32)
+            })
+            .collect();
+        ui.painter()
+            .add(egui::Shape::line(points, Stroke::new(2.0, ACCENT)));
+    }
+
+    response
 }
 
 /// One block in the signal chain: the model's own artwork above its name,
@@ -268,8 +301,13 @@ pub fn block_button_tinted(
         };
 
         let painter = ui.painter();
-        painter.rect_filled(rect, Rounding::same(5.0), fill);
-        painter.rect_stroke(rect, Rounding::same(5.0), border);
+        painter.rect_filled(rect, CornerRadius::same(5), fill);
+        painter.rect_stroke(
+            rect,
+            CornerRadius::same(5),
+            border,
+            egui::StrokeKind::Middle,
+        );
 
         let text_colour = if enabled { tint } else { DIM };
         if let Some(art) = artwork {
@@ -441,7 +479,7 @@ fn sized_icon_button(
         if enabled && response.hovered() {
             ui.painter().rect_filled(
                 rect,
-                Rounding::same(4.0),
+                CornerRadius::same(4),
                 Color32::from_rgb(0x25, 0x29, 0x31),
             );
         }
@@ -458,7 +496,7 @@ fn sized_icon_button(
 /// it: a bar the height of the blocks either side, in the accent.
 pub fn insert_marker(ui: &Ui, rect: egui::Rect) {
     let bar = egui::Rect::from_center_size(rect.center(), Vec2::new(5.0, BLOCK_HEIGHT * 0.9));
-    ui.painter().rect_filled(bar, Rounding::same(2.5), ACCENT);
+    ui.painter().rect_filled(bar, CornerRadius::same(3), ACCENT);
 }
 
 /// The dragged block, riding along under the pointer so the hand knows what
@@ -475,10 +513,15 @@ pub fn drag_ghost(ctx: &egui::Context, at: egui::Pos2, name: &str, colour: Color
     let rect = egui::Rect::from_center_size(at, Vec2::new(BLOCK_WIDTH * 0.8, BLOCK_HEIGHT * 0.55));
     painter.rect_filled(
         rect,
-        Rounding::same(5.0),
+        CornerRadius::same(5),
         Color32::from_rgba_unmultiplied(0x2a, 0x2e, 0x36, 230),
     );
-    painter.rect_stroke(rect, Rounding::same(5.0), Stroke::new(2.0_f32, colour));
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(5),
+        Stroke::new(2.0_f32, colour),
+        egui::StrokeKind::Middle,
+    );
     painter.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -493,7 +536,7 @@ pub fn category_swatch(ui: &mut Ui, colour: Color32) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(6.0, 22.0), Sense::hover());
     if ui.is_rect_visible(rect) {
         ui.painter()
-            .rect_filled(rect, Rounding::same(3.0_f32), colour);
+            .rect_filled(rect, CornerRadius::same(3), colour);
     }
     response
 }
@@ -565,15 +608,16 @@ pub fn category_chip(
     }
     let painter = ui.painter();
     if on {
-        painter.rect_filled(rect, Rounding::same(11.0), colour);
+        painter.rect_filled(rect, CornerRadius::same(11), colour);
     } else {
         painter.rect_stroke(
             rect,
-            Rounding::same(11.0),
+            CornerRadius::same(11),
             Stroke::new(
                 1.0_f32,
                 colour.gamma_multiply(if response.hovered() { 1.0 } else { 0.5 }),
             ),
+            egui::StrokeKind::Middle,
         );
     }
     // Icon and label as one group, centred together.
@@ -614,11 +658,11 @@ pub fn shelf_pill(ui: &mut Ui, name: &str, on: bool) -> Response {
     }
     let painter = ui.painter();
     if on {
-        painter.rect_filled(rect, Rounding::same(9.0), TEXT);
+        painter.rect_filled(rect, CornerRadius::same(9), TEXT);
     } else if response.hovered() {
         painter.rect_filled(
             rect,
-            Rounding::same(9.0),
+            CornerRadius::same(9),
             Color32::from_rgb(0x25, 0x29, 0x31),
         );
     }
@@ -646,11 +690,11 @@ pub fn model_tile(ui: &mut Ui, name: &str, artwork: Option<&Art>, selected: bool
 
     let painter = ui.painter().with_clip_rect(rect);
     if selected {
-        painter.rect_filled(rect, Rounding::same(5.0), ui.visuals().selection.bg_fill);
+        painter.rect_filled(rect, CornerRadius::same(5), ui.visuals().selection.bg_fill);
     } else if response.hovered() {
         painter.rect_filled(
             rect,
-            Rounding::same(5.0),
+            CornerRadius::same(5),
             Color32::from_rgb(0x25, 0x29, 0x31),
         );
     }
@@ -664,7 +708,7 @@ pub fn model_tile(ui: &mut Ui, name: &str, artwork: Option<&Art>, selected: bool
         None => {
             painter.rect_filled(
                 art,
-                Rounding::same(3.0),
+                CornerRadius::same(3),
                 Color32::from_rgb(0x21, 0x25, 0x2c),
             );
         }
@@ -973,7 +1017,7 @@ fn tag_text(ui: &Ui, text: &str) -> std::sync::Arc<egui::Galley> {
 
 fn paint_tag(ui: &Ui, rect: egui::Rect, galley: std::sync::Arc<egui::Galley>, colour: Color32) {
     let painter = ui.painter();
-    painter.rect_filled(rect, Rounding::same(3.0), colour);
+    painter.rect_filled(rect, CornerRadius::same(3), colour);
     painter.galley(rect.min + TAG_PAD, galley, BACKGROUND);
 }
 
@@ -1048,13 +1092,14 @@ pub fn switch(on: &mut bool) -> impl egui::Widget + '_ {
             let painter = ui.painter();
             painter.rect_filled(
                 body,
-                Rounding::same(5.0),
+                CornerRadius::same(5),
                 Color32::from_rgb(0x2b, 0x2f, 0x38),
             );
             painter.rect_stroke(
                 body,
-                Rounding::same(5.0),
+                CornerRadius::same(5),
                 Stroke::new(1.0_f32, Color32::from_rgb(0x50, 0x56, 0x62)),
+                egui::StrokeKind::Middle,
             );
             painter.circle_filled(
                 body.center(),
@@ -1259,8 +1304,9 @@ pub fn attach_marker(ui: &Ui, at: egui::Pos2, hot: bool) {
 pub fn swap_marker(ui: &Ui, rect: egui::Rect) {
     ui.painter().rect_stroke(
         rect.expand(2.0),
-        Rounding::same(6.0),
+        CornerRadius::same(6),
         Stroke::new(3.0_f32, ACCENT),
+        egui::StrokeKind::Middle,
     );
 }
 
