@@ -494,7 +494,7 @@ impl LibColumn {
                         theme::Icon::Cloud,
                         cloud,
                         match cloud {
-                            theme::Sync::Same => "Published on TonePush. Open the Song catalog",
+                            theme::Sync::Same => "Published on TonePush. Open this Tone",
                             theme::Sync::Absent => "Not on TonePush. Publish its Song and Tone",
                             theme::Sync::Differs => {
                                 "A different Tone artifact is published. Publish this one"
@@ -1045,7 +1045,7 @@ impl eframe::App for App {
         // is a person approving a sign-in somewhere else, the other is the site
         // taking a tone.
         self.settle_signing_in();
-        self.settle_publishing();
+        self.settle_publishing(&ctx);
         self.dropped_files(&ctx);
         self.top_bar(ui);
         self.status_bar(ui);
@@ -3337,10 +3337,9 @@ impl App {
                             .map(|_| portable.clone())
                     });
                     match known {
-                        Some(_) => {
-                            ui.ctx()
-                                .open_url(egui::OpenUrl::new_tab(cloud::song_catalog_url()));
-                        }
+                        Some(portable) => ui
+                            .ctx()
+                            .open_url(egui::OpenUrl::new_tab(cloud::tone_url(&portable))),
                         None => self.start_publishing(entry, ui.ctx()),
                     }
                 }
@@ -3668,7 +3667,7 @@ impl App {
     }
 
     /// Collect the answer to a publish, if one has arrived.
-    fn settle_publishing(&mut self) {
+    fn settle_publishing(&mut self, ctx: &egui::Context) {
         let Some(publishing) = &self.publishing else {
             return;
         };
@@ -3694,7 +3693,10 @@ impl App {
                     Some(found)
                 });
                 if let Some(portable) = portable {
-                    self.cloud_files.get_or_insert_default().insert(portable);
+                    self.cloud_files
+                        .get_or_insert_default()
+                        .insert(portable.clone());
+                    ctx.open_url(egui::OpenUrl::new_tab(cloud::tone_url(&portable)));
                 }
                 self.status.clear();
                 self.note(format!("{} is published as a Tone", tone.summary.name));
@@ -8927,6 +8929,41 @@ mod tests {
             cloud_presence(Some(&empty), "portable"),
             theme::Sync::Absent
         ));
+    }
+
+    #[test]
+    fn a_finished_publish_opens_the_published_tone() {
+        let (mut app, _events, _cmds) = app();
+        let tone: cloud::ToneDetails =
+            serde_json::from_str(include_str!("../tests/fixtures/cloud/tone-details.json"))
+                .unwrap();
+        let portable = tone.file_sha256.clone().unwrap();
+        let local = "library-object".to_owned();
+        app.portable_hashes.insert(local.clone(), portable.clone());
+
+        let (answer, received) = mpsc::channel();
+        answer.send(Ok(tone)).unwrap();
+        app.publishing = Some(PublishingJob {
+            hash: local,
+            name: "Numb HX".to_owned(),
+            answer: received,
+        });
+
+        let ctx = egui::Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        app.settle_publishing(&ctx);
+        let mut output = ctx.end_pass();
+        let opened = output.platform_output.commands.iter().find_map(|command| {
+            if let egui::OutputCommand::OpenUrl(url) = command {
+                Some(url.url.clone())
+            } else {
+                None
+            }
+        });
+        output.textures_delta.clear();
+
+        let expected = cloud::tone_url(&portable);
+        assert_eq!(opened.as_deref(), Some(expected.as_str()));
     }
 
     /// The app reaches for the device on startup, so it begins in Connecting

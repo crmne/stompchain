@@ -517,10 +517,15 @@ fn fetch_published(client: &CloudClient) -> Result<BTreeSet<String>, String> {
     Ok(found)
 }
 
-/// Open the public Song catalog. Song summaries expose a numeric API id but no
-/// canonical browser URL or slug, so the editor does not invent a deep link.
-pub fn song_catalog_url() -> String {
-    format!("{}/songs", site())
+/// Open the published Tone represented by a portable preset hash. The web app
+/// resolves the hash and redirects to the Tone's canonical Song-nested page,
+/// so the editor never has to guess Artist or Song slugs.
+pub fn tone_url(file_sha256: &str) -> String {
+    format!(
+        "{}/tones/files/{}",
+        site(),
+        file_sha256.trim().to_ascii_lowercase()
+    )
 }
 
 /// Signing this computer in remains the existing pairing flow.

@@ -1273,7 +1273,7 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "hx-catalog"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "flate2",
  "hx-proto",
@@ -1284,7 +1284,7 @@ dependencies = [
 
 [[package]]
 name = "hx-cli"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -1296,7 +1296,7 @@ dependencies = [
 
 [[package]]
 name = "hx-gui"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "eframe",
  "egui",
@@ -1315,11 +1315,11 @@ dependencies = [
 
 [[package]]
 name = "hx-proto"
-version = "0.4.4"
+version = "0.4.5"
 
 [[package]]
 name = "hx-ruby"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "hx-catalog",
  "hx-proto",
@@ -1329,7 +1329,7 @@ dependencies = [
 
 [[package]]
 name = "hx-usb"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "hx-proto",
  "nusb",
