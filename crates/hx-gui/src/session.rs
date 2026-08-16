@@ -130,6 +130,25 @@ pub enum Cmd {
         name: String,
         blocks: Vec<ApplyBlock>,
     },
+    /// Temporarily replace the loaded edit buffer with a cloud Tone. The
+    /// worker keeps the exact document and history it displaced until the
+    /// audition is either ended or deliberately kept.
+    AuditionDocument {
+        key: i64,
+        name: String,
+        bytes: Vec<u8>,
+    },
+    /// The symbolic `.hlx` counterpart to [`Self::AuditionDocument`].
+    AuditionSteps {
+        key: i64,
+        name: String,
+        blocks: Vec<ApplyBlock>,
+    },
+    /// Put back the edit buffer that was playing before the audition began.
+    EndAudition,
+    /// Leave the audition in the edit buffer as an ordinary unsaved edit.
+    /// Save remains the person's explicit choice.
+    KeepAudition,
     SelectBlock(i64),
     SetParam {
         block: i64,
@@ -256,6 +275,9 @@ pub enum Evt {
     },
     /// The edit buffer has been committed to the preset.
     Saved,
+    /// Which cloud Tone is temporarily in the edit buffer, or `None` once the
+    /// original has been restored or the audition has been kept.
+    Auditioning(Option<i64>),
     /// What every footswitch is set to, in order.
     Switches(Vec<hx_usb::Switch>),
     /// A backup or restore is running, and how far along it is (0.0 to 1.0).
@@ -426,6 +448,7 @@ pub fn spawn_repainting() -> (Sender<Cmd>, Receiver<Evt>, RepaintSignal) {
             dirty: false,
             shown: (-1, String::new()),
             stumbles: 0,
+            audition: None,
         }
         .run()
     });
@@ -462,6 +485,19 @@ struct Worker {
     /// document write, and dropping the session on the first missed beat is
     /// how a drag came to end in a disconnect.
     stumbles: u32,
+    /// Everything an audition temporarily displaces. Histories are moved here
+    /// rather than copied: while a cloud Tone is sounding it is not an edit
+    /// somebody can accidentally fold into their existing undo stack.
+    audition: Option<Audition>,
+}
+
+struct Audition {
+    key: i64,
+    original: Vec<u8>,
+    dirty: bool,
+    history: Vec<Vec<u8>>,
+    future: Vec<Vec<u8>>,
+    snapshot_taken: bool,
 }
 
 impl Worker {
@@ -510,6 +546,22 @@ impl Worker {
     }
 
     fn handle(&mut self, cmd: Cmd) {
+        // Any ordinary device action means the person has moved on from the
+        // cloud browser. Restore first, then perform the requested action on
+        // the real preset. ReadSwitches is the one automatic follow-up to a
+        // presented document and must not end an audition by itself.
+        if self.audition.is_some()
+            && !matches!(
+                &cmd,
+                Cmd::AuditionDocument { .. }
+                    | Cmd::AuditionSteps { .. }
+                    | Cmd::EndAudition
+                    | Cmd::KeepAudition
+                    | Cmd::ReadSwitches
+            )
+        {
+            self.end_audition();
+        }
         match cmd {
             Cmd::Connect => self.connect(),
             Cmd::Disconnect => {
@@ -539,6 +591,12 @@ impl Worker {
                 }
             }
             Cmd::LoadSteps { dest, name, blocks } => self.load_steps(dest, &name, &blocks),
+            Cmd::AuditionDocument { key, name, bytes } => {
+                self.audition_document(key, &name, &bytes)
+            }
+            Cmd::AuditionSteps { key, name, blocks } => self.audition_steps(key, &name, &blocks),
+            Cmd::EndAudition => self.end_audition(),
+            Cmd::KeepAudition => self.keep_audition(),
             Cmd::SelectBlock(block) => {
                 self.run_on_device(|d| d.select_block(block));
             }
@@ -1255,6 +1313,126 @@ impl Worker {
         }
     }
 
+    /// Capture the loaded edit buffer and its undo state once, before the
+    /// first cloud Tone replaces it. Moving between audition rows keeps this
+    /// same baseline so Done always returns to the sound heard before browsing.
+    fn begin_audition(&mut self) -> bool {
+        if self.audition.is_some() {
+            return true;
+        }
+        let Some(original) = self.preset_bytes() else {
+            return false;
+        };
+        self.audition = Some(Audition {
+            key: -1,
+            original,
+            dirty: self.dirty,
+            history: std::mem::take(&mut self.history),
+            future: std::mem::take(&mut self.future),
+            snapshot_taken: self.snapshot_taken,
+        });
+        self.snapshot_taken = false;
+        self.report_history();
+        true
+    }
+
+    fn audition_document(&mut self, key: i64, name: &str, bytes: &[u8]) {
+        let Some(preset) = hx_proto::Preset::parse(bytes) else {
+            return self.send(Evt::Failed(format!("{name} is not a readable preset")));
+        };
+        if !self.begin_audition() {
+            return;
+        }
+        if self.run_on_device(|device| device.write_preset(&preset)) {
+            self.dirty = false;
+            if let Some(audition) = self.audition.as_mut() {
+                audition.key = key;
+            }
+            self.present(&preset);
+            self.send(Evt::Auditioning(Some(key)));
+            self.send(Evt::Activity(format!("auditioning {name}")));
+        } else {
+            self.send(Evt::Auditioning(self.audition.as_ref().map(|a| a.key)));
+        }
+    }
+
+    fn audition_steps(&mut self, key: i64, name: &str, blocks: &[ApplyBlock]) {
+        if !self.begin_audition() {
+            return;
+        }
+        if let Err(why) = self.apply_steps(blocks) {
+            self.send(Evt::Failed(why));
+            self.end_audition();
+            return;
+        }
+        let Some(preset) = self.read_settled() else {
+            self.end_audition();
+            return;
+        };
+        self.dirty = false;
+        if let Some(audition) = self.audition.as_mut() {
+            audition.key = key;
+        }
+        self.present(&preset);
+        self.send(Evt::Auditioning(Some(key)));
+        self.send(Evt::Activity(format!("auditioning {name}")));
+    }
+
+    /// Restore the captured document byte-for-byte and reinstate the undo
+    /// stacks exactly as they were before discovery began.
+    fn end_audition(&mut self) {
+        let Some(audition) = self.audition.take() else {
+            return;
+        };
+        let Some(original) = hx_proto::Preset::parse(&audition.original) else {
+            self.audition = Some(audition);
+            return self.send(Evt::Failed(
+                "the preset saved before audition is unreadable".into(),
+            ));
+        };
+        if !self.run_on_device(|device| device.write_preset(&original)) {
+            self.audition = Some(audition);
+            return;
+        }
+        self.dirty = audition.dirty;
+        self.history = audition.history;
+        self.future = audition.future;
+        let snapshot_taken = audition.snapshot_taken;
+        self.report_history();
+        self.present(&original);
+        self.snapshot_taken = snapshot_taken;
+        self.send(Evt::Auditioning(None));
+        self.send(Evt::Activity(
+            "restored the sound from before the audition".into(),
+        ));
+    }
+
+    /// Turn the temporary sound into a normal edit. Its displaced preset is
+    /// the next undo step, so even this deliberate handoff remains reversible.
+    fn keep_audition(&mut self) {
+        let Some(audition) = self.audition.take() else {
+            return;
+        };
+        let Some(current) = self.read_settled() else {
+            self.audition = Some(audition);
+            return;
+        };
+        self.history = audition.history;
+        self.future.clear();
+        self.history.push(audition.original);
+        if self.history.len() > 32 {
+            self.history.remove(0);
+        }
+        self.snapshot_taken = false;
+        self.dirty = true;
+        self.report_history();
+        self.present(&current);
+        self.send(Evt::Auditioning(None));
+        self.send(Evt::Activity(
+            "kept the audition in the edit buffer; Save writes it".into(),
+        ));
+    }
+
     /// Clear every block, then set each of the tone's blocks into the run of
     /// slots after the endpoints, with its parameters and bypass state.
     fn apply_steps(&mut self, blocks: &[ApplyBlock]) -> Result<(), String> {
@@ -1620,11 +1798,24 @@ impl Worker {
         &mut self,
         f: impl FnOnce(&mut hx_usb::Session) -> hx_usb::Result<T>,
     ) -> Option<T> {
-        let device = self.device.as_mut()?;
-        match f(device) {
+        let result = {
+            let device = self.device.as_mut()?;
+            f(device)
+        };
+        match result {
             Ok(value) => Some(value),
             Err(e) => {
+                let lost = e.loses_session();
                 self.events.send(Evt::Failed(e.to_string()));
+                if lost {
+                    // Never let the next queued click write onto an unknown
+                    // transaction/sequence state. Releasing the interface is
+                    // the only safe response; the UI can offer a fresh Connect
+                    // after the pedal itself is healthy again.
+                    self.device = None;
+                    self.stumbles = 0;
+                    self.events.send(Evt::Disconnected);
+                }
                 None
             }
         }

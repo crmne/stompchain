@@ -50,6 +50,16 @@ pub enum Error {
     Timeout(i64),
 }
 
+impl Error {
+    /// Whether continuing on this open session risks speaking on a transport
+    /// whose sequence/transaction state is no longer known. A device refusal
+    /// is a complete, aligned reply and is therefore the sole recoverable
+    /// command error; transport silence and malformed protocol are not.
+    pub fn loses_session(&self) -> bool {
+        !matches!(self, Self::Device(_))
+    }
+}
+
 /// A device found on the bus.
 #[derive(Debug, Clone)]
 pub struct Found {
@@ -623,9 +633,13 @@ impl Session {
             }
             std::thread::sleep(Duration::from_millis(200));
         }
-        Err(Error::Protocol(format!(
-            "the device accepted transaction {txn} and has not answered since"
-        )))
+        let why = format!("the device accepted transaction {txn} and has not answered since");
+        // The deferred operation may still exist inside the pedal. Refuse any
+        // later write on this Session even if a caller forgets to drop it: a
+        // second command in this unknown state is what turns a lost connection
+        // into a pedal that needs its 9V power pulled.
+        self.poisoned = Some(why.clone());
+        Err(Error::Protocol(why))
     }
 
     /// How long to keep asking whether the device is free after a deferred
@@ -897,9 +911,9 @@ impl Session {
                 }
             }
             if Instant::now() >= deadline {
-                return Err(Error::Protocol(format!(
-                    "the device did not finish switching to preset {index}"
-                )));
+                let why = format!("the device did not finish switching to preset {index}");
+                self.poisoned = Some(why.clone());
+                return Err(Error::Protocol(why));
             }
             std::thread::sleep(Duration::from_millis(150));
         }
@@ -1105,6 +1119,16 @@ mod tests {
         let mut channel = Channel::new();
         assert_eq!(channel.next_txn(), rpc::FIRST_TXN);
         assert_eq!(channel.next_txn(), rpc::FIRST_TXN + 1);
+    }
+
+    #[test]
+    fn only_a_complete_device_refusal_leaves_the_session_usable() {
+        assert!(!Error::Device(-3).loses_session());
+        assert!(Error::Timeout(7).loses_session());
+        assert!(Error::Protocol("out of sequence".into()).loses_session());
+        assert!(Error::Usb("read timed out".into()).loses_session());
+        assert!(Error::NotFound.loses_session());
+        assert!(Error::Claim("busy".into()).loses_session());
     }
 
     /// The control channel opens two services in turn and talks on the second;

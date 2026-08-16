@@ -110,6 +110,26 @@ pub struct ToneSummary {
     pub installs_count: u64,
     pub saves_count: u64,
     pub remix_count: u64,
+    /// Stable public identity supplied by the originating Editor library.
+    #[serde(default)]
+    pub series_id: Option<String>,
+    /// The stable Tone id once it has more than one stored artifact revision.
+    #[serde(default)]
+    pub version_root_id: Option<i64>,
+    /// One-based current revision within that stable Tone.
+    #[serde(default)]
+    pub version_number: Option<u32>,
+    /// Total artifact revisions available for this Tone.
+    #[serde(default)]
+    pub versions_count: u32,
+    /// Aggregate source rating when the upstream catalog provides one.
+    pub rating: Option<f32>,
+    /// When this preset first entered the public catalog.
+    #[serde(default)]
+    pub created_at: String,
+    /// When its public record was last changed.
+    #[serde(default)]
+    pub updated_at: String,
     pub parent_id: Option<i64>,
     #[serde(default)]
     pub signal_chain: Vec<serde_json::Value>,
@@ -135,10 +155,45 @@ pub struct ToneDetails {
     pub dependencies: Vec<serde_json::Value>,
     #[serde(default)]
     pub audio_previews: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub versions: Vec<ToneVersion>,
     pub download: Option<ToneDownload>,
     /// Present on the individual Tone endpoint. A Tone embedded in its own
     /// Song details does not repeat the parent Song.
     pub song: Option<SongSummary>,
+}
+
+/// One immutable public artifact revision nested beneath a stable Tone.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ToneVersion {
+    pub number: u32,
+    #[serde(default)]
+    pub current: bool,
+    pub file_sha256: String,
+    #[serde(default)]
+    pub created_at: String,
+    pub download: ToneDownload,
+}
+
+/// One installable row in the desktop browser. The web API groups Tones under
+/// Songs, while the editor's library is one row per playable preset, so the
+/// parent travels with each result instead of being looked up again by the UI.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiscoveredTone {
+    pub song: SongSummary,
+    pub tone: ToneDetails,
+}
+
+/// One page of the public Tone feed and the catalog-wide matching count.
+///
+/// The count lets the Editor label the Cloud tab after one request. `next_page`
+/// is deliberately explicit: callers never have to crawl the catalog merely
+/// to discover whether another page exists.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiscoveryPage {
+    pub entries: Vec<DiscoveredTone>,
+    pub total: usize,
+    pub next_page: Option<u32>,
 }
 
 /// Facets accepted by Song search. Empty values are not sent.
@@ -149,12 +204,54 @@ pub struct SongSearch {
     pub device: Option<String>,
     pub output_target: Option<String>,
     pub genre: Option<String>,
+    pub sort: Option<String>,
     pub page: u32,
+}
+
+/// The useful catalog-wide orders offered by public discovery.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DiscoveryOrder {
+    #[default]
+    Popular,
+    Newest,
+    Updated,
+    Rating,
+}
+
+impl DiscoveryOrder {
+    pub const ALL: [Self; 4] = [Self::Popular, Self::Newest, Self::Updated, Self::Rating];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Popular => "Most downloaded",
+            Self::Newest => "Newest",
+            Self::Updated => "Recently updated",
+            Self::Rating => "Highest rated",
+        }
+    }
+
+    fn api_value(self) -> &'static str {
+        match self {
+            Self::Popular => "popular",
+            Self::Newest => "newest",
+            Self::Updated => "updated",
+            Self::Rating => "rating",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct SongsResponse {
     songs: Vec<SongSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TonesResponse {
+    tones: Vec<ToneDetails>,
+    /// Present on catalog endpoints that can page the complete matching feed.
+    /// Optional keeps the Editor compatible with an older TonePush deployment.
+    #[serde(default)]
+    total: Option<usize>,
 }
 
 /// A client rooted at one TonePush web deployment.
@@ -176,6 +273,10 @@ impl CloudClient {
         format!("{}/api/v1/songs", self.base)
     }
 
+    fn tones_url(&self) -> String {
+        format!("{}/api/v1/tones", self.base)
+    }
+
     /// Search musical ideas. The returned rows are Songs, not installable
     /// presets; call [`Self::song`] and let the person choose one of its Tones.
     pub fn search_songs(&self, search: &SongSearch) -> Result<Vec<SongSummary>, String> {
@@ -191,6 +292,7 @@ impl CloudClient {
             ("device", search.device.as_deref()),
             ("output_target", search.output_target.as_deref()),
             ("genre", search.genre.as_deref()),
+            ("sort", search.sort.as_deref()),
         ] {
             if let Some(value) = value.filter(|value| !value.is_empty()) {
                 request = request.query(key, value);
@@ -200,6 +302,172 @@ impl CloudClient {
             .call()
             .map_err(|error| format!("the Song catalog did not answer: {error}"))?;
         decode(response).map(|response: SongsResponse| response.songs)
+    }
+
+    /// Search the flat public Tone feed. `None` means this deployment predates
+    /// that endpoint, in which case discovery falls back to expanding Songs.
+    fn search_tones(&self, search: &SongSearch) -> Result<Option<TonesResponse>, String> {
+        let mut request = self
+            .http
+            .get(self.tones_url())
+            .header("User-Agent", agent_name())
+            .header("Accept", "application/json")
+            .query("page", search.page.max(1).to_string());
+        for (key, value) in [
+            ("q", search.q.as_deref()),
+            ("artist", search.artist.as_deref()),
+            ("device", search.device.as_deref()),
+            ("output_target", search.output_target.as_deref()),
+            ("genre", search.genre.as_deref()),
+            ("sort", search.sort.as_deref()),
+        ] {
+            if let Some(value) = value.filter(|value| !value.is_empty()) {
+                request = request.query(key, value);
+            }
+        }
+        let response = request
+            .call()
+            .map_err(|error| format!("the Tone catalog did not answer: {error}"))?;
+        if response.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        decode(response).map(Some)
+    }
+
+    /// Fetch named pages in at most eight lanes, preserving their page numbers
+    /// so callers can put an out-of-order network answer back in catalog order.
+    fn tone_pages(
+        &self,
+        search: &SongSearch,
+        page_numbers: &[u32],
+    ) -> Result<Vec<(u32, Vec<ToneDetails>)>, String> {
+        const LANES: usize = 8;
+        let lane_size = page_numbers.len().div_ceil(LANES).max(1);
+        std::thread::scope(|scope| -> Result<Vec<_>, String> {
+            let handles: Vec<_> = page_numbers
+                .chunks(lane_size)
+                .map(|lane| {
+                    let client = self.clone();
+                    let lane = lane.to_vec();
+                    let search = search.clone();
+                    scope.spawn(move || {
+                        lane.into_iter()
+                            .map(|page| {
+                                let mut request = search.clone();
+                                request.page = page;
+                                let response = client.search_tones(&request)?.ok_or_else(|| {
+                                    "the Tone catalog disappeared while paging".to_owned()
+                                })?;
+                                Ok((page, response.tones))
+                            })
+                            .collect::<Result<Vec<_>, String>>()
+                    })
+                })
+                .collect();
+            let mut found = Vec::new();
+            for handle in handles {
+                found.extend(
+                    handle
+                        .join()
+                        .map_err(|_| "the Tone catalog search stopped".to_owned())??,
+                );
+            }
+            found.sort_by_key(|(page, _)| *page);
+            Ok(found)
+        })
+    }
+
+    /// Fetch every page in the flat Tone feed. A current server tells us the
+    /// total, so the remaining pages travel in a few bounded lanes; an older
+    /// one is followed until it returns a short page.
+    fn all_tones(&self, search: &SongSearch) -> Result<Option<TonesResponse>, String> {
+        const PAGE_SIZE: usize = 50;
+        const LANES: usize = 8;
+
+        let Some(first) = self.search_tones(search)? else {
+            return Ok(None);
+        };
+        let reported_total = first.total;
+        let mut pages = vec![(1_u32, first.tones)];
+
+        if let Some(total) = reported_total {
+            let last = total.div_ceil(PAGE_SIZE) as u32;
+            let remaining: Vec<u32> = (2..=last).collect();
+            pages.extend(self.tone_pages(search, &remaining)?);
+        } else {
+            let mut page = 2_u32;
+            while page <= 1_000
+                && pages
+                    .last()
+                    .is_some_and(|(_, tones)| tones.len() == PAGE_SIZE)
+            {
+                let batch: Vec<u32> = (page..(page + LANES as u32).min(1_001)).collect();
+                let fetched = self.tone_pages(search, &batch)?;
+                let end = fetched
+                    .iter()
+                    .find(|(_, tones)| tones.len() < PAGE_SIZE)
+                    .map(|(page, _)| *page);
+                pages.extend(
+                    fetched
+                        .into_iter()
+                        .filter(|(page, _)| end.is_none_or(|end| *page <= end)),
+                );
+                if end.is_some() {
+                    break;
+                }
+                page += LANES as u32;
+            }
+        }
+
+        pages.sort_by_key(|(page, _)| *page);
+        Ok(Some(TonesResponse {
+            tones: pages.into_iter().flat_map(|(_, tones)| tones).collect(),
+            total: reported_total,
+        }))
+    }
+
+    /// Fetch exactly one current flat-feed page. The server's matching total
+    /// arrives with every page, so the first request can label the whole feed
+    /// without downloading it. An older deployment falls back to the complete
+    /// compatibility search once; it has no total or stable paging contract.
+    pub fn discover_page(
+        &self,
+        query: &str,
+        order: DiscoveryOrder,
+        device: Option<&str>,
+        page: u32,
+    ) -> Result<DiscoveryPage, String> {
+        const PAGE_SIZE: usize = 50;
+
+        let search = SongSearch {
+            q: (!query.trim().is_empty()).then(|| query.trim().to_owned()),
+            device: device.map(catalog_device_filter),
+            sort: Some(order.api_value().to_owned()),
+            page: page.max(1),
+            ..Default::default()
+        };
+        let response = match self.search_tones(&search)? {
+            Some(response) if response.total.is_some() => response,
+            // Compatibility behavior remains centralized in `discover`: old
+            // servers need unfiltered/local filtering and Song expansion.
+            _ if page <= 1 => {
+                let entries = self.discover(query, order, device)?;
+                return Ok(DiscoveryPage {
+                    total: entries.len(),
+                    entries,
+                    next_page: None,
+                });
+            }
+            _ => return Err("the Tone catalog no longer supports paging".to_owned()),
+        };
+        let total = response.total.unwrap_or(response.tones.len());
+        let entries = discovered_tones(response.tones, device)?;
+        let page = page.max(1);
+        Ok(DiscoveryPage {
+            entries,
+            total,
+            next_page: ((page as usize) * PAGE_SIZE < total).then_some(page + 1),
+        })
     }
 
     /// Fetch one musical idea and the playable Tones belonging to it.
@@ -224,6 +492,119 @@ impl CloudClient {
             .call()
             .map_err(|error| format!("the Tone catalog did not answer: {error}"))?;
         decode(response)
+    }
+
+    /// Search every page of the public catalog for playable Tone rows. With a
+    /// connected device the server narrows the feed to compatible formats;
+    /// the same check is repeated locally so an older server cannot leak an
+    /// incompatible row into the badge or table.
+    pub fn discover(
+        &self,
+        query: &str,
+        order: DiscoveryOrder,
+        device: Option<&str>,
+    ) -> Result<Vec<DiscoveredTone>, String> {
+        let mut search = SongSearch {
+            q: (!query.trim().is_empty()).then(|| query.trim().to_owned()),
+            device: device.map(catalog_device_filter),
+            sort: Some(order.api_value().to_owned()),
+            page: 1,
+            ..Default::default()
+        };
+        let flat = self.all_tones(&search);
+        let flat = match flat {
+            // A response without a total predates server-side product-name
+            // filtering. Fetch its unfiltered pages and narrow them here.
+            Ok(Some(response)) if device.is_some() && response.total.is_none() => {
+                search.device = None;
+                self.all_tones(&search)?
+            }
+            Ok(response) => response,
+            // Older deployments treated a product name as a numeric id and
+            // could reject it. The public unfiltered feed remains usable.
+            Err(_) if device.is_some() => {
+                search.device = None;
+                self.all_tones(&search)?
+            }
+            Err(why) => return Err(why),
+        };
+        if let Some(response) = flat {
+            return response
+                .tones
+                .into_iter()
+                .filter(|tone| {
+                    device.is_none_or(|connected| {
+                        compatible_device(connected, &tone.summary.device.name)
+                    })
+                })
+                .map(|tone| {
+                    let song = tone
+                        .song
+                        .clone()
+                        .ok_or_else(|| format!("{} arrived without its Song", tone.summary.name))?;
+                    Ok(DiscoveredTone { song, tone })
+                })
+                .collect();
+        }
+
+        // Compatibility with a server from before the flat feed: expand its
+        // Song page exactly as the first desktop browser did.
+        // The legacy Song endpoint accepted a database id, not a product
+        // name. Expand it unfiltered, then apply compatibility below.
+        search.device = None;
+        let songs = self.search_songs(&search)?;
+        // A search page can hold dozens of Songs and the index intentionally
+        // does not embed their Tones. Expand it in a few bounded lanes rather
+        // than making discovery wait on dozens of serial round trips.
+        let lane_size = songs.len().div_ceil(8).max(1);
+        let fetched = std::thread::scope(|scope| {
+            let handles: Vec<_> = songs
+                .chunks(lane_size)
+                .map(|lane| {
+                    let client = self.clone();
+                    scope.spawn(move || {
+                        lane.iter()
+                            .map(|summary| client.song(summary.id))
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|handle| handle.join().unwrap_or_default())
+                .collect::<Vec<_>>()
+        });
+        let mut found = Vec::new();
+        let mut first_error = None;
+        for details in fetched {
+            let details = match details {
+                Ok(details) => details,
+                Err(why) => {
+                    first_error.get_or_insert(why);
+                    continue;
+                }
+            };
+            found.extend(
+                details
+                    .tones
+                    .into_iter()
+                    .filter(|tone| {
+                        device.is_none_or(|connected| {
+                            compatible_device(connected, &tone.summary.device.name)
+                        })
+                    })
+                    .map(|tone| DiscoveredTone {
+                        song: details.summary.clone(),
+                        tone,
+                    }),
+            );
+        }
+        if found.is_empty() {
+            if let Some(why) = first_error {
+                return Err(why);
+            }
+        }
+        Ok(found)
     }
 
     /// Resolve a Tone's download without pretending an external catalog entry
@@ -327,11 +708,77 @@ impl CloudClient {
     }
 }
 
+fn discovered_tones(
+    tones: Vec<ToneDetails>,
+    device: Option<&str>,
+) -> Result<Vec<DiscoveredTone>, String> {
+    tones
+        .into_iter()
+        .filter(|tone| {
+            device.is_none_or(|connected| compatible_device(connected, &tone.summary.device.name))
+        })
+        .map(|tone| {
+            let song = tone
+                .song
+                .clone()
+                .ok_or_else(|| format!("{} arrived without its Song", tone.summary.name))?;
+            Ok(DiscoveredTone { song, tone })
+        })
+        .collect()
+}
+
+/// Bridge the hardware profile names and the public catalog's product names.
+/// The XL reads Stomp presets and the web catalog calls a Helix Floor simply
+/// “Helix”; every other pairing remains exact and conservative.
+pub fn compatible_device(connected: &str, published: &str) -> bool {
+    connected == published
+        || matches!(
+            (connected, published),
+            ("HX Stomp XL", "HX Stomp") | ("Helix Floor", "Helix")
+        )
+}
+
+/// The product selectors understood by the catalog API for one connected
+/// device. Compatibility aliases live beside the local check above so the two
+/// cannot silently drift apart.
+fn catalog_device_filter(connected: &str) -> String {
+    match connected {
+        "HX Stomp XL" => "HX Stomp XL,HX Stomp",
+        "Helix Floor" => "Helix Floor,Helix",
+        other => other,
+    }
+    .to_owned()
+}
+
 /// A resolved Tone download.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToneDelivery {
     Artifact(Vec<u8>),
     External(String),
+}
+
+/// Search the configured TonePush deployment for desktop-library rows.
+pub fn discover(
+    query: &str,
+    order: DiscoveryOrder,
+    device: Option<&str>,
+) -> Result<Vec<DiscoveredTone>, String> {
+    CloudClient::new(site()).discover(query, order, device)
+}
+
+/// Fetch one configured TonePush discovery page.
+pub fn discover_page(
+    query: &str,
+    order: DiscoveryOrder,
+    device: Option<&str>,
+    page: u32,
+) -> Result<DiscoveryPage, String> {
+    CloudClient::new(site()).discover_page(query, order, device, page)
+}
+
+/// Fetch one discovered Tone from the configured TonePush deployment.
+pub fn download(tone: &ToneDetails) -> Result<ToneDelivery, String> {
+    CloudClient::new(site()).download(tone)
 }
 
 /// The JSON body for creating one Song.
@@ -368,6 +815,9 @@ pub struct CreateToneRequest {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct NewTone {
     pub name: String,
+    /// Stable local tone identity, used by the server to revise rather than
+    /// duplicate a previously published Tone.
+    pub series_id: Option<String>,
     pub description: Option<String>,
     pub part: Option<String>,
     pub tuning: Option<String>,
@@ -393,6 +843,9 @@ impl CreateToneRequest {
             form.field("creator_name", &self.creator_name);
         }
         form.field("tone[name]", &self.tone.name);
+        if let Some(series) = &self.tone.series_id {
+            form.field("tone[series_id]", series);
+        }
         for (field, value) in [
             ("description", self.tone.description.as_deref()),
             ("part", self.tone.part.as_deref()),
@@ -892,6 +1345,7 @@ mod tests {
             creator_name: "Public Name".into(),
             tone: NewTone {
                 name: "Wide HX".into(),
+                series_id: Some("local-series".into()),
                 part: Some("Clean".into()),
                 device_name: Some("HX Stomp".into()),
                 firmware_version: Some("3.80".into()),
@@ -965,6 +1419,7 @@ mod tests {
                 device: Some("2".into()),
                 output_target: Some("frfr_pa".into()),
                 genre: Some("3".into()),
+                sort: Some("rating".into()),
                 page: 4,
             })
             .unwrap();
@@ -977,10 +1432,168 @@ mod tests {
             "device=2",
             "output_target=frfr_pa",
             "genre=3",
+            "sort=rating",
             "page=4",
         ] {
             assert!(request.contains(pair), "missing {pair} in {request}");
         }
+    }
+
+    #[test]
+    fn discovery_without_a_known_device_keeps_every_catalog_format() {
+        let mut song: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/cloud/song-details.json"))
+                .unwrap();
+        let tones = song
+            .as_object_mut()
+            .unwrap()
+            .remove("tones")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .cloned()
+            .map(|mut tone| {
+                tone["song"] = song.clone();
+                tone
+            })
+            .collect::<Vec<_>>();
+        let server = StubServer::start(vec![(200, serde_json::json!({"tones": tones}))]);
+        let client = CloudClient::new(&server.base);
+
+        let found = client
+            .discover("comfortably numb", DiscoveryOrder::Popular, None)
+            .unwrap();
+
+        assert_eq!(
+            found.len(),
+            2,
+            "both published device variants are discoverable"
+        );
+        assert_eq!(found[0].song.title, "Comfortably Numb");
+        assert_eq!(found[0].tone.summary.name, "Numb HX");
+        let requests = server.finish();
+        let search = String::from_utf8_lossy(&requests[0]);
+        assert!(search.starts_with("GET /api/v1/tones?"));
+        assert!(search.contains("q=comfortably%20numb"));
+        assert!(search.contains("sort=popular"));
+        assert!(!search.contains("device="));
+    }
+
+    #[test]
+    fn discovery_requests_and_keeps_only_compatible_device_formats() {
+        let mut song: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/cloud/song-details.json"))
+                .unwrap();
+        let tones = song
+            .as_object_mut()
+            .unwrap()
+            .remove("tones")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .cloned()
+            .map(|mut tone| {
+                tone["song"] = song.clone();
+                tone
+            })
+            .collect::<Vec<_>>();
+        let server =
+            StubServer::start(vec![(200, serde_json::json!({"tones": tones, "total": 2}))]);
+        let client = CloudClient::new(&server.base);
+
+        let found = client
+            .discover(
+                "comfortably numb",
+                DiscoveryOrder::Popular,
+                Some("HX Stomp"),
+            )
+            .unwrap();
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].tone.summary.device.name, "HX Stomp");
+        let request = server.finish().pop().unwrap();
+        assert!(String::from_utf8_lossy(&request).contains("device=HX%20Stomp"));
+    }
+
+    #[test]
+    fn discovery_fetches_every_flat_feed_page() {
+        let first = (1..=50)
+            .map(|id| tone_json(id, 12, "Wide Clean"))
+            .collect::<Vec<_>>();
+        let server = StubServer::start(vec![
+            (200, serde_json::json!({"tones": first, "total": 51})),
+            (
+                200,
+                serde_json::json!({"tones": [tone_json(51, 12, "Wide Clean")], "total": 51}),
+            ),
+        ]);
+        let client = CloudClient::new(&server.base);
+
+        let found = client.discover("", DiscoveryOrder::Popular, None).unwrap();
+
+        assert_eq!(found.len(), 51);
+        let requests = server.finish();
+        assert_eq!(requests.len(), 2);
+        assert!(String::from_utf8_lossy(&requests[1]).contains("page=2"));
+    }
+
+    #[test]
+    fn discovery_page_returns_the_total_without_fetching_the_next_page() {
+        let first = (1..=50)
+            .map(|id| tone_json(id, 12, "Wide Clean"))
+            .collect::<Vec<_>>();
+        let server = StubServer::start(vec![(
+            200,
+            serde_json::json!({"tones": first, "total": 51}),
+        )]);
+        let client = CloudClient::new(&server.base);
+
+        let page = client
+            .discover_page("", DiscoveryOrder::Popular, None, 1)
+            .unwrap();
+
+        assert_eq!(page.entries.len(), 50);
+        assert_eq!(page.entries[0].tone.summary.id, 1);
+        assert_eq!(page.total, 51);
+        assert_eq!(page.next_page, Some(2));
+        let requests = server.finish();
+        assert_eq!(requests.len(), 1);
+        assert!(String::from_utf8_lossy(&requests[0]).contains("page=1"));
+    }
+
+    #[test]
+    fn discovery_falls_back_to_song_expansion_on_an_older_server() {
+        let songs: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/cloud/songs-index.json")).unwrap();
+        let song: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/cloud/song-details.json"))
+                .unwrap();
+        let server = StubServer::start(vec![
+            (404, serde_json::json!({"error": "not found"})),
+            (200, songs),
+            (200, song),
+        ]);
+        let client = CloudClient::new(&server.base);
+
+        let found = client
+            .discover("comfortably numb", DiscoveryOrder::Popular, None)
+            .unwrap();
+
+        assert_eq!(found.len(), 2);
+        let requests = server.finish();
+        assert!(String::from_utf8_lossy(&requests[0]).starts_with("GET /api/v1/tones?"));
+        assert!(String::from_utf8_lossy(&requests[1]).starts_with("GET /api/v1/songs?"));
+    }
+
+    #[test]
+    fn compatibility_aliases_cover_the_formats_a_device_can_load() {
+        assert!(compatible_device("HX Stomp", "HX Stomp"));
+        assert!(compatible_device("HX Stomp XL", "HX Stomp"));
+        assert!(!compatible_device("HX Stomp", "Helix"));
+        assert_eq!(catalog_device_filter("HX Stomp"), "HX Stomp");
+        assert_eq!(catalog_device_filter("HX Stomp XL"), "HX Stomp XL,HX Stomp");
     }
 
     #[test]
@@ -1013,6 +1626,7 @@ mod tests {
         assert!(tone_request.starts_with("POST /api/v1/songs/12/tones "));
         for field in [
             "name=\"tone[name]\"",
+            "name=\"tone[series_id]\"",
             "name=\"tone[preset]\"",
             "name=\"tone[blocks][][name]\"",
             "name=\"tone[parsed_metadata][models_used][]\"",
@@ -1086,6 +1700,43 @@ mod tests {
         assert_eq!(
             client.download(&tone).unwrap(),
             ToneDelivery::External("https://line6.com/customtone/tone/34/".into())
+        );
+    }
+
+    #[test]
+    fn stable_tones_decode_their_immutable_version_downloads() {
+        let mut json = tone_json(34, 12, "Wide Clean");
+        json["series_id"] = "local-series".into();
+        json["version_root_id"] = 34.into();
+        json["version_number"] = 2.into();
+        json["versions_count"] = 2.into();
+        json["versions"] = serde_json::json!([
+            {
+                "number": 1,
+                "current": false,
+                "file_sha256": "b".repeat(64),
+                "created_at": "2026-08-15T10:00:00Z",
+                "download": { "artifact": "/tones/34/versions/1/artifact" }
+            },
+            {
+                "number": 2,
+                "current": true,
+                "file_sha256": "a".repeat(64),
+                "created_at": "2026-08-16T10:00:00Z",
+                "download": { "artifact": "/tones/34/versions/2/artifact" }
+            }
+        ]);
+
+        let tone: ToneDetails = serde_json::from_value(json).unwrap();
+
+        assert_eq!(tone.summary.series_id.as_deref(), Some("local-series"));
+        assert_eq!(tone.summary.version_number, Some(2));
+        assert_eq!(tone.summary.versions_count, 2);
+        assert_eq!(tone.versions.len(), 2);
+        assert!(tone.versions[1].current);
+        assert_eq!(
+            tone.versions[0].download.artifact.as_deref(),
+            Some("/tones/34/versions/1/artifact")
         );
     }
 

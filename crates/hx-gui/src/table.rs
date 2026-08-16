@@ -47,6 +47,13 @@ pub enum Cell {
     Text(String),
     /// Text in the second voice: derived, not typed, and not editable.
     Dim(String),
+    /// Read-only text whose sort key is not its presentation (for example a
+    /// comma-formatted download count or a shortened ISO timestamp).
+    Value {
+        text: String,
+        key: String,
+        dim: bool,
+    },
     /// Where a tone is: one icon per place, each its own button.
     Places(Vec<(theme::Icon, theme::Sync, &'static str)>),
     /// The same small chip the chain paints on a block: FS1, EXP2, MIDI. The
@@ -90,6 +97,7 @@ impl Cell {
     pub fn key(&self) -> String {
         match self {
             Cell::Text(t) | Cell::Dim(t) | Cell::Tag { text: t, .. } => t.to_lowercase(),
+            Cell::Value { key, .. } => key.clone(),
             // Padded so 9 sorts before 10, which a plain string does not.
             Cell::Knob { value, .. } => format!("{value:020.6}"),
             Cell::Number { value, .. } => format!("{value:020}"),
@@ -195,6 +203,10 @@ pub struct Did {
     /// Every step is reported so the cell can be redrawn where it has been
     /// dragged to; only a finished one is worth sending anywhere.
     pub numbered: Option<(usize, usize, i64, bool)>,
+    /// Furthest row the virtual table actually painted this frame. Callers
+    /// with paged backing data use this to prefetch shortly before the reader
+    /// reaches the rows they have not loaded yet.
+    pub last_visible: Option<usize>,
 }
 
 /// Draw it, and answer with what happened.
@@ -381,6 +393,9 @@ impl egui_table::TableDelegate for Delegate<'_> {
     fn cell_ui(&mut self, ui: &mut Ui, cell: &egui_table::CellInfo) {
         let row = cell.row_nr as usize;
         let col = cell.col_nr;
+        if !ui.is_sizing_pass() && ui.clip_rect().intersect(ui.max_rect()).is_positive() {
+            self.did.last_visible = Some(self.did.last_visible.map_or(row, |last| last.max(row)));
+        }
         let picked =
             self.grid.chosen.get(row).copied().unwrap_or(false) || self.grid.selected == Some(row);
         // Striping and selection are painted here rather than by the table:
@@ -476,8 +491,13 @@ impl egui_table::TableDelegate for Delegate<'_> {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     for (n, (icon, state, hover)) in places.iter().enumerate() {
                         let hit = theme::place(ui, *icon, *state);
+                        let hit = if hover.is_empty() {
+                            hit
+                        } else {
+                            hit.on_hover_text(*hover)
+                        };
                         if !matches!(state, theme::Sync::Unknown | theme::Sync::Working)
-                            && hit.on_hover_text(*hover).clicked()
+                            && hit.clicked()
                         {
                             self.did.place = Some((row, n));
                             claimed = true;
@@ -514,7 +534,9 @@ impl egui_table::TableDelegate for Delegate<'_> {
                         egui::vec2(ui.available_width(), tall),
                         egui::Layout::top_down(egui::Align::Center),
                         |ui| {
-                            if theme::knob(ui, &mut turned, range).changed() {
+                            let knob = theme::knob(ui, &mut turned, range)
+                                .on_hover_text("drag to turn; Shift-drag for fine adjustment");
+                            if knob.changed() {
                                 moved = Some(turned);
                             }
                             ui.add(
@@ -530,7 +552,9 @@ impl egui_table::TableDelegate for Delegate<'_> {
                 if let Some(turned) = moved {
                     self.did.turned = Some((row, col, turned));
                 }
-                reading.on_hover_text(format!("{hover}\ndrag the knob, or click to type it"))
+                reading.on_hover_text(format!(
+                    "{hover}\ndrag the knob; Shift-drag for fine adjustment\nclick to type it"
+                ))
             }
             Cell::Tag {
                 text,
@@ -579,6 +603,19 @@ impl egui_table::TableDelegate for Delegate<'_> {
                         // Truncated, not wrapped: a wrapped name makes one row
                         // twice the height of its neighbours and the table
                         // ripples.
+                        .truncate()
+                        .sense(egui::Sense::click()),
+                )
+            }
+            Cell::Value { text, dim, .. } => {
+                let rich = if *dim {
+                    RichText::new(text).color(theme::DIM)
+                } else {
+                    RichText::new(text)
+                };
+                ui.add(
+                    egui::Label::new(rich)
+                        .selectable(false)
                         .truncate()
                         .sense(egui::Sense::click()),
                 )

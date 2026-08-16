@@ -40,6 +40,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 ureq = { version = "3.4.0", default-features = false, features = ["rustls", "platform-verifier"] }
 sha2 = "0.11"
+# Human-readable, sortable timestamps in the local library index.
+jiff = "0.2"
 
 [lib]
 name = "hx_gui"

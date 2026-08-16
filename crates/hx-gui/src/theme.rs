@@ -970,6 +970,11 @@ fn category_short(category: &str) -> String {
 /// centring a knob against something else has to know what it costs.
 pub const KNOB: f32 = 64.0;
 
+fn knob_drag_delta(delta_y: f32, span: f32, fine: bool) -> f32 {
+    let scale = if fine { 0.1 } else { 1.0 };
+    -delta_y / 200.0 * span * scale
+}
+
 /// A rotary knob, the way a pedal has them.
 ///
 /// Sliders are fine for a mixer but wrong for a stompbox: the whole point of the
@@ -982,12 +987,31 @@ pub fn knob(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>) 
 
     let (min, max) = (*range.start(), *range.end());
     let span = max - min;
+    let drag_value = response.id.with("continuous knob value");
+    if response.drag_started() {
+        ui.data_mut(|data| data.insert_temp(drag_value, *value));
+    }
     if response.dragged() && span.abs() > f32::EPSILON {
-        // A full sweep takes about 200px of travel, which is fine control
-        // without being tedious. Up increases, as on a real knob turned right.
-        let delta = -response.drag_delta().y / 200.0 * span;
-        *value = (*value + delta).clamp(min.min(max), max.max(min));
-        response.mark_changed();
+        // Ableton Live and Cubase both use Shift-drag for finer control. Keep
+        // the unrounded value in egui's temporary state so stepped parameters
+        // can accumulate that fine motion instead of losing every sub-step
+        // when their caller rounds the displayed/device value.
+        let fine = ui.input(|input| input.modifiers.shift);
+        let delta = knob_drag_delta(response.drag_delta().y, span, fine);
+        let before = *value;
+        let continuous = ui.data_mut(|data| {
+            let continuous = data.get_temp::<f32>(drag_value).unwrap_or(*value);
+            let continuous = (continuous + delta).clamp(min.min(max), max.max(min));
+            data.insert_temp(drag_value, continuous);
+            continuous
+        });
+        *value = continuous;
+        if (*value - before).abs() > f32::EPSILON {
+            response.mark_changed();
+        }
+    }
+    if response.drag_stopped() {
+        ui.data_mut(|data| data.remove_temp::<f32>(drag_value));
     }
 
     if ui.is_rect_visible(rect) {
@@ -1517,5 +1541,19 @@ pub fn wire_run(ui: &mut Ui, width: f32, height: f32) {
     if ui.is_rect_visible(rect) {
         ui.painter()
             .hline(rect.x_range(), rect.center().y, Stroke::new(1.5_f32, WIRE));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::knob_drag_delta;
+
+    #[test]
+    fn shift_drag_is_ten_times_finer_than_an_ordinary_knob_drag() {
+        let ordinary = knob_drag_delta(-20.0, 100.0, false);
+        let fine = knob_drag_delta(-20.0, 100.0, true);
+
+        assert_eq!(ordinary, 10.0);
+        assert_eq!(fine, 1.0);
     }
 }

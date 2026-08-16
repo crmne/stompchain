@@ -347,6 +347,15 @@ pub struct Meta {
     pub pickup_electronics: String, // passive / active
     pub tuning: String,
     pub gain: String, // a 1-10 feel, kept free-form for now
+    /// When this tone first became part of this computer's library.
+    #[serde(default)]
+    pub added_at: String,
+    /// The most recent preset or metadata change made in this library.
+    #[serde(default)]
+    pub modified_at: String,
+    /// This person's private 1–5 star rating. Zero means unrated.
+    #[serde(default)]
+    pub rating: u8,
 }
 
 /// The library index: which objects the library claims, and what it calls them.
@@ -363,14 +372,60 @@ struct Index {
     /// One entry per tone the library holds, by hash.
     #[serde(default)]
     tones: BTreeMap<String, Meta>,
+    /// Stable local tone identities. Each entry orders the immutable content
+    /// hashes that have answered to one tone name and points at the revision
+    /// currently shown by the library.
+    #[serde(default)]
+    series: BTreeMap<String, ToneSeries>,
     /// What libraries before the object store wrote: metadata by file name.
     /// Read once, by the migration, and never written again.
     #[serde(default)]
     entries: BTreeMap<String, Meta>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
+struct ToneSeries {
+    #[serde(default)]
+    versions: Vec<String>,
+    #[serde(default)]
+    current: String,
+}
+
 /// The layout this version writes.
-const VERSION: u32 = 1;
+const VERSION: u32 = 3;
+
+fn now() -> String {
+    jiff::Timestamp::now().to_string()
+}
+
+fn object_modified_at(hash: &str) -> Option<String> {
+    let modified = std::fs::metadata(object_path(hash)?)
+        .ok()?
+        .modified()
+        .ok()?;
+    jiff::Timestamp::try_from(modified)
+        .ok()
+        .map(|timestamp| timestamp.to_string())
+}
+
+/// Give libraries written before history fields existed an honest, stable
+/// approximation: the object's own modification time. It is persisted on the
+/// first read, so merely opening a later version never makes an old tone look
+/// newly added again.
+fn fill_history(hash: &str, meta: &mut Meta) -> bool {
+    if !meta.added_at.is_empty() && !meta.modified_at.is_empty() && meta.rating <= 5 {
+        return false;
+    }
+    let fallback = object_modified_at(hash).unwrap_or_else(now);
+    if meta.added_at.is_empty() {
+        meta.added_at = fallback.clone();
+    }
+    if meta.modified_at.is_empty() {
+        meta.modified_at = fallback;
+    }
+    meta.rating = meta.rating.min(5);
+    true
+}
 
 fn index_path() -> Option<PathBuf> {
     dir().map(|d| d.join("index.json"))
@@ -394,8 +449,53 @@ fn load_index() -> Result<Index, String> {
     }
 }
 
+fn normalise_series(index: &mut Index) -> bool {
+    let mut changed = false;
+
+    // Remove interrupted or hand-edited references to objects the index no
+    // longer knows, and give each pre-v3 tone a one-revision identity.
+    for series in index.series.values_mut() {
+        let before = series.versions.len();
+        series
+            .versions
+            .retain(|hash| index.tones.contains_key(hash));
+        series.versions.dedup();
+        changed |= series.versions.len() != before;
+        if !series.versions.contains(&series.current) {
+            series.current = series.versions.last().cloned().unwrap_or_default();
+            changed = true;
+        }
+    }
+    index.series.retain(|_, series| !series.versions.is_empty());
+
+    let claimed: BTreeSet<String> = index
+        .series
+        .values()
+        .flat_map(|series| series.versions.iter().cloned())
+        .collect();
+    for hash in index.tones.keys().filter(|hash| !claimed.contains(*hash)) {
+        index.series.insert(
+            hash.clone(),
+            ToneSeries {
+                versions: vec![hash.clone()],
+                current: hash.clone(),
+            },
+        );
+        changed = true;
+    }
+    if index.version != VERSION {
+        index.version = VERSION;
+        changed = true;
+    }
+    changed
+}
+
 fn read_index() -> Index {
-    load_index().unwrap_or_default()
+    let mut index = load_index().unwrap_or_default();
+    if normalise_series(&mut index) {
+        let _ = write_index(&index);
+    }
+    index
 }
 
 fn write_index(index: &Index) -> Result<(), String> {
@@ -410,6 +510,12 @@ fn write_index(index: &Index) -> Result<(), String> {
 pub struct Entry {
     pub hash: String,
     pub meta: Meta,
+    /// Stable identity shared by all revisions of this tone.
+    pub series: String,
+    /// One-based position of this immutable revision.
+    pub version: u32,
+    /// How many revisions the tone currently has.
+    pub versions: u32,
 }
 
 impl Entry {
@@ -426,13 +532,75 @@ impl Entry {
 
 /// Every tone the library holds, by name.
 pub fn entries() -> Vec<Entry> {
-    let mut found: Vec<Entry> = read_index()
-        .tones
-        .into_iter()
-        .map(|(hash, meta)| Entry { hash, meta })
-        .collect();
+    let mut index = read_index();
+    let changed = index.tones.iter_mut().fold(false, |changed, (hash, meta)| {
+        fill_history(hash, meta) || changed
+    });
+    if changed {
+        index.version = VERSION;
+        let _ = write_index(&index);
+    }
+    let mut found = Vec::with_capacity(index.series.len());
+    for (series_id, series) in &index.series {
+        let Some(meta) = index.tones.get(&series.current).cloned() else {
+            continue;
+        };
+        let version = series
+            .versions
+            .iter()
+            .position(|hash| hash == &series.current)
+            .map_or(1, |position| position as u32 + 1);
+        found.push(Entry {
+            hash: series.current.clone(),
+            meta,
+            series: series_id.clone(),
+            version,
+            versions: series.versions.len() as u32,
+        });
+    }
     found.sort_by_key(|e| e.name().to_lowercase());
     found
+}
+
+/// Every immutable revision belonging to the same local tone as `hash`.
+pub fn versions_of(hash: &str) -> Vec<Entry> {
+    let index = read_index();
+    let Some((series_id, series)) = index
+        .series
+        .iter()
+        .find(|(_, series)| series.versions.iter().any(|version| version == hash))
+    else {
+        return Vec::new();
+    };
+    series
+        .versions
+        .iter()
+        .enumerate()
+        .filter_map(|(position, hash)| {
+            Some(Entry {
+                hash: hash.clone(),
+                meta: index.tones.get(hash)?.clone(),
+                series: series_id.clone(),
+                version: position as u32 + 1,
+                versions: series.versions.len() as u32,
+            })
+        })
+        .collect()
+}
+
+/// Make an existing revision the one shown by the library. No history is
+/// removed; saving another edit continues after the highest revision number.
+pub fn make_current(hash: &str) -> Result<(), String> {
+    let mut index = read_index();
+    let Some(series) = index
+        .series
+        .values_mut()
+        .find(|series| series.versions.iter().any(|version| version == hash))
+    else {
+        return Err("that tone revision is no longer in the library".to_owned());
+    };
+    series.current = hash.to_owned();
+    write_index(&index)
 }
 
 /// Metadata for one tone.
@@ -442,11 +610,9 @@ pub fn meta_of(hash: &str) -> Option<Meta> {
 
 /// The tone already using this name, if any is.
 pub fn named(name: &str) -> Option<Entry> {
-    read_index()
-        .tones
+    entries()
         .into_iter()
-        .find(|(_, meta)| meta.name.eq_ignore_ascii_case(name.trim()))
-        .map(|(hash, meta)| Entry { hash, meta })
+        .find(|entry| entry.meta.name.eq_ignore_ascii_case(name.trim()))
 }
 
 /// What keeping a tone ran into. The bytes are in the store either way; what
@@ -472,8 +638,17 @@ pub fn keep(name: &str, ext: &str, bytes: &[u8]) -> Result<(String, Keeping), St
     let hash = store(name, bytes, ext)?;
     let mut index = read_index();
     index.version = VERSION;
-    if let Some(meta) = index.tones.get(&hash) {
-        let known = meta.name.clone();
+    if let Some(known) = index.tones.get(&hash).map(|meta| meta.name.clone()) {
+        if let Some(series) = index
+            .series
+            .values_mut()
+            .find(|series| series.versions.iter().any(|version| version == &hash))
+        {
+            if series.current != hash {
+                series.current = hash.clone();
+                write_index(&index)?;
+            }
+        }
         return Ok((hash, Keeping::Already(known)));
     }
     let wanted = name.trim();
@@ -493,7 +668,16 @@ pub fn keep(name: &str, ext: &str, bytes: &[u8]) -> Result<(String, Keeping), St
         hash.clone(),
         Meta {
             name: wanted.to_owned(),
+            added_at: now(),
+            modified_at: now(),
             ..Default::default()
+        },
+    );
+    index.series.insert(
+        hash.clone(),
+        ToneSeries {
+            versions: vec![hash.clone()],
+            current: hash.clone(),
         },
     );
     write_index(&index)?;
@@ -526,52 +710,121 @@ pub fn adopt(hash: &str, name: &str) -> Result<(), String> {
     index.version = VERSION;
     let mut meta = index.tones.get(hash).cloned().unwrap_or_default();
     meta.name = name.trim().to_owned();
+    fill_history(hash, &mut meta);
+    meta.modified_at = now();
     index.tones.insert(hash.to_owned(), meta);
+    if !index
+        .series
+        .values()
+        .any(|series| series.versions.iter().any(|version| version == hash))
+    {
+        index.series.insert(
+            hash.to_owned(),
+            ToneSeries {
+                versions: vec![hash.to_owned()],
+                current: hash.to_owned(),
+            },
+        );
+    }
     write_index(&index)?;
     rename_object(hash, name);
     Ok(())
 }
 
-/// Point a name at different bytes: *Override*.
+/// Add different bytes as the next revision of one tone.
 ///
-/// The tone that held the name leaves the library and its notes come across to
-/// the new one, because "override" means this is the same tone, edited. The old
-/// object stays on disk for as long as a setlist plays it.
+/// The old revision remains indexed and can be restored later. Its notes come
+/// across to the new revision because this is the same musical tone, edited.
 pub fn override_with(old: &str, hash: &str, name: &str) -> Result<(), String> {
     let mut index = read_index();
     index.version = VERSION;
-    let mut meta = index.tones.remove(old).unwrap_or_default();
+    let mut meta = index.tones.get(old).cloned().unwrap_or_default();
     meta.name = name.trim().to_owned();
+    fill_history(old, &mut meta);
+    meta.modified_at = now();
     index.tones.insert(hash.to_owned(), meta);
+    let series_id = index
+        .series
+        .iter()
+        .find(|(_, series)| series.versions.iter().any(|version| version == old))
+        .map(|(id, _)| id.clone())
+        .unwrap_or_else(|| old.to_owned());
+    let series = index.series.entry(series_id).or_insert_with(|| ToneSeries {
+        versions: vec![old.to_owned()],
+        current: old.to_owned(),
+    });
+    if !series.versions.iter().any(|version| version == hash) {
+        series.versions.push(hash.to_owned());
+    }
+    series.current = hash.to_owned();
     write_index(&index)?;
     rename_object(hash, name);
-    collect_garbage();
     Ok(())
 }
 
 /// Save one tone's metadata, leaving the rest of the index untouched.
-pub fn save_meta(hash: &str, meta: &Meta) -> Result<(), String> {
+pub fn save_meta(hash: &str, meta: &Meta) -> Result<Meta, String> {
     let mut index = read_index();
     index.version = VERSION;
+    let old = index.tones.get(hash).cloned();
+    let mut meta = meta.clone();
+    if meta.added_at.is_empty() {
+        meta.added_at = old
+            .as_ref()
+            .map(|old| old.added_at.clone())
+            .filter(|date| !date.is_empty())
+            .or_else(|| object_modified_at(hash))
+            .unwrap_or_else(now);
+    }
+    meta.modified_at = now();
+    meta.rating = meta.rating.min(5);
     let renamed = index
         .tones
         .get(hash)
         .is_none_or(|old| old.name != meta.name);
     index.tones.insert(hash.to_owned(), meta.clone());
+    // A tone's name belongs to its stable identity, so history stays
+    // recognisable after a rename. Other notes remain revision-specific.
+    let siblings: Vec<String> = index
+        .series
+        .values()
+        .find(|series| series.versions.iter().any(|version| version == hash))
+        .map(|series| series.versions.clone())
+        .unwrap_or_default();
+    for sibling in &siblings {
+        if sibling != hash {
+            if let Some(sibling_meta) = index.tones.get_mut(sibling) {
+                sibling_meta.name.clone_from(&meta.name);
+            }
+        }
+    }
     write_index(&index)?;
     if renamed && !meta.name.is_empty() {
-        rename_object(hash, &meta.name);
+        for sibling in siblings.iter().chain(std::iter::once(&hash.to_owned())) {
+            rename_object(sibling, &meta.name);
+        }
     }
-    Ok(())
+    Ok(meta)
 }
 
 /// Whether a name is free, ignoring the tone that already holds it.
 pub fn name_is_free(name: &str, except: &str) -> bool {
     let wanted = name.trim();
-    !read_index()
-        .tones
-        .iter()
-        .any(|(hash, m)| hash != except && m.name.eq_ignore_ascii_case(wanted))
+    let index = read_index();
+    let except_series = index.series.iter().find_map(|(id, series)| {
+        series
+            .versions
+            .iter()
+            .any(|version| version == except)
+            .then_some(id)
+    });
+    !index.series.iter().any(|(id, series)| {
+        Some(id) != except_series
+            && index
+                .tones
+                .get(&series.current)
+                .is_some_and(|meta| meta.name.eq_ignore_ascii_case(wanted))
+    })
 }
 
 /// Take a tone out of the library.
@@ -583,7 +836,20 @@ pub fn name_is_free(name: &str, except: &str) -> bool {
 pub fn forget(hash: &str) -> Result<(), String> {
     let mut index = read_index();
     index.version = VERSION;
-    index.tones.remove(hash);
+    let series_id = index
+        .series
+        .iter()
+        .find(|(_, series)| series.versions.iter().any(|version| version == hash))
+        .map(|(id, _)| id.clone());
+    if let Some(series_id) = series_id {
+        if let Some(series) = index.series.remove(&series_id) {
+            for version in series.versions {
+                index.tones.remove(&version);
+            }
+        }
+    } else {
+        index.tones.remove(hash);
+    }
     write_index(&index)?;
     collect_garbage();
     Ok(())
@@ -807,6 +1073,19 @@ impl Slot {
 /// it played in March.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone, PartialEq)]
 pub struct Setlist {
+    /// Stable identity shared by saved revisions. Older setlists derive this
+    /// from their name until their next explicit version save.
+    #[serde(default)]
+    pub series: String,
+    /// One-based revision. Zero is the on-disk spelling of legacy revision 1.
+    #[serde(default)]
+    pub version: u32,
+    /// When this named setlist first entered the library.
+    #[serde(default)]
+    pub added_at: String,
+    /// When this particular revision was captured.
+    #[serde(default)]
+    pub modified_at: String,
     pub name: String,
     pub description: String,
     pub venue: String,
@@ -817,6 +1096,10 @@ pub struct Setlist {
 }
 
 impl Setlist {
+    pub fn revision(&self) -> u32 {
+        self.version.max(1)
+    }
+
     /// How many slots actually hold something.
     pub fn filled(&self) -> usize {
         self.slots.iter().filter(|s| !s.is_empty()).count()
@@ -859,6 +1142,23 @@ fn slug(name: &str) -> String {
     }
 }
 
+fn setlist_series(setlist: &Setlist) -> String {
+    if !setlist.series.is_empty() {
+        return setlist.series.clone();
+    }
+    hash_of(setlist.name.trim().to_ascii_lowercase().as_bytes())
+}
+
+fn versioned_setlist_path(dir: &Path, setlist: &Setlist) -> PathBuf {
+    let series = setlist_series(setlist);
+    dir.join(format!(
+        "{}--{}--v{:04}.json",
+        slug(&setlist.name),
+        short(&series),
+        setlist.revision()
+    ))
+}
+
 /// Every setlist in the library, with the file each came from, by name.
 pub fn setlists() -> Vec<(PathBuf, Setlist)> {
     let Some(dir) = setlists_dir() else {
@@ -873,11 +1173,25 @@ pub fn setlists() -> Vec<(PathBuf, Setlist)> {
         .filter(|p| p.extension().is_some_and(|e| e == "json"))
         .filter_map(|p| {
             let bytes = std::fs::read(&p).ok()?;
-            let setlist: Setlist = serde_json::from_slice(&bytes).ok()?;
+            let mut setlist: Setlist = serde_json::from_slice(&bytes).ok()?;
+            if setlist.added_at.is_empty() || setlist.modified_at.is_empty() {
+                let timestamp = std::fs::metadata(&p)
+                    .ok()
+                    .and_then(|metadata| metadata.modified().ok())
+                    .and_then(|modified| jiff::Timestamp::try_from(modified).ok())
+                    .map(|timestamp| timestamp.to_string())
+                    .unwrap_or_default();
+                if setlist.added_at.is_empty() {
+                    setlist.added_at = timestamp.clone();
+                }
+                if setlist.modified_at.is_empty() {
+                    setlist.modified_at = timestamp;
+                }
+            }
             Some((p, setlist))
         })
         .collect();
-    found.sort_by_key(|(_, s)| s.name.to_lowercase());
+    found.sort_by_key(|(_, s)| (s.name.to_lowercase(), s.revision()));
     found
 }
 
@@ -886,10 +1200,76 @@ pub fn setlists() -> Vec<(PathBuf, Setlist)> {
 pub fn save_setlist(setlist: &Setlist) -> Result<PathBuf, String> {
     let dir = setlists_dir().ok_or("no home directory to keep setlists in")?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not create the library: {e}"))?;
-    let target = dir.join(format!("{}.json", slug(&setlist.name)));
+    let target = if setlist.version == 0 && setlist.series.is_empty() {
+        dir.join(format!("{}.json", slug(&setlist.name)))
+    } else {
+        versioned_setlist_path(&dir, setlist)
+    };
     let json = serde_json::to_vec_pretty(setlist).map_err(|e| e.to_string())?;
     std::fs::write(&target, json).map_err(|e| format!("could not save the setlist: {e}"))?;
     Ok(target)
+}
+
+/// Capture a new immutable revision under an existing setlist name, or create
+/// revision 1 when the typed name is genuinely new.
+pub fn save_setlist_version(setlist: &Setlist) -> Result<(PathBuf, Setlist), String> {
+    let wanted = setlist.name.trim();
+    if wanted.is_empty() {
+        return Err("a setlist needs a name".to_owned());
+    }
+    let existing = setlists()
+        .into_iter()
+        .filter(|(_, known)| known.name.eq_ignore_ascii_case(wanted))
+        .map(|(_, known)| known)
+        .max_by_key(Setlist::revision);
+    let timestamp = now();
+    let mut saved = setlist.clone();
+    saved.name = wanted.to_owned();
+    if let Some(previous) = existing {
+        saved.series = setlist_series(&previous);
+        saved.version = previous.revision() + 1;
+        saved.added_at = if previous.added_at.is_empty() {
+            previous.modified_at.clone()
+        } else {
+            previous.added_at.clone()
+        };
+        if saved.description.is_empty() {
+            saved.description = previous.description;
+        }
+        if saved.venue.is_empty() {
+            saved.venue = previous.venue;
+        }
+        if saved.date.is_empty() {
+            saved.date = previous.date;
+        }
+    } else {
+        saved.series = hash_of(format!("{}\0{timestamp}", wanted.to_ascii_lowercase()).as_bytes());
+        saved.version = 1;
+        saved.added_at = timestamp.clone();
+    }
+    if saved.added_at.is_empty() {
+        saved.added_at = timestamp.clone();
+    }
+    saved.modified_at = timestamp;
+    let path = save_setlist(&saved)?;
+    Ok((path, saved))
+}
+
+/// Update the notes of one saved revision without creating history on every
+/// keystroke. The preset snapshot only changes through
+/// [`save_setlist_version`].
+pub fn update_setlist(path: &Path, setlist: &Setlist) -> Result<(PathBuf, Setlist), String> {
+    let mut saved = setlist.clone();
+    saved.modified_at = now();
+    if saved.added_at.is_empty() {
+        saved.added_at = saved.modified_at.clone();
+    }
+    let target = save_setlist(&saved)?;
+    if target != path && path.exists() {
+        std::fs::remove_file(path)
+            .map_err(|e| format!("could not finish renaming the setlist: {e}"))?;
+    }
+    Ok((target, saved))
 }
 
 /// Take a setlist out of the library. Tones the library holds stay; objects
@@ -902,10 +1282,9 @@ pub fn remove_setlist(path: &Path) -> Result<(), String> {
 
 /// Every distinct tag across the library, sorted, for the browse rail.
 pub fn all_tags() -> Vec<String> {
-    let mut tags: Vec<String> = read_index()
-        .tones
-        .values()
-        .flat_map(|m| m.tags.iter().cloned())
+    let mut tags: Vec<String> = entries()
+        .into_iter()
+        .flat_map(|entry| entry.meta.tags)
         .collect();
     tags.sort();
     tags.dedup();
@@ -1012,6 +1391,7 @@ pub fn migrate() -> usize {
     let mut index = Index {
         version: VERSION,
         tones: old.tones,
+        series: old.series,
         entries: BTreeMap::new(),
     };
     // File name to hash, for repointing the setlists afterwards. Retired files
@@ -1231,8 +1611,8 @@ mod tests {
         assert!(name_is_free("Blackened", &first), "except itself");
     }
 
-    /// Override means "this is the same tone, edited": the name and the notes
-    /// come across, and the tone that held them leaves.
+    /// Saving a new version keeps both immutable revisions, carries the notes
+    /// forward, and lets an older one become current without deleting either.
     #[test]
     fn overriding_moves_the_name_and_the_notes() {
         let _scratch = Scratch::new("override");
@@ -1253,7 +1633,32 @@ mod tests {
         assert_eq!(held.len(), 1);
         assert_eq!(held[0].hash, new);
         assert_eq!(held[0].meta.artist, "Metallica", "the notes came across");
-        assert!(!holds(&old), "and nothing points at the old bytes");
+        assert!(holds(&old), "the old revision remains available");
+        let history = versions_of(&new);
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].hash, old);
+        assert_eq!(history[1].hash, new);
+
+        make_current(&old).unwrap();
+        assert_eq!(entries()[0].hash, old, "history can be restored safely");
+        assert_eq!(versions_of(&old).len(), 2, "later work was not removed");
+    }
+
+    #[test]
+    fn a_local_tone_remembers_history_and_a_personal_rating() {
+        let _scratch = Scratch::new("history-rating");
+        let (hash, _) = keep("Rated Clean", "hxpreset", b"rated").unwrap();
+        let first = entries().pop().unwrap().meta;
+        assert!(!first.added_at.is_empty());
+        assert!(!first.modified_at.is_empty());
+
+        let mut rated = first.clone();
+        rated.rating = 4;
+        let saved = save_meta(&hash, &rated).unwrap();
+        assert_eq!(saved.rating, 4);
+        assert_eq!(saved.added_at, first.added_at);
+        assert!(!saved.modified_at.is_empty());
+        assert_eq!(meta_of(&hash).unwrap().rating, 4);
     }
 
     /// The point of the object store: a setlist plays the bytes it was built
@@ -1310,12 +1715,22 @@ mod tests {
                 Slot::default(),
                 Slot::new("bbb", "DIR:Relief"),
             ],
+            ..Default::default()
         };
         save_setlist(&saved).unwrap();
 
         let read = setlists();
         assert_eq!(read.len(), 1);
-        assert_eq!(read[0].1, saved, "a setlist round-trips unchanged");
+        assert_eq!(read[0].1.name, saved.name);
+        assert_eq!(read[0].1.description, saved.description);
+        assert_eq!(read[0].1.venue, saved.venue);
+        assert_eq!(read[0].1.date, saved.date);
+        assert_eq!(
+            read[0].1.slots, saved.slots,
+            "a setlist round-trips unchanged"
+        );
+        assert!(!read[0].1.added_at.is_empty());
+        assert!(!read[0].1.modified_at.is_empty());
         assert_eq!(read[0].1.filled(), 2, "the empty slot is not a preset");
         assert_eq!(read[0].1.slots.len(), 3, "but it still takes up a slot");
     }
@@ -1336,6 +1751,32 @@ mod tests {
         let read = setlists();
         assert_eq!(read.len(), 1);
         assert_eq!(read[0].1.venue, "Melkweg");
+    }
+
+    #[test]
+    fn saving_a_setlist_name_again_creates_an_ordered_revision() {
+        let _scratch = Scratch::new("setlist-versions");
+        let first = Setlist {
+            name: "Summer Tour".into(),
+            venue: "Paradiso".into(),
+            slots: vec![Slot::new("aaa", "Clean")],
+            ..Default::default()
+        };
+        let (_, first) = save_setlist_version(&first).unwrap();
+        let second = Setlist {
+            name: "summer tour".into(),
+            slots: vec![Slot::new("bbb", "Lead")],
+            ..Default::default()
+        };
+        let (_, second) = save_setlist_version(&second).unwrap();
+
+        assert_eq!(first.revision(), 1);
+        assert_eq!(second.revision(), 2);
+        assert_eq!(second.series, first.series);
+        assert_eq!(second.venue, "Paradiso", "details carry forward");
+        assert_eq!(setlists().len(), 2);
+        assert_eq!(setlists()[0].1.slots[0].hash, "aaa");
+        assert_eq!(setlists()[1].1.slots[0].hash, "bbb");
     }
 
     /// A library from before the object store has to come across whole: the

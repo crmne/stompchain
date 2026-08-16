@@ -125,3 +125,54 @@ fn a_symbolic_tone_loads_into_the_edit_buffer_and_undo_restores() {
         "the preset the test started on still holds its chain"
     );
 }
+
+#[test]
+#[ignore = "drives real hardware"]
+fn a_cloud_audition_restores_the_exact_edit_buffer() {
+    let (tx, rx) = spawn();
+    tx.send(Cmd::Connect).unwrap();
+
+    wait_for(&rx, "the device", 15, |evt| {
+        matches!(evt, Evt::Connected { .. }).then_some(())
+    });
+    wait_for(&rx, "the loaded preset", 15, |evt| match evt {
+        Evt::Loaded { .. } => Some(()),
+        _ => None,
+    });
+    tx.send(Cmd::CopyPreset).unwrap();
+    let original = wait_for(&rx, "the original document", 15, |evt| match evt {
+        Evt::Copied { blob, .. } => Some(blob),
+        _ => None,
+    });
+
+    tx.send(Cmd::AuditionSteps {
+        key: 42,
+        name: "Temporary Minotaur".into(),
+        blocks: vec![ApplyBlock {
+            model: 100,
+            enabled: true,
+            params: Vec::new(),
+        }],
+    })
+    .unwrap();
+    wait_for(&rx, "the audition", 90, |evt| match evt {
+        Evt::Auditioning(Some(42)) => Some(()),
+        _ => None,
+    });
+
+    tx.send(Cmd::EndAudition).unwrap();
+    wait_for(&rx, "the audition restoration", 90, |evt| match evt {
+        Evt::Auditioning(None) => Some(()),
+        _ => None,
+    });
+    tx.send(Cmd::CopyPreset).unwrap();
+    let restored = wait_for(&rx, "the restored document", 15, |evt| match evt {
+        Evt::Copied { blob, .. } => Some(blob),
+        _ => None,
+    });
+
+    assert_eq!(
+        restored, original,
+        "Done must restore every byte of the edit buffer, including unsaved work"
+    );
+}
