@@ -11097,6 +11097,7 @@ mod tests {
     fn unmodified_arrows_load_adjacent_presets_only_without_keyboard_focus() {
         let (mut app, _events, cmds) = app();
         let _ = cmds.try_iter().collect::<Vec<_>>();
+        app.show_onboarding = false;
         app.connection = Connection::Online;
         app.presets = vec!["One".into(), "Two".into(), "Three".into()];
         app.preset_index = 1;
