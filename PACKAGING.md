@@ -52,8 +52,9 @@ Runtime:
   user through extracting them on first launch; packages must not bundle
   them.
 - reading an HX Edit installer in-app needs 7-Zip (`7z`, `7za`, or `7zz` on
-  PATH): package it as an optional dependency on Linux (`p7zip`) and
-  Windows. macOS needs nothing extra; it uses hdiutil and pkgutil. A machine
+  PATH, or an ordinary Windows install of 7-Zip, which the app finds where
+  the installer left it): package it as an optional dependency on Linux
+  (`p7zip`) and Windows. macOS needs nothing extra; it uses hdiutil and pkgutil. A machine
   with HX Edit already installed needs no extraction at all: the app copies
   from the installation by itself.
 

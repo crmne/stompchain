@@ -160,22 +160,16 @@ fn from_dmg(dmg: &Path) -> Result<usize, String> {
 /// layers; this just keeps feeding it the next doll. Verified on a real
 /// HX Edit 3.82 dmg, on Linux.
 fn from_archive(installer: &Path) -> Result<usize, String> {
-    let sevenzip = ["7z", "7za", "7zz"]
-        .iter()
-        .find(|bin| {
-            Command::new(bin)
-                .arg("--help")
-                .output()
-                .is_ok_and(|o| o.status.success())
-        })
-        .ok_or_else(|| {
-            "reading the installer needs 7-Zip: install p7zip (Linux) or 7-Zip (Windows)"
-                .to_string()
-        })?;
+    let sevenzip = sevenzip().ok_or_else(|| {
+        "reading the installer needs 7-Zip and none of the usual places had one \
+         that runs: install p7zip (Linux) or 7-Zip (Windows), or put the one \
+         you have on PATH"
+            .to_string()
+    })?;
 
     let work = tempdir("tonepush-extract")?;
     let result = (|| {
-        unpack(sevenzip, installer, &work)?;
+        unpack(&sevenzip, installer, &work)?;
         for _ in 0..6 {
             if let Some(catalog) = find_named(&work, "HX_ModelCatalog.json", 10) {
                 return catalog
@@ -194,7 +188,7 @@ fn from_archive(installer: &Path) -> Result<usize, String> {
                     archive.file_name().unwrap_or_default().to_string_lossy()
                 ));
                 // Best effort: what will not open is simply left behind.
-                let _ = unpack(sevenzip, &archive, &out);
+                let _ = unpack(&sevenzip, &archive, &out);
                 let _ = std::fs::remove_file(&archive);
             }
         }
@@ -204,16 +198,103 @@ fn from_archive(installer: &Path) -> Result<usize, String> {
     result
 }
 
+/// A 7-Zip this machine will actually run.
+///
+/// PATH first, then the places an installer puts one without saying so. That
+/// second half is the whole point on Windows: 7-Zip's installer never touches
+/// PATH, so someone who has 7-Zip - sees it in Explorer's menu, opens archives
+/// with it daily - still has nothing named `7z` for another program to run.
+/// macOS has the same shape of problem, where an app launched from Finder
+/// inherits a PATH that has never heard of Homebrew.
+fn sevenzip() -> Option<PathBuf> {
+    ["7z", "7za", "7zz"]
+        .iter()
+        .map(PathBuf::from)
+        .chain(sevenzip_installed())
+        .find(|bin| {
+            // No arguments at all: every build of 7-Zip prints its banner and
+            // exits zero, which is more than can be said for any one switch.
+            Command::new(bin).output().is_ok_and(|o| o.status.success())
+        })
+}
+
+/// Full paths worth trying when nothing on PATH answered.
+fn sevenzip_installed() -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    if cfg!(target_os = "windows") {
+        // Both Program Files, because a 32-bit build of this program is shown
+        // the 64-bit one only under `ProgramW6432`; NanaZip because that is
+        // what the Microsoft Store offers people who go looking for 7-Zip.
+        for var in ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"] {
+            let Some(dir) = std::env::var_os(var).map(PathBuf::from) else {
+                continue;
+            };
+            found.push(dir.join("7-Zip").join("7z.exe"));
+            found.push(dir.join("7-Zip-Zstandard").join("7z.exe"));
+            found.push(dir.join("NanaZip").join("NanaZipC.exe"));
+        }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+            found.push(local.join("Programs").join("7-Zip").join("7z.exe"));
+        }
+        found.extend(sevenzip_from_registry());
+    } else {
+        // Homebrew, MacPorts, and the distributions that keep p7zip's own
+        // binaries beside its library rather than on PATH.
+        for dir in [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/opt/local/bin",
+            "/usr/lib/p7zip",
+            "/usr/libexec/p7zip",
+        ] {
+            for name in ["7zz", "7z", "7za"] {
+                found.push(Path::new(dir).join(name));
+            }
+        }
+    }
+    found
+}
+
+/// Ask the registry where 7-Zip went, for the install that is in neither
+/// Program Files. Only ever reached on Windows, where `reg` is always there.
+fn sevenzip_from_registry() -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for root in ["HKCU", "HKLM"] {
+        for value in ["Path64", "Path"] {
+            let key = format!(r"{root}\SOFTWARE\7-Zip");
+            if let Ok(out) = Command::new("reg")
+                .args(["query", &key, "/v", value])
+                .output()
+            {
+                found.extend(sevenzip_in(&String::from_utf8_lossy(&out.stdout)));
+            }
+        }
+    }
+    found
+}
+
+/// The `7z.exe` named by `reg query` output, whose value line reads
+/// `    Path    REG_SZ    C:\Program Files\7-Zip\`.
+fn sevenzip_in(registry_output: &str) -> Vec<PathBuf> {
+    registry_output
+        .lines()
+        .filter_map(|line| line.split_once("REG_SZ"))
+        .map(|(_, dir)| dir.trim())
+        .filter(|dir| !dir.is_empty())
+        .map(|dir| Path::new(dir).join("7z.exe"))
+        .collect()
+}
+
 /// Run 7-Zip. Its exit code is not the verdict - it reports 2 on warnings
 /// while still extracting what matters - so the caller checks for files.
-fn unpack(sevenzip: &str, archive: &Path, into: &Path) -> Result<(), String> {
+fn unpack(sevenzip: &Path, archive: &Path, into: &Path) -> Result<(), String> {
     let out_flag = format!("-o{}", into.display());
     Command::new(sevenzip)
         .args(["x", &out_flag, "-y"])
         .arg(archive)
         .output()
         .map(|_| ())
-        .map_err(|e| format!("could not run {sevenzip}: {e}"))
+        .map_err(|e| format!("could not run {}: {e}", sevenzip.display()))
 }
 
 /// Files inside the work directory that look like another layer of archive:
@@ -322,4 +403,38 @@ fn tempdir(prefix: &str) -> Result<PathBuf, String> {
     let dir = std::env::temp_dir().join(format!("{prefix}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not make a work directory: {e}"))?;
     Ok(dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_registry_names_a_seven_zip_wherever_it_was_installed() {
+        let output = "\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\7-Zip\r\n    Path    REG_SZ    D:\\Tools\\7-Zip\\\r\n";
+        assert_eq!(
+            sevenzip_in(output),
+            vec![PathBuf::from(r"D:\Tools\7-Zip\").join("7z.exe")]
+        );
+    }
+
+    #[test]
+    fn a_key_that_is_not_there_names_nothing() {
+        let output = "ERROR: The system was unable to find the specified registry key or value.";
+        assert!(sevenzip_in(output).is_empty());
+    }
+
+    /// The bug behind issue #1: 7-Zip's Windows installer leaves PATH alone,
+    /// so its own default location has to be looked at directly.
+    #[test]
+    fn windows_looks_where_seven_zip_installs_itself() {
+        if !cfg!(target_os = "windows") {
+            return;
+        }
+        let found = sevenzip_installed();
+        assert!(
+            found.iter().any(|p| p.ends_with(r"7-Zip\7z.exe")),
+            "nothing looked in 7-Zip's own install directory: {found:?}"
+        );
+    }
 }
