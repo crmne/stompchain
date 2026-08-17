@@ -14,6 +14,21 @@ pub const ACCENT: Color32 = Color32::from_rgb(0xd8, 0xa8, 0x3b);
 /// rather than egui's `strong()` - which only brightens the colour.
 pub const SEMIBOLD: &str = "semibold";
 
+/// A centered question that must be answered before work continues.
+pub fn modal(title: &'static str) -> egui::Window<'static> {
+    egui::Window::new(title)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+}
+
+/// The consistent break between major sections in a tool window.
+pub fn section_break(ui: &mut Ui) {
+    ui.add_space(18.0);
+    ui.separator();
+    ui.add_space(10.0);
+}
+
 /// A font id in the semibold family.
 pub fn semibold(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Name(SEMIBOLD.into()))

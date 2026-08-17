@@ -94,7 +94,7 @@ pub enum Cell {
 impl Cell {
     /// What this cell sorts on. A dot sorts by its state, so clicking that
     /// header gathers everything that needs doing.
-    pub fn key(&self) -> String {
+    fn key(&self) -> String {
         match self {
             Cell::Text(t) | Cell::Dim(t) | Cell::Tag { text: t, .. } => t.to_lowercase(),
             Cell::Value { key, .. } => key.clone(),
@@ -178,6 +178,50 @@ pub struct Grid {
     /// How tall a row is. Zero means [`ROW_HEIGHT`], which is a line of text; a
     /// table with knobs in it needs the room a knob takes.
     pub row_height: f32,
+}
+
+impl Grid {
+    /// Put the rows in their displayed order and return where each one came
+    /// from. Selection and editing follow their rows automatically.
+    ///
+    /// A cell may have to build a lowercase or formatted key. Caching those
+    /// keys means one allocation per row instead of one per sort comparison,
+    /// which matters when the library holds thousands of tones.
+    pub fn sort_rows(&mut self) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.rows.len()).collect();
+        let Some(columns) = self.rows.first().map(Vec::len).filter(|&len| len > 0) else {
+            return order;
+        };
+        let sorting = self.sort.0.min(columns - 1);
+        order.sort_by_cached_key(|&row| self.rows[row][sorting].key());
+        if !self.sort.1 {
+            order.reverse();
+        }
+
+        self.rows = reorder(std::mem::take(&mut self.rows), &order);
+        if self.chosen.len() == order.len() {
+            self.chosen = order.iter().map(|&row| self.chosen[row]).collect();
+        }
+        self.selected = self
+            .selected
+            .and_then(|selected| order.iter().position(|&row| row == selected));
+        self.editing = self.editing.and_then(|(editing, column)| {
+            order
+                .iter()
+                .position(|&row| row == editing)
+                .map(|row| (row, column))
+        });
+        order
+    }
+}
+
+/// Put values back in an order worked out without cloning them.
+fn reorder<T>(values: Vec<T>, order: &[usize]) -> Vec<T> {
+    let mut held: Vec<Option<T>> = values.into_iter().map(Some).collect();
+    order
+        .iter()
+        .filter_map(|&index| held.get_mut(index).and_then(Option::take))
+        .collect()
 }
 
 /// What a person did to the table this frame.
@@ -702,5 +746,27 @@ mod tests {
              the padding each one adds, nor for the scrollbar"
         );
         assert_eq!(width_wanted(&columns), 324.0 + 32.0 + 12.0);
+    }
+
+    #[test]
+    fn sorting_keeps_row_state_with_its_row() {
+        let mut grid = Grid {
+            rows: vec![
+                vec![Cell::Text("Zulu".to_owned())],
+                vec![Cell::Text("alpha".to_owned())],
+                vec![Cell::Text("Mike".to_owned())],
+            ],
+            chosen: vec![true, false, false],
+            selected: Some(2),
+            editing: Some((0, 0)),
+            sort: (0, true),
+            ..Default::default()
+        };
+
+        assert_eq!(grid.sort_rows(), vec![1, 2, 0]);
+        assert_eq!(grid.rows[0][0].key(), "alpha");
+        assert_eq!(grid.selected, Some(1));
+        assert_eq!(grid.editing, Some((2, 0)));
+        assert_eq!(grid.chosen, vec![false, false, true]);
     }
 }

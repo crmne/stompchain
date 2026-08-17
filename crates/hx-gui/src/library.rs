@@ -608,6 +608,14 @@ pub fn meta_of(hash: &str) -> Option<Meta> {
     read_index().tones.get(hash).cloned()
 }
 
+/// Every indexed tone's metadata, read in one pass.
+///
+/// Screens that need to answer the same question for a whole setlist should
+/// take one snapshot instead of opening and decoding the index once per row.
+pub fn metadata() -> BTreeMap<String, Meta> {
+    read_index().tones
+}
+
 /// The tone already using this name, if any is.
 pub fn named(name: &str) -> Option<Entry> {
     entries()
@@ -1278,17 +1286,6 @@ pub fn remove_setlist(path: &Path) -> Result<(), String> {
     std::fs::remove_file(path).map_err(|e| format!("could not remove the setlist: {e}"))?;
     collect_garbage();
     Ok(())
-}
-
-/// Every distinct tag across the library, sorted, for the browse rail.
-pub fn all_tags() -> Vec<String> {
-    let mut tags: Vec<String> = entries()
-        .into_iter()
-        .flat_map(|entry| entry.meta.tags)
-        .collect();
-    tags.sort();
-    tags.dedup();
-    tags
 }
 
 /// What each object should be called: the library's name for it, or the name a

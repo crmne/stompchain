@@ -68,6 +68,62 @@ struct LibEntry {
     versions: u32,
 }
 
+/// The small, read-only view of the on-disk library that frame rendering
+/// needs. It is rebuilt when the library changes; drawing never opens files.
+#[derive(Default)]
+struct LibraryLookup {
+    /// Indexed tones whose object is still present.
+    indexed: std::collections::HashSet<String>,
+    /// Current tone names, normalised for the pedal-side name comparison.
+    names: std::collections::HashSet<String>,
+    tags: Vec<String>,
+    /// Facts for every tone named by a setlist, including historical versions.
+    setlist_tones: std::collections::HashMap<String, SetlistTone>,
+}
+
+struct SetlistTone {
+    held: bool,
+    meta: library::Meta,
+    line: String,
+}
+
+impl LibraryLookup {
+    /// Keep the browse and sync indexes aligned with the editable rows.
+    fn reindex(&mut self, entries: &[LibEntry]) {
+        self.names = entries
+            .iter()
+            .map(|entry| {
+                if entry.meta.name.is_empty() {
+                    library::short(&entry.hash).to_ascii_lowercase()
+                } else {
+                    entry.meta.name.trim().to_ascii_lowercase()
+                }
+            })
+            .collect();
+        self.tags = entries
+            .iter()
+            .flat_map(|entry| entry.meta.tags.iter().cloned())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        for entry in entries {
+            if let Some(tone) = self.setlist_tones.get_mut(&entry.hash) {
+                tone.meta = entry.meta.clone();
+            }
+        }
+    }
+
+    fn sync(&self, hash: &str, name: &str) -> theme::Sync {
+        if self.indexed.contains(hash) {
+            theme::Sync::Same
+        } else if !name.is_empty() && self.names.contains(&name.to_ascii_lowercase()) {
+            theme::Sync::Differs
+        } else {
+            theme::Sync::Absent
+        }
+    }
+}
+
 /// A sign-in waiting on somebody, somewhere else.
 ///
 /// The code is on screen so it can be checked against the page, and the URL is
@@ -96,6 +152,14 @@ struct CloudSearchJob {
     device: String,
     page: u32,
     answer: std::sync::mpsc::Receiver<Result<cloud::DiscoveryPage, String>>,
+}
+
+/// A public Tone and the local-table-shaped row derived from it once, when the
+/// page arrives. Discovery results are immutable; rebuilding this on every
+/// frame only burns strings and JSON walks.
+struct CloudEntry {
+    discovered: cloud::DiscoveredTone,
+    row: LibEntry,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -299,7 +363,7 @@ pub struct App {
     cloud_loaded_order: Option<cloud::DiscoveryOrder>,
     cloud_loaded_device: Option<String>,
     cloud_order: cloud::DiscoveryOrder,
-    cloud_entries: Vec<cloud::DiscoveredTone>,
+    cloud_entries: Vec<CloudEntry>,
     /// Matching rows reported by the server, including pages not fetched yet.
     cloud_total: Option<usize>,
     /// The one subsequent page to request when the table nears its end.
@@ -307,6 +371,7 @@ pub struct App {
     cloud_error: Option<String>,
     cloud_selected: Option<usize>,
     cloud_tag_filter: Option<String>,
+    cloud_tags: Vec<String>,
     cloud_sort: (LibColumn, bool),
     cloud_download: Option<CloudDownloadJob>,
     cloud_artifacts: std::collections::HashMap<i64, Vec<u8>>,
@@ -328,6 +393,7 @@ pub struct App {
     /// 126 flash writes and it overwrites everything, so it asks first.
     confirm_push: Option<usize>,
     lib_entries: Vec<LibEntry>,
+    library_lookup: LibraryLookup,
     lib_selected: Option<usize>,
     /// The metadata draft for the selected entry, saved as it is edited.
     lib_draft: library::Meta,
@@ -533,40 +599,31 @@ impl LibColumn {
         matches!(self, LibColumn::Sync | LibColumn::Name)
     }
 
-    fn column(self) -> table::Column {
-        match self {
-            LibColumn::Sync => table::Column::new("Push", 60.0),
-            LibColumn::Name => table::Column::new("Name", 190.0).editable(),
-            LibColumn::Version => table::Column::new("Ver", 58.0),
-            LibColumn::Artist => table::Column::new("Artist", 130.0).editable(),
-            LibColumn::Song => table::Column::new("Song", 150.0).editable(),
-            LibColumn::Genre => table::Column::new("Genre", 130.0).editable(),
-            LibColumn::Rating => table::Column::new("Rating", 62.0).editable(),
-            LibColumn::Downloads => table::Column::new("Downloads", 88.0),
-            LibColumn::Chain => table::Column::new("Chain", 130.0).fills(),
-            LibColumn::Added => table::Column::new("Added", 92.0),
-            LibColumn::Modified => table::Column::new("Modified", 92.0),
-            LibColumn::Character => table::Column::new("Character", 110.0).editable(),
+    /// Local and Cloud tables share one column definition. Cloud passes false
+    /// because published metadata is read-only; local Tones pass true.
+    fn column(self, editable: bool) -> table::Column {
+        let (title, width, can_edit, fills) = match self {
+            LibColumn::Sync => ("Push", 60.0, false, false),
+            LibColumn::Name => ("Name", 190.0, true, false),
+            LibColumn::Version => ("Ver", 58.0, false, false),
+            LibColumn::Artist => ("Artist", 130.0, true, false),
+            LibColumn::Song => ("Song", 150.0, true, false),
+            LibColumn::Genre => ("Genre", 130.0, true, false),
+            LibColumn::Rating => ("Rating", 62.0, true, false),
+            LibColumn::Downloads => ("Downloads", 88.0, false, false),
+            LibColumn::Chain => ("Chain", 130.0, false, true),
+            LibColumn::Added => ("Added", 92.0, false, false),
+            LibColumn::Modified => ("Modified", 92.0, false, false),
+            LibColumn::Character => ("Character", 110.0, true, false),
+        };
+        let mut column = table::Column::new(title, width);
+        if editable && can_edit {
+            column = column.editable();
         }
-    }
-
-    /// Public catalog cells share the local table's exact geometry but are
-    /// read-only: their metadata belongs to the published Tone and Song.
-    fn cloud_column(self) -> table::Column {
-        match self {
-            LibColumn::Sync => table::Column::new("Push", 60.0),
-            LibColumn::Name => table::Column::new("Name", 190.0),
-            LibColumn::Version => table::Column::new("Ver", 58.0),
-            LibColumn::Artist => table::Column::new("Artist", 130.0),
-            LibColumn::Song => table::Column::new("Song", 150.0),
-            LibColumn::Genre => table::Column::new("Genre", 130.0),
-            LibColumn::Rating => table::Column::new("Rating", 62.0),
-            LibColumn::Downloads => table::Column::new("Downloads", 88.0),
-            LibColumn::Chain => table::Column::new("Chain", 130.0).fills(),
-            LibColumn::Added => table::Column::new("Added", 92.0),
-            LibColumn::Modified => table::Column::new("Modified", 92.0),
-            LibColumn::Character => table::Column::new("Character", 110.0),
+        if fills {
+            column = column.fills();
         }
+        column
     }
 
     /// What this column shows for a row, which is also what it sorts on - so
@@ -700,13 +757,18 @@ fn format_count(count: u64) -> String {
     grouped
 }
 
-/// Put rows back in the order a sort worked out.
-fn reorder<T>(rows: Vec<T>, order: &[usize]) -> Vec<T> {
-    let mut held: Vec<Option<T>> = rows.into_iter().map(Some).collect();
-    order
-        .iter()
-        .filter_map(|&i| held.get_mut(i).and_then(Option::take))
-        .collect()
+/// The tag list shared by local and public Tones. Answering through the filter
+/// itself keeps the two rails from growing subtly different click behavior.
+fn tag_rail(ui: &mut egui::Ui, filter: &mut Option<String>, tags: &[String]) {
+    if ui.selectable_label(filter.is_none(), "All tones").clicked() {
+        *filter = None;
+    }
+    for tag in tags {
+        let on = filter.as_deref() == Some(tag.as_str());
+        if ui.selectable_label(on, format!("# {tag}")).clicked() {
+            *filter = Some(tag.clone());
+        }
+    }
 }
 
 /// The three views of the library and its connected public catalog.
@@ -827,6 +889,7 @@ impl App {
             cloud_error: None,
             cloud_selected: None,
             cloud_tag_filter: None,
+            cloud_tags: Vec::new(),
             cloud_sort: (LibColumn::Downloads, false),
             cloud_download: None,
             cloud_artifacts: Default::default(),
@@ -839,6 +902,7 @@ impl App {
             setlist_save: None,
             confirm_push: None,
             lib_entries: Vec::new(),
+            library_lookup: LibraryLookup::default(),
             lib_selected: None,
             lib_draft: library::Meta::default(),
             lib_tag_filter: None,
@@ -1408,31 +1472,27 @@ impl App {
             .cloned()
             .unwrap_or_else(|| "this preset".to_owned());
         let mut decided = None;
-        egui::Window::new("Remove preset")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.set_max_width(320.0);
-                ui.label(format!(
-                    "Empty {} - “{name}” - back to a blank preset?",
-                    hx_proto::rpc::slot_label(index)
-                ));
-                ui.label(
-                    RichText::new("This writes the pedal's flash. Undo does not reach it.")
-                        .small()
-                        .color(theme::DIM),
-                );
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
-                        decided = Some(false);
-                    }
-                    if ui.button("Remove").clicked() {
-                        decided = Some(true);
-                    }
-                });
+        theme::modal("Remove preset").show(ctx, |ui| {
+            ui.set_max_width(320.0);
+            ui.label(format!(
+                "Empty {} - “{name}” - back to a blank preset?",
+                hx_proto::rpc::slot_label(index)
+            ));
+            ui.label(
+                RichText::new("This writes the pedal's flash. Undo does not reach it.")
+                    .small()
+                    .color(theme::DIM),
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    decided = Some(false);
+                }
+                if ui.button("Remove").clicked() {
+                    decided = Some(true);
+                }
             });
+        });
         match decided {
             Some(true) => {
                 self.confirm_clear = None;
@@ -1850,29 +1910,25 @@ impl App {
             .cloned()
             .unwrap_or_else(|| hx_proto::rpc::slot_label(index));
         let mut decided = None;
-        egui::Window::new("Unsaved changes")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.set_max_width(340.0);
-                ui.label(format!(
-                    "“{}” has changes you have not saved. Loading {going_to} discards them.",
-                    self.preset_name
-                ));
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
-                        decided = Some(0);
-                    }
-                    if ui.button("Discard and load").clicked() {
-                        decided = Some(1);
-                    }
-                    if ui.button("Save, then load").clicked() {
-                        decided = Some(2);
-                    }
-                });
+        theme::modal("Unsaved changes").show(ctx, |ui| {
+            ui.set_max_width(340.0);
+            ui.label(format!(
+                "“{}” has changes you have not saved. Loading {going_to} discards them.",
+                self.preset_name
+            ));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    decided = Some(0);
+                }
+                if ui.button("Discard and load").clicked() {
+                    decided = Some(1);
+                }
+                if ui.button("Save, then load").clicked() {
+                    decided = Some(2);
+                }
             });
+        });
         match decided {
             Some(0) => self.confirm_switch = None,
             Some(1) => {
@@ -2553,56 +2609,52 @@ impl App {
         let holder = clash.holder.clone();
         let hash = clash.hash.clone();
         let mut decided = None;
-        egui::Window::new("That name is taken")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.set_max_width(380.0);
-                ui.label(format!(
-                    "Your library already has a different tone called “{holder}”."
-                ));
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new(
-                        "Save new version keeps both revisions under that tone. \
+        theme::modal("That name is taken").show(ctx, |ui| {
+            ui.set_max_width(380.0);
+            ui.label(format!(
+                "Your library already has a different tone called “{holder}”."
+            ));
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(
+                    "Save new version keeps both revisions under that tone. \
                          Existing setlists continue to play the exact revision they saved.",
-                    )
-                    .small()
-                    .color(theme::DIM),
+                )
+                .small()
+                .color(theme::DIM),
+            );
+            ui.add_space(8.0);
+            ui.label(RichText::new("Save as").small().color(theme::DIM));
+            let free = library::name_is_free(&clash.draft, &hash);
+            ui.add(
+                egui::TextEdit::singleline(&mut clash.draft)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("a name of its own"),
+            );
+            if !free {
+                ui.label(
+                    RichText::new("that name is taken too")
+                        .small()
+                        .color(theme::ACCENT),
                 );
-                ui.add_space(8.0);
-                ui.label(RichText::new("Save as").small().color(theme::DIM));
-                let free = library::name_is_free(&clash.draft, &hash);
-                ui.add(
-                    egui::TextEdit::singleline(&mut clash.draft)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("a name of its own"),
-                );
-                if !free {
-                    ui.label(
-                        RichText::new("that name is taken too")
-                            .small()
-                            .color(theme::ACCENT),
-                    );
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    decided = Some(Clash::Cancel);
                 }
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
-                        decided = Some(Clash::Cancel);
-                    }
-                    if ui.button("Save new version").clicked() {
-                        decided = Some(Clash::Override);
-                    }
-                    let named = !clash.draft.trim().is_empty() && free;
-                    if ui
-                        .add_enabled(named, egui::Button::new("Save as"))
-                        .clicked()
-                    {
-                        decided = Some(Clash::SaveAs(clash.draft.trim().to_owned()));
-                    }
-                });
+                if ui.button("Save new version").clicked() {
+                    decided = Some(Clash::Override);
+                }
+                let named = !clash.draft.trim().is_empty() && free;
+                if ui
+                    .add_enabled(named, egui::Button::new("Save as"))
+                    .clicked()
+                {
+                    decided = Some(Clash::SaveAs(clash.draft.trim().to_owned()));
+                }
             });
+        });
 
         let Some(decided) = decided else { return };
         let clash = self.name_clash.take().expect("checked above");
@@ -2715,10 +2767,7 @@ impl App {
             .collect();
         names.sort_by_key(|name| name.to_ascii_lowercase());
         names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
-        egui::Window::new("Save captured setlist")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        theme::modal("Save captured setlist")
             .show(ctx, |ui| {
                 ui.set_width(390.0);
                 ui.label(
@@ -2888,19 +2937,13 @@ impl App {
             // truthful to say.
             return theme::Sync::Unknown;
         };
-        if library::holds(hash) && library::meta_of(hash).is_some() {
-            return theme::Sync::Same;
-        }
         let name = self
             .presets
             .get(index as usize)
-            .cloned()
-            .unwrap_or_default();
-        if !name.is_empty() && library::named(&name).is_some() {
-            theme::Sync::Differs
-        } else {
-            theme::Sync::Absent
-        }
+            .map(String::as_str)
+            .unwrap_or_default()
+            .trim();
+        self.library_lookup.sync(hash, name)
     }
 
     /// The same question from the library's side: is this tone on the pedal?
@@ -2939,9 +2982,49 @@ impl App {
             .lib_selected
             .and_then(|i| self.lib_entries.get(i))
             .map(|e| e.hash.clone());
-        let mut entries = Vec::new();
-        for entry in library::entries() {
-            let (derived, line) = self.library_facts(&entry.hash);
+        let disk_entries = library::entries();
+        let metadata = library::metadata();
+
+        let indexed = metadata
+            .keys()
+            .filter(|hash| library::holds(hash))
+            .cloned()
+            .collect();
+        // A setlist may pin an old tone revision that is no longer the
+        // library's current row. Read each distinct document once now, not
+        // every frame and not once for every setlist that happens to use it.
+        let setlist_hashes: std::collections::BTreeSet<String> = self
+            .lib_setlists
+            .iter()
+            .flat_map(|(_, setlist)| setlist.slots.iter().map(|slot| slot.hash.clone()))
+            .filter(|hash| !hash.is_empty())
+            .collect();
+        let mut facts = std::collections::HashMap::new();
+        let mut setlist_tones = std::collections::HashMap::new();
+        for hash in setlist_hashes {
+            let held = library::holds(&hash);
+            let fact = if held {
+                self.library_facts(&hash)
+            } else {
+                (String::new(), String::new())
+            };
+            facts.insert(hash.clone(), fact.clone());
+            setlist_tones.insert(
+                hash.clone(),
+                SetlistTone {
+                    held,
+                    meta: metadata.get(&hash).cloned().unwrap_or_default(),
+                    line: fact.1,
+                },
+            );
+        }
+
+        let mut entries = Vec::with_capacity(disk_entries.len());
+        for entry in disk_entries {
+            let (derived, line) = facts
+                .get(&entry.hash)
+                .cloned()
+                .unwrap_or_else(|| self.library_facts(&entry.hash));
             // The recorded name wins: it is what the pedal shows, colon and
             // all, where a name read back off the document may not be.
             let name = if entry.meta.name.is_empty() {
@@ -2964,6 +3047,12 @@ impl App {
             });
         }
         self.lib_entries = entries;
+        self.library_lookup = LibraryLookup {
+            indexed,
+            setlist_tones,
+            ..Default::default()
+        };
+        self.library_lookup.reindex(&self.lib_entries);
         self.lib_selected =
             selected.and_then(|h| self.lib_entries.iter().position(|e| e.hash == h));
         self.write_portable_copies();
@@ -3141,6 +3230,7 @@ impl App {
             self.cloud_loaded_order = Some(order);
             self.cloud_loaded_device = Some(device.clone());
             self.cloud_entries.clear();
+            self.cloud_tags.clear();
             self.cloud_selected = None;
             self.cloud_total = None;
             self.cloud_next_page = None;
@@ -3210,11 +3300,22 @@ impl App {
                     if !self
                         .cloud_entries
                         .iter()
-                        .any(|known| known.tone.summary.id == entry.tone.summary.id)
+                        .any(|known| known.discovered.tone.summary.id == entry.tone.summary.id)
                     {
-                        self.cloud_entries.push(entry);
+                        let row = Self::cloud_row(&entry);
+                        self.cloud_entries.push(CloudEntry {
+                            discovered: entry,
+                            row,
+                        });
                     }
                 }
+                self.cloud_tags = self
+                    .cloud_entries
+                    .iter()
+                    .flat_map(|entry| entry.discovered.song.tags.iter().cloned())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
                 self.cloud_error = None;
             }
             Err(why) => {
@@ -3285,7 +3386,11 @@ impl App {
     }
 
     fn start_cloud_action(&mut self, entry: usize, action: CloudAction, ctx: &egui::Context) {
-        let Some(entry) = self.cloud_entries.get(entry).cloned() else {
+        let Some(entry) = self
+            .cloud_entries
+            .get(entry)
+            .map(|entry| entry.discovered.clone())
+        else {
             return;
         };
         self.start_cloud_entry_action(entry, action, ctx);
@@ -3476,8 +3581,33 @@ impl App {
             .join(" › ")
     }
 
-    fn local_cloud_entry(&mut self, entry: &cloud::DiscoveredTone) -> Option<usize> {
-        let wanted = entry.tone.file_sha256.as_deref()?;
+    fn cloud_row(entry: &cloud::DiscoveredTone) -> LibEntry {
+        LibEntry {
+            hash: entry
+                .tone
+                .file_sha256
+                .clone()
+                .unwrap_or_else(|| format!("cloud:{}", entry.tone.summary.id)),
+            series: entry
+                .tone
+                .summary
+                .series_id
+                .clone()
+                .unwrap_or_else(|| entry.tone.summary.id.to_string()),
+            name: entry.tone.summary.name.clone(),
+            line: Self::cloud_chain(entry),
+            meta: Self::cloud_meta(entry),
+            added_at: entry.tone.summary.created_at.clone(),
+            modified_at: entry.tone.summary.updated_at.clone(),
+            downloads: Some(entry.tone.summary.installs_count),
+            rating: entry.tone.summary.rating,
+            version: entry.tone.summary.version_number.unwrap_or(1).max(1),
+            versions: entry.tone.summary.versions_count.max(1),
+        }
+    }
+
+    fn local_cloud_entry(&mut self, wanted: Option<&str>) -> Option<usize> {
+        let wanted = wanted?;
         if let Some(index) = self
             .lib_entries
             .iter()
@@ -3495,10 +3625,6 @@ impl App {
             }
         }
         None
-    }
-
-    fn cloud_on_computer(&mut self, entry: &cloud::DiscoveredTone) -> bool {
-        self.local_cloud_entry(entry).is_some()
     }
 
     fn cloud_tags_rail(&mut self, ui: &mut egui::Ui) {
@@ -3529,23 +3655,7 @@ impl App {
         ui.separator();
         ui.add_space(6.0);
         ui.label(RichText::new("TAGS").small().color(theme::DIM));
-        if ui
-            .selectable_label(self.cloud_tag_filter.is_none(), "All tones")
-            .clicked()
-        {
-            self.cloud_tag_filter = None;
-        }
-        let tags: std::collections::BTreeSet<String> = self
-            .cloud_entries
-            .iter()
-            .flat_map(|entry| entry.song.tags.iter().cloned())
-            .collect();
-        for tag in tags {
-            let on = self.cloud_tag_filter.as_deref() == Some(tag.as_str());
-            if ui.selectable_label(on, format!("# {tag}")).clicked() {
-                self.cloud_tag_filter = Some(tag);
-            }
-        }
+        tag_rail(ui, &mut self.cloud_tag_filter, &self.cloud_tags);
     }
 
     fn cloud_table(&mut self, ui: &mut egui::Ui) {
@@ -3561,13 +3671,13 @@ impl App {
             .filter(|(_, entry)| {
                 filter
                     .as_ref()
-                    .is_none_or(|tag| entry.song.tags.contains(tag))
+                    .is_none_or(|tag| entry.discovered.song.tags.contains(tag))
             })
             .map(|(index, _)| index)
             .collect();
         let shown = self.shown_columns();
         let mut grid = table::Grid {
-            columns: shown.iter().map(|column| column.cloud_column()).collect(),
+            columns: shown.iter().map(|column| column.column(false)).collect(),
             sort: (
                 shown
                     .iter()
@@ -3584,33 +3694,11 @@ impl App {
             ..Default::default()
         };
         for &row in &source_rows {
-            let entry = self.cloud_entries[row].clone();
-            let meta = Self::cloud_meta(&entry);
-            let line = Self::cloud_chain(&entry);
-            let local = LibEntry {
-                hash: entry
-                    .tone
-                    .file_sha256
-                    .clone()
-                    .unwrap_or_else(|| format!("cloud:{}", entry.tone.summary.id)),
-                series: entry
-                    .tone
-                    .summary
-                    .series_id
-                    .clone()
-                    .unwrap_or_else(|| entry.tone.summary.id.to_string()),
-                name: entry.tone.summary.name.clone(),
-                line,
-                meta,
-                added_at: entry.tone.summary.created_at.clone(),
-                modified_at: entry.tone.summary.updated_at.clone(),
-                downloads: Some(entry.tone.summary.installs_count),
-                rating: entry.tone.summary.rating,
-                version: entry.tone.summary.version_number.unwrap_or(1).max(1),
-                versions: entry.tone.summary.versions_count.max(1),
-            };
-            let on_computer = self.cloud_on_computer(&entry);
-            let audition_blocker = self.cloud_audition_blocker(&entry);
+            let wanted = self.cloud_entries[row].discovered.tone.file_sha256.clone();
+            let on_computer = self.local_cloud_entry(wanted.as_deref()).is_some();
+            let entry = &self.cloud_entries[row].discovered;
+            let local = &self.cloud_entries[row].row;
+            let audition_blocker = self.cloud_audition_blocker(entry);
             let downloading = self
                 .cloud_download
                 .as_ref()
@@ -3659,24 +3747,18 @@ impl App {
                                 },
                             ),
                         ]),
-                        _ => column.value_cell(&local),
+                        _ => column.value_cell(local),
                     })
                     .collect(),
             );
             grid.chosen.push(false);
         }
 
-        let (sorting, ascending) = grid.sort;
-        let mut order: Vec<usize> = (0..grid.rows.len()).collect();
-        order.sort_by_key(|&row| grid.rows[row][sorting].key());
-        if !ascending {
-            order.reverse();
-        }
-        let rows: Vec<usize> = order.iter().map(|&row| source_rows[row]).collect();
-        grid.rows = reorder(std::mem::take(&mut grid.rows), &order);
         grid.selected = self
             .cloud_selected
-            .and_then(|selected| rows.iter().position(|&row| row == selected));
+            .and_then(|selected| source_rows.iter().position(|&row| row == selected));
+        let order = grid.sort_rows();
+        let rows: Vec<usize> = order.iter().map(|&row| source_rows[row]).collect();
 
         let did = table::show(ui, "cloud-library", &mut grid);
         // The feed stops after page one. Only approaching the end of the rows
@@ -3705,17 +3787,17 @@ impl App {
         if let Some((row, place)) = did.place {
             let Some(&entry) = rows.get(row) else { return };
             self.cloud_selected = Some(entry);
-            let local = self
+            let wanted = self
                 .cloud_entries
                 .get(entry)
-                .cloned()
-                .and_then(|tone| self.local_cloud_entry(&tone));
+                .and_then(|tone| tone.discovered.tone.file_sha256.clone());
+            let local = self.local_cloud_entry(wanted.as_deref());
             match place {
                 0 if self.auditioning
                     == self
                         .cloud_entries
                         .get(entry)
-                        .map(|entry| entry.tone.summary.id) =>
+                        .map(|entry| entry.discovered.tone.summary.id) =>
                 {
                     self.send(Cmd::KeepAudition)
                 }
@@ -3735,14 +3817,20 @@ impl App {
         let Some(entry) = self
             .cloud_selected
             .and_then(|selected| self.cloud_entries.get(selected))
-            .cloned()
+            .map(|entry| {
+                (
+                    entry.discovered.clone(),
+                    entry.row.meta.clone(),
+                    entry.row.line.clone(),
+                )
+            })
         else {
             ui.label(
                 RichText::new("Select a tone to see its published details.").color(theme::DIM),
             );
             return;
         };
-        let meta = Self::cloud_meta(&entry);
+        let (entry, meta, line) = entry;
         let downloads = format_count(entry.tone.summary.installs_count);
         let rating = entry
             .tone
@@ -3758,7 +3846,6 @@ impl App {
             entry.tone.summary.versions_count.max(1)
         );
         ui.heading(&entry.tone.summary.name);
-        let line = Self::cloud_chain(&entry);
         if !line.is_empty() {
             ui.label(RichText::new(line).small().color(theme::DIM));
         }
@@ -3988,17 +4075,27 @@ impl App {
                 self.library_header(ui, &mut capture);
                 ui.separator();
                 match self.lib_showing {
-                    LibraryView::Tones => {
-                        egui::Panel::left("lib-tags")
+                    // Local and public Tones are the same screen shape: a
+                    // browse rail, rows, and an inspector. Keep that geometry
+                    // in one place; only the contents know who owns the data.
+                    view @ (LibraryView::Tones | LibraryView::Cloud) => {
+                        let cloud = view == LibraryView::Cloud;
+                        egui::Panel::left("tone-tags")
                             .resizable(false)
                             .default_size(150.0)
                             .show(ui, |ui| {
                                 egui::ScrollArea::vertical()
                                     .auto_shrink([false, false])
-                                    .id_salt("lib-tags-scroll")
-                                    .show(ui, |ui| self.library_tags_rail(ui));
+                                    .id_salt("tone-tags-scroll")
+                                    .show(ui, |ui| {
+                                        if cloud {
+                                            self.cloud_tags_rail(ui);
+                                        } else {
+                                            self.library_tags_rail(ui);
+                                        }
+                                    });
                             });
-                        egui::Panel::right("lib-inspector")
+                        egui::Panel::right("tone-inspector")
                             .resizable(true)
                             .default_size(310.0)
                             .show(ui, |ui| {
@@ -4009,10 +4106,22 @@ impl App {
                                 // top of the status bar.
                                 egui::ScrollArea::vertical()
                                     .auto_shrink([false, false])
-                                    .id_salt("lib-inspector-scroll")
-                                    .show(ui, |ui| self.library_inspector(ui));
+                                    .id_salt("tone-inspector-scroll")
+                                    .show(ui, |ui| {
+                                        if cloud {
+                                            self.cloud_inspector(ui);
+                                        } else {
+                                            self.library_inspector(ui);
+                                        }
+                                    });
                             });
-                        egui::CentralPanel::default().show(ui, |ui| self.library_table(ui));
+                        egui::CentralPanel::default().show(ui, |ui| {
+                            if cloud {
+                                self.cloud_table(ui);
+                            } else {
+                                self.library_table(ui);
+                            }
+                        });
                     }
                     // Setlists on the left, what is in the chosen one on the
                     // right, drawn by the same table the tones use. A setlist
@@ -4033,30 +4142,6 @@ impl App {
                             // scroll is two scrollbars fighting over one wheel.
                             .show(ui, |ui| self.setlist_rail(ui));
                         egui::CentralPanel::default().show(ui, |ui| self.setlist_slots(ui));
-                    }
-                    // Deliberately the same three-part composition and the
-                    // same table as local Tones: tags, rows, details. Only the
-                    // ownership of the fields differs.
-                    LibraryView::Cloud => {
-                        egui::Panel::left("cloud-tags")
-                            .resizable(false)
-                            .default_size(150.0)
-                            .show(ui, |ui| {
-                                egui::ScrollArea::vertical()
-                                    .auto_shrink([false, false])
-                                    .id_salt("cloud-tags-scroll")
-                                    .show(ui, |ui| self.cloud_tags_rail(ui));
-                            });
-                        egui::Panel::right("cloud-inspector")
-                            .resizable(true)
-                            .default_size(310.0)
-                            .show(ui, |ui| {
-                                egui::ScrollArea::vertical()
-                                    .auto_shrink([false, false])
-                                    .id_salt("cloud-inspector-scroll")
-                                    .show(ui, |ui| self.cloud_inspector(ui));
-                            });
-                        egui::CentralPanel::default().show(ui, |ui| self.cloud_table(ui));
                     }
                 }
             });
@@ -4099,25 +4184,18 @@ impl App {
             ]);
         }
 
-        // Sorted on the very strings the table shows, so the order on screen
-        // and the order underneath can never disagree.
-        let (sorting, ascending) = grid.sort;
-        let mut order: Vec<usize> = (0..grid.rows.len()).collect();
-        order.sort_by_key(|&r| grid.rows[r][sorting.min(4)].key());
-        if !ascending {
-            order.reverse();
-        }
-        grid.rows = reorder(std::mem::take(&mut grid.rows), &order);
-        grid.selected = self
-            .lib_setlist
-            .and_then(|sel| order.iter().position(|&r| r == sel));
+        grid.selected = self.lib_setlist;
         if let Some((path, column, draft)) = self.lib_setlist_editing.clone() {
-            grid.editing = order
+            grid.editing = self
+                .lib_setlists
                 .iter()
-                .position(|&r| self.lib_setlists[r].0 == path)
+                .position(|(known, _)| *known == path)
                 .map(|row| (row, column));
             grid.draft = draft;
         }
+        // Sorted on the very strings the table shows, so the order on screen
+        // and the order underneath can never disagree.
+        let order = grid.sort_rows();
 
         // Its own height, so the details below it keep theirs. A long library
         // takes a little over half the panel and scrolls inside that.
@@ -4283,9 +4361,8 @@ impl App {
             ..Default::default()
         };
         for (slot, entry) in &played {
-            let held = library::holds(&entry.hash);
-            let meta = library::meta_of(&entry.hash).unwrap_or_default();
-            let (_, line) = self.library_facts(&entry.hash);
+            let tone = self.library_lookup.setlist_tones.get(&entry.hash);
+            let held = tone.is_some_and(|tone| tone.held);
             grid.rows.push(vec![
                 table::Cell::Places(vec![(
                     theme::Icon::Computer,
@@ -4302,8 +4379,11 @@ impl App {
                 )]),
                 table::Cell::Dim(hx_proto::rpc::slot_label(*slot as i64)),
                 table::Cell::Text(entry.name.clone()),
-                table::Cell::Text(meta.artist),
-                table::Cell::Dim(line),
+                table::Cell::Text(
+                    tone.map(|tone| tone.meta.artist.clone())
+                        .unwrap_or_default(),
+                ),
+                table::Cell::Dim(tone.map(|tone| tone.line.clone()).unwrap_or_default()),
             ]);
             grid.chosen.push(false);
         }
@@ -4443,35 +4523,31 @@ impl App {
             return;
         };
         let mut decided = None;
-        egui::Window::new("Put the setlist on the pedal")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.set_max_width(360.0);
-                ui.label(format!(
-                    "Write “{}” - {} presets - over everything on the pedal?",
-                    setlist.name,
-                    setlist.filled()
-                ));
-                ui.label(
-                    RichText::new(
-                        "Every slot is a flash write and undo does not reach them. \
+        theme::modal("Put the setlist on the pedal").show(ctx, |ui| {
+            ui.set_max_width(360.0);
+            ui.label(format!(
+                "Write “{}” - {} presets - over everything on the pedal?",
+                setlist.name,
+                setlist.filled()
+            ));
+            ui.label(
+                RichText::new(
+                    "Every slot is a flash write and undo does not reach them. \
                          Capture the pedal first if you want what is on it now.",
-                    )
-                    .small()
-                    .color(theme::DIM),
-                );
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
-                        decided = Some(false);
-                    }
-                    if ui.button("Write it").clicked() {
-                        decided = Some(true);
-                    }
-                });
+                )
+                .small()
+                .color(theme::DIM),
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    decided = Some(false);
+                }
+                if ui.button("Write it").clicked() {
+                    decided = Some(true);
+                }
             });
+        });
         match decided {
             Some(true) => {
                 self.confirm_push = None;
@@ -4510,18 +4586,7 @@ impl App {
     fn library_tags_rail(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
         ui.label(RichText::new("TAGS").small().color(theme::DIM));
-        if ui
-            .selectable_label(self.lib_tag_filter.is_none(), "All tones")
-            .clicked()
-        {
-            self.lib_tag_filter = None;
-        }
-        for tag in library::all_tags() {
-            let on = self.lib_tag_filter.as_deref() == Some(tag.as_str());
-            if ui.selectable_label(on, format!("# {tag}")).clicked() {
-                self.lib_tag_filter = Some(tag);
-            }
-        }
+        tag_rail(ui, &mut self.lib_tag_filter, &self.library_lookup.tags);
     }
 
     /// The middle table: one row per tone, filtered by the chosen tag. Click to
@@ -4538,7 +4603,7 @@ impl App {
 
         let shown = self.shown_columns();
         let mut grid = table::Grid {
-            columns: shown.iter().map(|c| c.column()).collect(),
+            columns: shown.iter().map(|column| column.column(true)).collect(),
             sort: (
                 shown
                     .iter()
@@ -4582,20 +4647,9 @@ impl App {
             grid.chosen.push(self.lib_chosen.contains(&entry.hash));
         }
 
-        // Sorted on the very strings the table shows, so the order can never
-        // disagree with what is on screen.
-        let (sorting, ascending) = grid.sort;
-        let mut order: Vec<usize> = (0..grid.rows.len()).collect();
-        order.sort_by_key(|&r| grid.rows[r][sorting].key());
-        if !ascending {
-            order.reverse();
-        }
-        let rows: Vec<usize> = order.iter().map(|&r| rows[r]).collect();
-        grid.rows = reorder(std::mem::take(&mut grid.rows), &order);
-        grid.chosen = order.iter().map(|&r| grid.chosen[r]).collect();
         grid.selected = self
             .lib_selected
-            .and_then(|sel| rows.iter().position(|&r| r == sel));
+            .and_then(|selected| rows.iter().position(|&row| row == selected));
 
         if let Some((hash, column, draft)) = self.lib_editing.clone() {
             let cell = rows
@@ -4605,6 +4659,10 @@ impl App {
             grid.editing = cell;
             grid.draft = draft;
         }
+        // Sorted on the very strings the table shows, so the order can never
+        // disagree with what is on screen.
+        let order = grid.sort_rows();
+        let rows: Vec<usize> = order.iter().map(|&row| rows[row]).collect();
 
         let did = table::show(ui, "library", &mut grid);
         self.lib_draft_edit(&grid, &did, &rows, &shown);
@@ -4746,6 +4804,7 @@ impl App {
         self.lib_entries[i].modified_at = self.lib_entries[i].meta.modified_at.clone();
         self.lib_entries[i].rating =
             (self.lib_entries[i].meta.rating > 0).then_some(self.lib_entries[i].meta.rating as f32);
+        self.library_lookup.reindex(&self.lib_entries);
     }
 
     /// Which columns the table is showing, in order, skipping the ones turned
@@ -5142,60 +5201,56 @@ impl App {
             return;
         };
         let mut decided = None;
-        egui::Window::new("Delete tones")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.set_max_width(360.0);
-                ui.label(if chosen.len() == 1 {
-                    "Delete this tone from the library?".to_owned()
-                } else {
-                    format!("Delete {} tones from the library?", chosen.len())
-                });
-                if !affected.is_empty() {
-                    ui.add_space(6.0);
-                    ui.label(
-                        RichText::new(format!(
-                            "{} played by the {} {}, and will keep playing there.",
-                            if chosen.len() == 1 {
-                                "This tone is"
-                            } else {
-                                "Some of them are"
-                            },
-                            if affected.len() == 1 {
-                                "setlist"
-                            } else {
-                                "setlists"
-                            },
-                            affected
-                                .iter()
-                                .map(|n| format!("“{n}”"))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ))
-                        .color(theme::DIM),
-                    );
-                }
-                ui.add_space(4.0);
+        theme::modal("Delete tones").show(ctx, |ui| {
+            ui.set_max_width(360.0);
+            ui.label(if chosen.len() == 1 {
+                "Delete this tone from the library?".to_owned()
+            } else {
+                format!("Delete {} tones from the library?", chosen.len())
+            });
+            if !affected.is_empty() {
+                ui.add_space(6.0);
                 ui.label(
-                    RichText::new(
-                        "Nothing else playing them goes to the library's trash, \
-                         not out of existence.",
-                    )
-                    .small()
+                    RichText::new(format!(
+                        "{} played by the {} {}, and will keep playing there.",
+                        if chosen.len() == 1 {
+                            "This tone is"
+                        } else {
+                            "Some of them are"
+                        },
+                        if affected.len() == 1 {
+                            "setlist"
+                        } else {
+                            "setlists"
+                        },
+                        affected
+                            .iter()
+                            .map(|n| format!("“{n}”"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
                     .color(theme::DIM),
                 );
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
-                        decided = Some(false);
-                    }
-                    if ui.button("Delete").clicked() {
-                        decided = Some(true);
-                    }
-                });
+            }
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(
+                    "Nothing else playing them goes to the library's trash, \
+                         not out of existence.",
+                )
+                .small()
+                .color(theme::DIM),
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    decided = Some(false);
+                }
+                if ui.button("Delete").clicked() {
+                    decided = Some(true);
+                }
             });
+        });
         match decided {
             Some(true) => {
                 self.confirm_delete = None;
@@ -5488,6 +5543,7 @@ impl App {
             if !self.lib_draft.name.is_empty() {
                 self.lib_entries[i].name = self.lib_draft.name.clone();
             }
+            self.library_lookup.reindex(&self.lib_entries);
         }
 
         ui.add_space(10.0);
@@ -5616,9 +5672,7 @@ impl App {
                         ui.add_space(4.0);
                         ui.horizontal(|ui| self.backup_actions(ui));
 
-                        ui.add_space(18.0);
-                        ui.separator();
-                        ui.add_space(10.0);
+                        theme::section_break(ui);
 
                         let free_ir =
                             (0..128).find(|slot| !self.irs.iter().any(|(used, _)| used == slot));
@@ -5723,9 +5777,7 @@ impl App {
                             }
                         }
 
-                        ui.add_space(18.0);
-                        ui.separator();
-                        ui.add_space(10.0);
+                        theme::section_break(ui);
 
                         let favourites = self.favourites.clone();
                         let selected = self.selected_block();
@@ -5781,9 +5833,7 @@ impl App {
                             self.send(Cmd::ClearFavourite(index));
                         }
 
-                        ui.add_space(18.0);
-                        ui.separator();
-                        ui.add_space(10.0);
+                        theme::section_break(ui);
                         ui.label(RichText::new("DIAGNOSTICS").small().color(theme::DIM));
                         ui.checkbox(&mut self.show_activity, "Device activity");
                     });
@@ -11163,6 +11213,64 @@ mod tests {
                 .as_ref()
                 .and_then(|download| download.artifact.as_deref()),
             Some("/tones/456/versions/1/artifact")
+        );
+    }
+
+    #[test]
+    fn the_library_lookup_follows_the_rows_it_serves() {
+        let (mut app, _events, _cmds) = app();
+        let hash = "a".repeat(64);
+        let mut meta = library::Meta {
+            name: "Loud Lead".into(),
+            artist: "Anyone".into(),
+            tags: vec!["lead".into(), "loud".into()],
+            ..Default::default()
+        };
+        app.lib_entries = vec![LibEntry {
+            hash: hash.clone(),
+            series: hash.clone(),
+            name: meta.name.clone(),
+            line: "Amp › Delay".into(),
+            added_at: String::new(),
+            modified_at: String::new(),
+            downloads: None,
+            rating: None,
+            version: 1,
+            versions: 1,
+            meta: meta.clone(),
+        }];
+        app.library_lookup = LibraryLookup::default();
+        app.library_lookup.setlist_tones.insert(
+            hash.clone(),
+            SetlistTone {
+                held: true,
+                meta: library::Meta::default(),
+                line: "Amp › Delay".into(),
+            },
+        );
+
+        app.library_lookup.reindex(&app.lib_entries);
+        assert!(app.library_lookup.names.contains("loud lead"));
+        assert_eq!(app.library_lookup.tags, ["lead", "loud"]);
+        assert_eq!(
+            app.library_lookup.setlist_tones[&hash].meta.artist,
+            "Anyone"
+        );
+        app.library_lookup.indexed.insert(hash.clone());
+        app.mirror.insert(0, hash.clone());
+        assert!(matches!(app.slot_sync(0), theme::Sync::Same));
+        app.mirror.insert(0, "different bytes".into());
+        app.presets = vec!["LOUD LEAD".into()];
+        assert!(matches!(app.slot_sync(0), theme::Sync::Differs));
+
+        meta.artist = "Someone else".into();
+        meta.tags = vec!["bright".into()];
+        app.lib_entries[0].meta = meta;
+        app.library_lookup.reindex(&app.lib_entries);
+        assert_eq!(app.library_lookup.tags, ["bright"]);
+        assert_eq!(
+            app.library_lookup.setlist_tones[&hash].meta.artist,
+            "Someone else"
         );
     }
 
