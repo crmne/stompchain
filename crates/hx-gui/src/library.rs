@@ -40,14 +40,7 @@ use sha2::{Digest, Sha256};
 /// Where kept tones live: `~/.local/share/tonepush/library`, beside the
 /// extracted resources. `None` only when there is no home to write into.
 pub fn dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("TONEPUSH_LIBRARY") {
-        return Some(PathBuf::from(dir));
-    }
-    std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .or_else(|| std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join(".local/share")))
-        .map(|d| d.join("tonepush/library"))
+    hx_catalog::home::library()
 }
 
 /// The object store: one file per distinct tone, named after its hash.

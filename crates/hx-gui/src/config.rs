@@ -51,14 +51,7 @@ impl Config {
 /// `~/.config/tonepush/config.json`, mirroring where extracted resources
 /// live. `None` only when there is no home to write into.
 fn config_path() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("TONEPUSH_CONFIG") {
-        return Some(PathBuf::from(dir));
-    }
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .or_else(|| std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join(".config")))
-        .map(|d| d.join("tonepush/config.json"))
+    hx_catalog::home::config()
 }
 
 impl Config {

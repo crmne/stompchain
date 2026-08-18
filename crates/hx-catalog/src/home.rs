@@ -56,7 +56,7 @@ fn adopt_in(base: &Path) -> Option<PathBuf> {
 
 /// `~/.local/share`, by the same reckoning the library, the backups and the
 /// extracted resources all use to find themselves.
-pub fn data_home() -> Option<PathBuf> {
+fn data_home() -> Option<PathBuf> {
     std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| home().map(|h| h.join(".local/share")))
@@ -69,7 +69,10 @@ fn config_home() -> Option<PathBuf> {
         .or_else(|| home().map(|h| h.join(".config")))
 }
 
-fn home() -> Option<PathBuf> {
+/// This machine's home directory, under whichever of the two names it keeps
+/// it. Public because anything reaching for `~` wants this and not one of the
+/// two halves of it.
+pub fn home() -> Option<PathBuf> {
     home_from(std::env::var_os("HOME"), std::env::var_os("USERPROFILE"))
 }
 
@@ -80,14 +83,43 @@ fn home_from(home: Option<OsString>, userprofile: Option<OsString>) -> Option<Pa
     home.or(userprofile).map(PathBuf::from)
 }
 
+/// The one directory the program owns on this machine.
+fn ours() -> Option<PathBuf> {
+    data_home().map(|d| d.join(CURRENT))
+}
+
+/// An override, where somebody has pointed one of these directories
+/// elsewhere. Each is read here rather than at the call site, so that a
+/// directory and the way to move it stay one fact.
+fn overridden(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name).map(PathBuf::from)
+}
+
 /// Where HX Edit's extracted model data lives.
 ///
-/// Named here, once, because the writer and the reader have to agree and
-/// briefly did not: the code that extracted the files knew Windows keeps its
-/// home directory in `USERPROFILE` and the code that loaded them did not, so
-/// an extraction announced success and the catalog then would not load.
+/// Every directory below is named here and nowhere else, because the code
+/// that writes one and the code that reads it have to agree, and twice now
+/// they have not. Both of those were the same mistake: a second copy of this
+/// reckoning that had not been told Windows keeps its home directory under
+/// `USERPROFILE`. One copy cannot disagree with itself.
 pub fn resources() -> Option<PathBuf> {
-    data_home().map(|d| d.join(CURRENT).join("hx-resources"))
+    overridden("HX_RESOURCES_DEST").or_else(|| ours().map(|d| d.join("hx-resources")))
+}
+
+/// Where kept tones live.
+pub fn library() -> Option<PathBuf> {
+    overridden("TONEPUSH_LIBRARY").or_else(|| ours().map(|d| d.join("library")))
+}
+
+/// Where automatic backups live, one directory per pedal.
+pub fn backups() -> Option<PathBuf> {
+    overridden("TONEPUSH_BACKUPS").or_else(|| ours().map(|d| d.join("backups")))
+}
+
+/// The config file itself, which unlike the rest hangs off `~/.config`.
+pub fn config() -> Option<PathBuf> {
+    overridden("TONEPUSH_CONFIG")
+        .or_else(|| config_home().map(|d| d.join(CURRENT).join("config.json")))
 }
 
 #[cfg(test)]
@@ -113,6 +145,25 @@ mod tests {
             Some(PathBuf::from(r"C:\Users\cj"))
         );
         assert_eq!(home_from(None, None), None);
+    }
+
+    /// Every directory the program keeps hangs off one root, so a machine
+    /// that resolves a home resolves all of them. The backup directory once
+    /// did not: it kept a second copy of this reckoning, and answered `None`
+    /// on Windows, where the automatic backups were therefore never written.
+    #[test]
+    fn every_directory_resolves_wherever_a_home_does() {
+        let overridden = ["HX_RESOURCES_DEST", "TONEPUSH_LIBRARY", "TONEPUSH_BACKUPS"]
+            .iter()
+            .any(|name| std::env::var_os(name).is_some());
+        let Some(root) = ours().filter(|_| !overridden) else {
+            return;
+        };
+        for dir in [resources(), library(), backups()] {
+            let dir = dir.expect("a directory beside the others");
+            assert!(dir.starts_with(&root), "{dir:?} is not under {root:?}");
+        }
+        assert!(config().is_some(), "a home with no config file to write");
     }
 
     /// `HOME` wins where both are set, so a Unix machine that also sets

@@ -1878,7 +1878,7 @@ fn stamp_of(secs: u64) -> String {
 
 /// Where the automatic backup lives: one bundle, kept current.
 pub fn automatic_dir() -> Option<std::path::PathBuf> {
-    hx_usb::backup::default_dir().map(|d| d.join("automatic.hxbundle"))
+    hx_catalog::home::backups().map(|d| d.join("automatic.hxbundle"))
 }
 
 /// Turn a capture or restore step into something to show.

@@ -23,17 +23,13 @@ const WANTED: [&str; 5] = [
 ///
 /// [`resources_dir`]: crate::resources_dir
 pub fn destination() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("HX_RESOURCES_DEST") {
-        return Some(PathBuf::from(dir));
-    }
     crate::home::resources()
 }
 
 /// An `HX Edit` installer sitting in the user's Downloads folder, newest
 /// first, for the "check my Downloads" button.
 pub fn installer_in_downloads() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
-    let downloads = PathBuf::from(home).join("Downloads");
+    let downloads = crate::home::home()?.join("Downloads");
     let mut found: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(downloads)
         .ok()?
         .flatten()
@@ -83,6 +79,8 @@ pub fn installed_resources() -> Option<PathBuf> {
         PathBuf::from("/Applications/Line6/HX Edit.app/Contents/Resources"),
         PathBuf::from(r"C:\Program Files\Line 6\HX Edit\resources"),
     ];
+    // `HOME` rather than the shared home lookup: this is macOS's per-user
+    // Applications folder, and there is no Windows counterpart to look in.
     if let Some(home) = std::env::var_os("HOME") {
         candidates
             .push(PathBuf::from(home).join("Applications/Line6/HX Edit.app/Contents/Resources"));
