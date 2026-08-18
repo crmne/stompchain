@@ -444,6 +444,12 @@ pub fn default_dir() -> Option<PathBuf> {
             std::env::var_os("XDG_DATA_HOME")
                 .map(PathBuf::from)
                 .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+                // Windows keeps the home directory under another name, and a
+                // backup directory that resolves to nothing there is a pedal
+                // whose automatic backups were never written.
+                .or_else(|| {
+                    std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join(".local/share"))
+                })
                 .map(|d| d.join("tonepush/backups"))
         })
 }

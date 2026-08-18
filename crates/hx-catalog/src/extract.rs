@@ -26,11 +26,7 @@ pub fn destination() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("HX_RESOURCES_DEST") {
         return Some(PathBuf::from(dir));
     }
-    std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .or_else(|| std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join(".local/share")))
-        .map(|d| d.join("tonepush/hx-resources"))
+    crate::home::resources()
 }
 
 /// An `HX Edit` installer sitting in the user's Downloads folder, newest

@@ -551,10 +551,7 @@ pub fn resources_dir() -> Option<PathBuf> {
     // HX Edit ships for macOS and Windows only, so on Linux there is nowhere
     // standard to look. Copying the Resources folder across from a machine that
     // has it is the practical route, and this is where we expect it.
-    let shared = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .map(|d| d.join("tonepush/hx-resources"));
+    let shared = home::resources();
 
     [
         Some(default_resources()),

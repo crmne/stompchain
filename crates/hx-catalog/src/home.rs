@@ -9,6 +9,7 @@
 //! were the truth. Losing the lot quietly is worse than losing it loudly, and
 //! neither is acceptable when the fix is one rename.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 /// What the program used to be called, and what it is called now. Both appear
@@ -55,7 +56,7 @@ fn adopt_in(base: &Path) -> Option<PathBuf> {
 
 /// `~/.local/share`, by the same reckoning the library, the backups and the
 /// extracted resources all use to find themselves.
-fn data_home() -> Option<PathBuf> {
+pub fn data_home() -> Option<PathBuf> {
     std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| home().map(|h| h.join(".local/share")))
@@ -69,9 +70,24 @@ fn config_home() -> Option<PathBuf> {
 }
 
 fn home() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
+    home_from(std::env::var_os("HOME"), std::env::var_os("USERPROFILE"))
+}
+
+/// Which of the two names for a home directory this machine uses, split from
+/// the environment so the Windows shape - no `HOME`, only `USERPROFILE` - can
+/// be tested on a machine that is not Windows.
+fn home_from(home: Option<OsString>, userprofile: Option<OsString>) -> Option<PathBuf> {
+    home.or(userprofile).map(PathBuf::from)
+}
+
+/// Where HX Edit's extracted model data lives.
+///
+/// Named here, once, because the writer and the reader have to agree and
+/// briefly did not: the code that extracted the files knew Windows keeps its
+/// home directory in `USERPROFILE` and the code that loaded them did not, so
+/// an extraction announced success and the catalog then would not load.
+pub fn resources() -> Option<PathBuf> {
+    data_home().map(|d| d.join(CURRENT).join("hx-resources"))
 }
 
 #[cfg(test)]
@@ -86,6 +102,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// Windows has no `HOME`. Forgetting that on one side of the extraction
+    /// and not the other is what made a successful extraction unloadable.
+    #[test]
+    fn a_machine_with_only_userprofile_still_has_a_home() {
+        assert_eq!(
+            home_from(None, Some(OsString::from(r"C:\Users\cj"))),
+            Some(PathBuf::from(r"C:\Users\cj"))
+        );
+        assert_eq!(home_from(None, None), None);
+    }
+
+    /// `HOME` wins where both are set, so a Unix machine that also sets
+    /// `USERPROFILE` is unaffected.
+    #[test]
+    fn home_is_preferred_over_userprofile() {
+        assert_eq!(
+            home_from(
+                Some(OsString::from("/home/cj")),
+                Some(OsString::from(r"C:\Users\cj"))
+            ),
+            Some(PathBuf::from("/home/cj"))
+        );
     }
 
     #[test]
